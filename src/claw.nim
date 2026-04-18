@@ -4,6 +4,7 @@
 import std/[os, strutils, json, tables, osproc, posix, sequtils, times, algorithm, unicode, sets]
 import docopt
 import claw/[config, doctor, protocol, version as version_mod, context, env_file]
+import claw/agent/context as agent_context
 import claw/cli/client
 import claw/cli_admin
 import claw/cli_providers
@@ -40,6 +41,7 @@ Usage:
   claw channel <cmd> [<args>...]
   claw agent list
   claw agent caps <name>
+  claw agent prompt <name>
   claw agent send <name> <message>
   claw skill list [--sort=<key>] [--reverse] [--format=<fmt>]
   claw skill new <name>
@@ -1526,6 +1528,50 @@ when isMainModule:
     let deny = found{"deny"}
     if deny != nil and deny.len > 0:
       echo "  Denied:     " & deny.getElems().mapIt(it.getStr()).join(", ")
+    let practices = found{"practices"}
+    if practices != nil and practices.len > 0:
+      echo "  Practices:  " & practices.getElems().mapIt(it.getStr()).join(", ")
+    # Team memberships — scanned from workspace/collaboration/teams/
+    let ws = getNimClawDir() / "workspace"
+    let teams = agent_context.loadTeams(ws)
+    var myTeams: seq[string]
+    for t in teams:
+      for m in t.members:
+        if m.toLowerAscii() == name.toLowerAscii():
+          var line = t.name
+          if t.lead.toLowerAscii() == name.toLowerAscii(): line.add(" (lead)")
+          myTeams.add(line); break
+    if myTeams.len > 0:
+      echo "  Teams:      " & myTeams.join(", ")
+
+  # Dump the full system prompt for an agent. Useful for debugging prompt
+  # wiring (memoranda, teams, handbooks, skills) without running gateway.
+  elif args.isCommand("agent", "prompt"):
+    let name = $args["<name>"]
+    let companyDir = getNimClawDir()
+    let basePath = companyDir / "BASE.json"
+    if not fileExists(basePath):
+      echo "Error: no BASE.json at " & basePath
+      quit(1)
+    let cfg = loadConfig(getConfigPath())
+    # Find the agent in config (case-insensitive) so the office dir matches.
+    var canonical = name
+    for a in cfg.agents.named:
+      if a.name.toLowerAscii() == name.toLowerAscii():
+        canonical = a.name
+        break
+    let workspace = companyDir / "workspace"
+    let officeDir = workspace / "offices" / canonical.toLowerAscii()
+    if not dirExists(officeDir):
+      echo "Error: no office dir at " & officeDir
+      quit(1)
+    let cb = newContextBuilder(officeDir, workspace, cfg.agents.named)
+    cb.agentName = canonical
+    for a in cfg.agents.named:
+      if a.name == canonical:
+        cb.allowedSkills = a.skills
+        break
+    echo cb.buildSystemPrompt(userID = "Owner", recipientID = canonical)
 
   elif args.isCommand("agent", "send"):
     let dc = newDaemonClient()

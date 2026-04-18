@@ -41,6 +41,7 @@ type
     resolvedTools*: seq[string]
     resolvedDeps*: seq[string]
     resolvedEnvs*: seq[string]
+    resolvedSkills*: seq[string]  ## uses ∪ practices.skills ∪ team.competencies.skills
 
   ClawPerson* = object
     name*: string
@@ -649,8 +650,14 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     }
     if a.role != "":
       entry["role"] = %a.role
-    if a.uses.len > 0:
-      entry["skills"] = %a.uses
+    # Effective skills: uses ∪ practices.skills ∪ team.competencies.skills,
+    # with built-in tool names filtered out. Fallback to raw `uses` when
+    # the resolver hasn't run yet (older code paths).
+    let effSkills = if a.resolvedSkills.len > 0: a.resolvedSkills else: a.uses
+    if effSkills.len > 0:
+      entry["skills"] = %effSkills
+    if a.practices.len > 0:
+      entry["practices"] = %a.practices
     if a.deny.len > 0:
       entry["deny"] = %a.deny
     if a.workstation:
@@ -995,11 +1002,12 @@ proc scaffoldWorkspace(spec: ClawSpec, workspace: string) =
   ## (memoranda, competencies, teams, labs, portal) from the DSL.
   ## Existing files are preserved — `co update` never overwrites user edits.
 
-  # Base skeleton
+  # Base skeleton. Competencies are created under competencies/<name>/ on
+  # demand — no empty "core" subdir.
   let baseDirs = [
     "offices",
     "memorandum",
-    "competencies" / "core",
+    "competencies",
     "collaboration" / "teams",
     "collaboration" / "labs",
   ]
@@ -1008,13 +1016,20 @@ proc scaffoldWorkspace(spec: ClawSpec, workspace: string) =
   let distRoot = distributionRoot()
 
   # ── Memoranda ───────────────────────────────────────────────────
+  # Each memo gets YAML frontmatter carrying DSL-level flags (critical, summary)
+  # so the runtime loader can tell a CRITICAL policy from an FYI without
+  # re-parsing the prose. Preserves user edits (skips if the file exists).
   var memoCount = 0
   for m in spec.memoranda:
     let dest = workspace / "memorandum" / (m.name & ".md")
     if fileExists(dest): continue
     let body = resolveContent(m.content, distRoot)
     if body.len == 0: continue
-    writeFile(dest, body)
+    var fm = "---\n"
+    if m.critical: fm.add("critical: true\n")
+    if m.summary.len > 0: fm.add("summary: " & m.summary & "\n")
+    fm.add("---\n\n")
+    writeFile(dest, fm & body)
     inc memoCount
   if memoCount > 0:
     echo "  + memorandum/ populated with " & $memoCount & " document(s)"
@@ -1330,6 +1345,16 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
           for s3 in competencyByName[compName].skills:
             if s3 notin effectiveSkills: effectiveSkills.add(s3)
 
+    # Built-in tool names commonly confused with skills. If a user writes
+    # `uses "jq"` or declares `jq` in a competency's `skills`, it's really
+    # a tool request — silently grant the tool and skip the unknown warning.
+    const builtinTools = ["jq", "git", "web", "shell", "cron", "find", "edit",
+      "screenshot", "http_request", "image_info", "image_analyze", "browser_open",
+      "playwright", "pushover", "lark", "delegate", "spawn", "subagent",
+      "learn_skill", "persist", "clock", "provider_auth", "model_list",
+      "forge", "remember", "invite", "update_contact", "query_graph",
+      "read_file", "write_file", "list_dir", "reply"]
+
     for skillName in effectiveSkills:
       # Resolve from the first skillsDir that has it — later dirs override earlier.
       # With dirs passed as [lab, base], lab wins on collisions (customized shadows).
@@ -1344,7 +1369,11 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
           found = true
           break
       if not found:
-        unknown.add(skillName)
+        if skillName in builtinTools:
+          # It's a built-in tool referenced as a skill — grant the tool directly.
+          tools.add(skillName)
+        else:
+          unknown.add(skillName)
 
     # Dedup, subtract denies
     var uniq: seq[string]
@@ -1357,10 +1386,16 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
     for e in envs:
       if e notin uniqEnvs: uniqEnvs.add(e)
 
-    # Persist to spec
+    # Persist to spec — effective skill list is the union AFTER filtering out
+    # built-in tool names (which get granted as tools, not listed as skills).
+    var resolvedSkills: seq[string]
+    for sk in effectiveSkills:
+      if sk notin builtinTools and sk notin resolvedSkills:
+        resolvedSkills.add(sk)
     s.agents[i].resolvedTools = uniq
     s.agents[i].resolvedDeps = uniqDeps
     s.agents[i].resolvedEnvs = uniqEnvs
+    s.agents[i].resolvedSkills = resolvedSkills
 
     # Show "N direct + M competency-inherited = K total skills"
     let directN = a.uses.len

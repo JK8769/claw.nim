@@ -9,8 +9,25 @@ import xml_tools
 import cortex
 
 type
+  Memorandum* = object
+    ## A company-wide policy document. Loaded from workspace/memorandum/*.md.
+    ## Critical memos are injected into every agent's system prompt verbatim.
+    name*: string       ## filename without .md
+    critical*: bool     ## surfaced as hard rules
+    summary*: string    ## optional one-line summary
+    content*: string    ## full markdown body
+
+  TeamInfo* = object
+    ## A collaboration team. Loaded from workspace/collaboration/teams/*/TEAM.json.
+    name*: string
+    description*: string
+    lead*: string
+    members*: seq[string]
+    competencies*: seq[string]
+
   ContextBuilder* = ref object
-    workspace*: string
+    workspace*: string           ## per-agent office dir
+    projectWorkspace*: string    ## company workspace root (shared by all offices)
     skillsLoader*: SkillsLoader
     memory*: MemoryStore
     tools*: ToolRegistry
@@ -18,10 +35,79 @@ type
     graph*: WorldGraph
     mood*: MoodState
     agentsConfig*: seq[NamedAgentConfig]
-    agentName*: string        ## For per-agent skill/tool filtering
-    allowedSkills*: seq[string] ## ClawDSL-resolved skills this agent uses
+    agentName*: string           ## For per-agent skill/tool filtering
+    allowedSkills*: seq[string]  ## ClawDSL-resolved skills this agent uses
+    memoranda*: seq[Memorandum]  ## company-wide memos (loaded once)
+    teams*: seq[TeamInfo]        ## all declared teams (loaded once)
 
 
+
+proc loadMemoranda*(projectWorkspace: string): seq[Memorandum] =
+  ## Scan workspace/memorandum/*.md. Frontmatter keys `critical` (bool) and
+  ## `summary` (string) drive the rendering — the scaffold writes them there
+  ## from the DSL. Body below the frontmatter becomes the rendered content.
+  let dir = projectWorkspace / "memorandum"
+  if not dirExists(dir): return
+  for kind, path in walkDir(dir):
+    if kind != pcFile: continue
+    if not path.endsWith(".md"): continue
+    let raw = try: readFile(path) except: ""
+    if raw.len == 0: continue
+    let basename = path.lastPathPart()
+    let memoName = basename[0 ..< basename.len - ".md".len]
+    var critical = false
+    var summary = ""
+    var body = raw
+    if raw.startsWith("---\n"):
+      let endIdx = raw.find("\n---\n", 4)
+      if endIdx > 0:
+        for line in raw[4 ..< endIdx].splitLines():
+          let parts = line.split(":", 1)
+          if parts.len != 2: continue
+          let key = parts[0].strip().toLowerAscii()
+          let val = parts[1].strip().strip(chars = {'"', '\''})
+          case key
+          of "critical":
+            critical = val.toLowerAscii() in ["true", "yes", "1"]
+          of "summary":
+            summary = val
+          else: discard
+        body = raw[endIdx + 5 .. ^1].strip() & "\n"
+    # Fallback summary — first non-heading, non-blank, non-list line of body.
+    if summary.len == 0:
+      for rawLine in body.splitLines():
+        let line = rawLine.strip()
+        if line.len == 0: continue
+        if line.startsWith("#") or line.startsWith("-") or line.startsWith("*"):
+          continue
+        summary = line
+        break
+    result.add(Memorandum(
+      name: memoName,
+      critical: critical,
+      summary: summary,
+      content: body
+    ))
+
+proc loadTeams*(projectWorkspace: string): seq[TeamInfo] =
+  ## Scan workspace/collaboration/teams/*/TEAM.json.
+  let dir = projectWorkspace / "collaboration" / "teams"
+  if not dirExists(dir): return
+  for kind, path in walkDir(dir):
+    if kind != pcDir: continue
+    let jsonPath = path / "TEAM.json"
+    if not fileExists(jsonPath): continue
+    try:
+      let j = parseJson(readFile(jsonPath))
+      var ti = TeamInfo(
+        name: j{"name"}.getStr(""),
+        description: j{"description"}.getStr(""),
+        lead: j{"lead"}.getStr("")
+      )
+      for m in j{"members"}.getElems(): ti.members.add(m.getStr())
+      for c in j{"competencies"}.getElems(): ti.competencies.add(c.getStr())
+      if ti.name.len > 0: result.add(ti)
+    except: discard
 
 proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq[NamedAgentConfig] = @[]): ContextBuilder =
   let foundationSkillsDir = getNimClawDir() / "foundation" / "skills"        # Tier 1: snapshot from claw distribution
@@ -33,16 +119,98 @@ proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq
 
   result = ContextBuilder(
     workspace: workspace,
+    projectWorkspace: projectWorkspace,
     skillsLoader: newSkillsLoader(workspace, projectCompetencies, companySkillsDir, foundationSkillsDir, openClawExtensionsDir, workstationSkills),
     memory: newMemoryStore(workspace),
     relations: loadRelations(workspace),
     graph: cortex.loadWorld(projectWorkspace),
     mood: loadMood(workspace),
-    agentsConfig: agents
+    agentsConfig: agents,
+    memoranda: loadMemoranda(projectWorkspace),
+    teams: loadTeams(projectWorkspace)
   )
 
 proc setToolsRegistry*(cb: ContextBuilder, registry: ToolRegistry) =
   cb.tools = registry
+
+proc teamsForAgent*(cb: ContextBuilder, agentName: string): seq[TeamInfo] =
+  ## Filter cb.teams to those where the agent is a member (case-insensitive).
+  let want = agentName.toLowerAscii()
+  for t in cb.teams:
+    for m in t.members:
+      if m.toLowerAscii() == want:
+        result.add(t)
+        break
+
+proc effectiveCompetencies*(cb: ContextBuilder, agentName: string, practices: seq[string]): seq[string] =
+  ## Union of agent's own `practices` + competencies attached to each team
+  ## they belong to. Preserves order, dedupes.
+  for c in practices:
+    if c notin result: result.add(c)
+  for t in cb.teamsForAgent(agentName):
+    for c in t.competencies:
+      if c notin result: result.add(c)
+
+proc buildMemorandaSection(cb: ContextBuilder): string =
+  ## Inject company memoranda. Critical ones get full content; non-critical
+  ## get just their summary + pointer to the file.
+  if cb.memoranda.len == 0: return ""
+  var sb = "# Memoranda\n\nCompany-wide policies. Read and obey.\n\n"
+  var anyCritical = false
+  for m in cb.memoranda:
+    if not m.critical: continue
+    anyCritical = true
+    sb.add("## " & m.name & " (CRITICAL)\n\n" & m.content.strip & "\n\n")
+  var otherCount = 0
+  for m in cb.memoranda:
+    if m.critical: continue
+    if otherCount == 0: sb.add("## Other memoranda (read on demand)\n\n")
+    let summary = if m.summary.len > 0: " — " & m.summary else: ""
+    sb.add("- **" & m.name & "**" & summary &
+           " (`workspace/memorandum/" & m.name & ".md`)\n")
+    inc otherCount
+  if not anyCritical and otherCount == 0: return ""
+  return sb.strip
+
+proc buildTeamsSection(cb: ContextBuilder, agentName: string): string =
+  ## For the given agent, render their team memberships — teammates, lead,
+  ## competencies, and task-board location. Empty string if agent isn't on
+  ## any team.
+  let myTeams = cb.teamsForAgent(agentName)
+  if myTeams.len == 0: return ""
+  var sb = "# Teams\n\nYou are a member of:\n"
+  for t in myTeams:
+    sb.add("\n## " & t.name)
+    if t.description.len > 0: sb.add(" — " & t.description)
+    sb.add("\n")
+    if t.lead.len > 0:
+      sb.add("- Lead: **" & t.lead & "**")
+      if t.lead.toLowerAscii() == agentName.toLowerAscii(): sb.add(" (that's you)")
+      sb.add("\n")
+    var others: seq[string]
+    for m in t.members:
+      if m.toLowerAscii() != agentName.toLowerAscii(): others.add(m)
+    if others.len > 0:
+      sb.add("- Teammates: " & others.join(", ") & "\n")
+    if t.competencies.len > 0:
+      sb.add("- Competencies: " & t.competencies.join(", ") & "\n")
+    sb.add("- Shared task board: `workspace/collaboration/teams/" & t.name & "/TASKS.md`\n")
+  return sb.strip
+
+proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq[string]): string =
+  ## Inject HANDBOOK.md for each competency in practices ∪ team-inherited.
+  let comps = cb.effectiveCompetencies(agentName, practices)
+  if comps.len == 0: return ""
+  var blocks: seq[string]
+  for c in comps:
+    let hb = cb.projectWorkspace / "competencies" / c / "HANDBOOK.md"
+    if not fileExists(hb): continue
+    let body = try: readFile(hb).strip except: ""
+    if body.len == 0: continue
+    blocks.add("## " & c & "\n\n" & body)
+  if blocks.len == 0: return ""
+  return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
+         blocks.join("\n\n")
 
 proc buildToolsSection(cb: ContextBuilder): string =
   if cb.tools == nil: return ""
@@ -350,6 +518,17 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   if bootstrapContent != "":
     parts.add(bootstrapContent)
 
+  # Memoranda — company-wide policies. Critical memos rendered in full,
+  # the rest listed as pointers. Always visible to every agent.
+  let memoSection = cb.buildMemorandaSection()
+  if memoSection != "": parts.add(memoSection)
+
+  # Teams — the agent's own team memberships. Shows lead, teammates,
+  # competencies, task-board location. Skipped when agent is on no team.
+  if recipientID != "":
+    let teamSection = cb.buildTeamsSection(recipientID)
+    if teamSection != "": parts.add(teamSection)
+
   let skillsSummary = cb.skillsLoader.buildSkillsSummary(cb.allowedSkills)
   if skillsSummary != "":
     parts.add("""# Skills
@@ -357,6 +536,18 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
 The following skills extend your capabilities. To use a skill, call `read_file` with path `<location>/SKILL.md` — where `<location>` is the exact value in that skill's `<location>` tag below. Do not guess paths.
 
 $1""".format(skillsSummary))
+
+  # Handbooks — per-competency HOW-TO rules, pulled via practices +
+  # team-inherited competencies. Applies only when the agent actually
+  # practices one of the declared competencies.
+  if recipientID != "":
+    var practices: seq[string]
+    for a in cb.agentsConfig:
+      if a.name == recipientID:
+        practices = a.practices
+        break
+    let handbookSection = cb.buildHandbooksSection(recipientID, practices)
+    if handbookSection != "": parts.add(handbookSection)
 
   let memoryContext = cb.memory.getMemoryContext()
   if memoryContext != "":

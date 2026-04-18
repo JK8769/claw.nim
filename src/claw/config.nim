@@ -26,6 +26,7 @@ type
     identity*: string # "User", "Staff", "Agent", "Customer", "Guest"
     # ClawDSL-resolved capability scoping
     skills*: seq[string]
+    practices*: seq[string]  ## competency names — drives team/handbook context injection
     tools*: seq[string]
     deny*: seq[string]
     workstation*: bool
