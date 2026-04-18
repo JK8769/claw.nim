@@ -1,0 +1,13 @@
+{
+  "team_name": "NimClaw Squad",
+  "lead": "Lexi",
+  "roles": {
+    "Lexi": "Lead Coordinator",
+    "Agent_2": "Technical Specialist",
+    "Agent_3": "Quality Assurance"
+  },
+  "rules": {
+    "require_approval": true,
+    "shared_workspace": true
+  }
+}

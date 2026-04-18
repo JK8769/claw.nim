@@ -1,0 +1,74 @@
+# Build output
+build/
+*.out
+nimble.paths
+nimbledeps/
+nimcache/
+nimblecache/
+
+# Secrets
+.env
+.env.*
+.keys
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime state
+.nimclaw/
+.nimclawd/
+
+# Compiled test binaries — keep .nim / .py sources
+tests/test_*
+tests/debug_*
+tests/verify_*
+tests/diag_*
+!tests/test_*.nim
+!tests/test_*.py
+!tests/debug_*.nim
+!tests/verify_*.nim
+!tests/verify_*.py
+!tests/diag_*.nim
+
+# Main binary (built from `nimble build`)
+/claw
+
+# Shared libraries
+*.dylib
+*.so
+*.dll
+
+# Channel CLI binaries
+channels/bin/
+
+# Python
+__pycache__/
+*.pyc
+
+# Dev artifacts
+.claude/worktrees/
+.playwright-*/
+app_*/
+
+# Compiled artifacts accidentally appearing in src/ or tests/
+# (Nim puts them alongside .nim sources by default. Source-only tracking.)
+src/claw/**/*.a
+src/claw/tts/ggml_bindings
+src/claw/tts/gguf_loader
+src/claw/tts/kokoro_test
+src/claw/tts/bopomofo
+src/claw/tts/engine
+src/claw/tts/en_phonemizer
+src/claw/tts/espeak
+src/claw/tts/common
+src/claw/tts/codecs/snac
+src/claw/tools/cron
+src/claw/tools/forge
+src/claw/tools/loop_detector
+src/claw/skills/loader
+src/claw/tests/test_*
+!src/claw/tests/test_*.nim

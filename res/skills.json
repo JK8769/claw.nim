@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "description": "Bootstrap recipes for third-party skills that need more than a simple git clone — e.g. npm packages, CLI-driven sub-skill installs, runtime env var wiring. Keyed by the install ref the user types.",
+
+  "bootstrap": {
+    "github:AnyGenIO/anygen-suite-skill/anygen-suite": {
+      "name": "anygen",
+      "description": "AnyGen content creation suite — generates slides, docs, diagrams, etc. via www.anygen.io.",
+      "bootstrap": [
+        {"kind": "npm_install", "package": "@anygen/cli", "binary": "anygen"},
+        {
+          "kind": "cli_install_skills",
+          "command": "anygen skill install --platform claude-code -y",
+          "upstream_output": "~/.claude/skills",
+          "sub_skills": ["anygen-shared", "anygen-task-download", "anygen-workflow-generate"]
+        }
+      ],
+      "runtime_env": {
+        "ANYGEN_HOME": "{company_support}/anygen",
+        "ANYGEN_OUTPUT_DIR": "{company_support}/anygen/output"
+      }
+    }
+  }
+}

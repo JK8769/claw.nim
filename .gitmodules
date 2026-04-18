@@ -1,0 +1,6 @@
+[submodule "channels/lark-cli"]
+	path = channels/lark-cli
+	url = https://github.com/larksuite/cli.git
+[submodule "clients/nMobile"]
+	path = clients/nMobile
+	url = https://github.com/nknorg/nMobile.git

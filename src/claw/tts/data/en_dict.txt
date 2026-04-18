@@ -1,0 +1,2391 @@
+karachi	kɚɹˈɑːɹtʃi
+beijing	beɪdʒˈɪŋ
+shenzhen	ʃˈɛnʒən
+guangzhou	ɡwˈɑːŋʒuː
+lagos	lˈeɪɡɑːs
+istanbul	ˌɪstˌænbˈʊl
+bangalore	bˌæŋɡɐlˈɔːɹ
+tokyo	tˈoʊkɪˌoʊ
+chengdu	tʃˈɛŋɡduː
+mumbai	mʊmbˈaɪ
+lahore	lɐhˈɔːɹ
+são paulo	sˈaʊ
+paulo	pˈɔːloʊ
+tianjin	tjˈændʒɪn
+jakarta	dʒɐkˈɑːɹɾə
+wuhan	wˈuːhæn
+dhaka	dˈɑːkə
+hyderabad	hˈaɪdɚɹɐbˌɑːd
+chennai	tʃˈɛnaɪ
+dongguan	dˈɑːŋɡjuːən
+seoul	sˈoʊl
+chongqing	tʃˈɑːŋkɪŋ
+xi’an	zˈɪən
+hangzhou	hˈæŋʒuː
+luanda	luːˈændə
+foshan	fˈɑːʃən
+tehran	tɛɹˈɑːn
+london	lˈʌndən
+bangkok	bˈæŋkɑːk
+ahmedabad	ˈɑːmɪdɐbˌɑːd
+bogotá	bˌoʊɡətˈɑː
+nanjing	nˈændʒɪŋ
+kong	kˈɑːŋ
+shenyang	ʃɛnjˈɑːŋ
+minh	mˈɪn
+riyadh	ɹˈɪjæd
+baghdad	bæɡdˈæd
+zhengzhou	ʒˈɛŋʒuː
+janeiro	ʒɐnˈɛɹoʊ
+qingdao	kˈɪŋdaʊ
+kolkata	kɑːlkˈɑːɾə
+suzhou	sˈʌʒuː
+changsha	tʃˈæŋʃə
+petersburg	pˈiːɾɚzbˌɜːɡ
+jinan	dʒˈɪnən
+kunming	kˈʌnəmɪŋ
+alexandria	ˌælɪɡzˈændɹiə
+harbin	hˈɑːɹbɪn
+santiago	sˌæntɪˈɑːɡoʊ
+ankara	ˈæŋkɑːɹɹə
+shijiazhuang	ʃˈɪdʒɪˌæʒwɑːŋ
+hefei	hˈɛfeɪ
+melbourne	mˈɛlbɚn
+dalian	dˈeɪliən
+johannesburg	dʒoʊhˈænzbɜːɡ
+nairobi	naɪɹˈoʊbi
+yangon	jˈɑːŋɑːn
+kano	kˈɑːnoʊ
+xiamen	zˈaɪəmˌɛn
+nanning	nˈænɪŋ
+kabul	kˈæbʌl
+giza	ɡˈiːzə
+taiyuan	tˈeɪjuːən
+ethekwini	ˈiː ðəkwˈɪni
+ethekwini (durban)	(dˈɜːbən)
+bamako	bæmˈɑːkoʊ
+jaipur	dʒˈaɪpʊɹ
+ekurhuleni	ˈɛkərhˌuːlɛni
+tshwane	tˌiːˌɛsˈeɪtʃwˈeɪn
+tshwane (pretoria)	(pɹɪtˈɔːɹiə)
+taipei	tˌaɪpˈeɪ
+guiyang	ɡɪjˈɑːŋ
+wuxi	wˈʌksi,wˈuː zˈaɪ
+pune	pˈuːnə
+shantou	ʃˈæntuː
+ibadan	ˈaɪbædən
+ürümqi	ˈuːɹuːmki
+los	lˌɑːs
+angeles	ˈændʒəlɪs
+zhongshan	ʒˈɑːŋʃən
+abuja	ɐbjˈuːdʒə
+yokohama	jˌɑːkoʊhˈɑːmə
+ningbo	nˈɪŋboʊ
+fuzhou	fˈʌʒuː
+faisalabad	fˈaɪsəlɐbˌɑːd
+casablanca	kˌæsɐblˈæŋkə
+hanoi	hænˈɔɪ
+nanchang	nˈæntʃæŋ
+ababa	ˈæbɐbə
+harcourt	hˈɑːɹkɔːɹt
+busan	bjˈuːsən
+dubai	dˈuːbaɪ
+chittagong	tʃˈɪɾæɡəŋɡ
+kanpur	kˈænpʊɹ
+changzhou	tʃˈæŋʒuː
+domingo	doʊmˈɪŋɡoʊ
+pyongyang	pjɑːŋjˈɑːŋ
+buenos	bwˈeɪnɑːs
+aires	ˈaɪɹɪz
+lanzhou	lˈænʒuː
+mashhad	mˈæʃhæd
+nantong	nˈæntɑːŋ
+surabaya	sˈɜːɹɐbˌeɪə
+quezon	kwˈɛzɑːn
+tashkent	tæʃkˈɛnt
+kyiv	kjˈɪv
+i̇zmir	ˈɪzmɪɹ
+nagpur	nˈæɡpʊɹ
+kumasi	kjuːmˈɑːsi
+algiers	ældʒˈɪɹz
+xuzhou	zˈʌʒuː
+brasília	bɹæsˈɪliə
+toronto	tɚɹˈɑːntoʊ
+douala	dwˈɑːlə
+kaohsiung	kˈeɪəhsˌɪʌŋ
+yaoundé	jˌeɪəəndˈeɪ
+osaka	ɑːsˈɑːkə
+zibo	zˈiːboʊ
+linyi	lˈɪnɪi
+chicago	ʃᵻkˈɑːɡoʊ
+gazipur	ɡˈæzɪpˌʊɹ
+guayaquil	ɡwˈaɪɐkwˌɪl
+dakar	dˈækɑːɹ
+wenzhou	wˈɛnʒuː
+brisbane	bɹˈɪsbən
+tangshan	tˈæŋʃən
+sanaa	sˈænɑː
+bandung	bˈændʌŋ
+lusaka	luːsˈɑːkə
+medellín	mɛdˈɛlᵻn
+gujranwala	ɡˌʊdʒɹɐnwˈɑːlə
+ouagadougou	wˌɑːɡɐdˈuːɡuː
+bekasi	bᵻkˈɑːsi
+medan	mˈɛdən
+fortaleza	fˈɔːɹɾeɪlzə
+salvador	sˈælvɐdˌɔːɹ
+daegu	dˈiːɡuː
+omdurman	ˈɑːmdɜːmən
+hohhot	hˈoʊhɑːt
+haikou	hˈeɪkuː
+bhopal	boʊpˈɑːl
+shaoxing	ʃˈeɪɑːksɪŋ
+nagoya	næɡˈɔɪə
+mogadishu	mˌɑːɡɐdˈiːʃuː
+patna	pˈʌtnə
+belo	bᵻlˈoʊ
+horizonte	hˈɔːɹɪzˌɔnt
+houston	hjˈuːstən
+accra	ˈækɹɐ
+rawalpindi	ɹɔːlpˈɪndi
+phnom	pnˈɑːm
+penh	pˈɛn
+taoyuan	tˈaʊjuːən
+cali	kˈɑːli
+luoyang	lˈɔɪæŋ
+zhuhai	ʒjˈuːhaɪ
+liuzhou	lˈɪəʒˌuː
+perth	pˈɜːθ
+lomé	ləmˈeɪ
+multan	mʊltˈɑːn
+almaty	ˈɔlməɾi
+brazzaville	bɹˈæzəvˌɪl
+baotou	bˈeɪətˌuː
+handan	hˈændən
+huizhou	hjˈuːɪʒˌuː
+caracas	kæɹˈɑːkəz
+manaus	mˈænaʊs
+weifang	wˈaɪfæŋ
+kuala	kwˈɑːlɐ
+lumpur	lˈʌmpʊɹ
+sapporo	sæpˈɔːɹoʊ
+khartoum	kɑːɹtˈuːm
+bahri	bˈɑːɹi
+isfahan	ˈɪsfɐhˌæn
+faridabad	fɑːɹɹˈɪdɐbˌɑːd
+baoding	bˈeɪɑːdɪŋ
+cruz	kɹˈuːz
+tangerang	tˈændʒɚɹˌæŋ
+depok	dᵻpˈɑːk
+hamburg	hˈæmbɜːɡ
+peshawar	pɛʃˈɑːwɚ
+tijuana	tiəwˈɑːnə
+datong	dˈæɾɑːŋ
+huai'an	hjˈuːeɪən
+yantai	jˈæntaɪ
+jiangmen	dʒjˈɑːŋmɛn
+ganzhou	ɡˈænʒuː
+davao	dˈævaʊ
+curitiba	kjˌʊɹɹɪtˈiːbə
+quito	kˈiːɾoʊ
+montreal	mˌɑːntɹɪˈɔːl
+monrovia	mɔnɹˈoʊviə
+kigali	kɪɡˈɑːli
+visakhapatnam	vˈɪsɐkhɐpˌʌtnəm
+pimpri-chinchwad	pˈɪmpɹitʃˈɪntʃwɑːd
+bucharest	bˌuːkɚɹˈɛst
+semarang	sˈɛmɚɹˌæŋɡ
+xiangyang	zˌaɪəŋjˈɑːŋ
+budapest	bˌuːdəpˈɛst
+gaziantep	ɡˈæziəntˌɛp
+kampala	kæmpˈɑːlə
+xining	zˈaɪnɪŋ
+zunyi	zˈʌnɪi
+palembang	pˈeɪlmbæŋ
+vadodara	vˌædədˈɑːɹɹə
+caloocan	kˈæluːkən
+conakry	kənˈækɹi
+kunshan	kˈʌnʃən
+varanasi	vˌæɹɐnˈɑːsi
+beirut	beɪɹˈuːt
+ecatepec	ˈɛkɐtˌɛpɛk
+morelos	mˈɔːɹloʊz
+ghaziabad	ɡɑːzˈɪɐbˌɑːd
+novosibirsk	nˈɑːvəzᵻbˌɜːsk
+ludhiana	lˌʌdhiˈɑːnə
+fukuoka	fjˌuːkjuːˈoʊkə
+daqing	dˈeɪkɪŋ
+wuhu	wˈuːhuː
+karaj	kˈæɹædʒ
+león	lɛˈɑːn
+philadelphia	fɪlɐdˈɛlfiə
+yekaterinburg	jˈɛkɐɾɚɹˌɪnbɜːɡ
+navi	nˈævi
+puebla	pjˈuːblə
+putian	pjˈuːʃən
+ulaanbaatar	ˈuːlɑːnbˌɑːɾɚ
+kawasaki	kˌaʊəsˈɑːki
+kōbe	kˈoʊb
+qinhuangdao	kˌɪnhjuːˈæŋdaʊ
+zhuzhou	ʒˈʌʒuː
+jilin	dʒˈɪlɪn
+ciudad	sˈɪjuːdˌæd
+juárez	dʒjˈuːɚɹˌɛz
+recife	ɹᵻsˈaɪf
+harare	hɚɹˈɑːɹi
+daejeon	dˈiːdʒɪən
+yiwu	jˈɪwuː
+anshan	ˈænʃən
+gwangju	ɡwˈæŋdʒuː
+quanzhou	kwˈɔnʒuː
+kyōto	kaɪˈoʊɾoʊ
+cixi	sˈɪksi
+antonio	æntˈoʊnɪˌoʊ
+nouakchott	nwˈɑːktʃɑːt
+goiânia	ɡˈɔɪənˌiə
+pointe-noire	pˈɔɪntnwˈɑːɹ
+tai’an	tˈeɪən
+medina	mˈɛdɪnə
+nanyang	nænjˈɑːŋ
+alegre	ɐlˈɛɡɚ
+quetta	kwˈɛɾə
+zhanjiang	ʒˈændʒjɑːŋ
+chandigarh	tʃˌʌndɪɡˈɜː
+dammam	dˈæmæm
+guadalajara	ɡwˌɑːdɐlɐdʒˈɑːɹɹə
+diego	dɪˈeɪɡoʊ
+amritsar	ɐmɹˈɪtsɚ
+montevideo	mˌɑːntɪvɪdˈeɪoʊ
+konya	kˈɑːnjə
+mossul	mˈɔsəl
+guilin	ɡˈɪlɪn
+prague	pɹˈɑːɡ
+astana	ɐstˈɑːnə
+yancheng	jæntʃˈɛŋ
+zaozhuang	zˈeɪəʒwˌɑːŋ
+taizhou	tˈeɪʒuː
+shangrao	ʃˈæŋɡɹaʊ
+basra	bˈæsɹə
+jiangyin	dʒjˈɑːŋiˌɪn
+tegucigalpa	tˈɛɡjuːsˌɪɡælpə
+saitama	seɪtˈɑːmə
+antalya	ˈæntɐlɪə
+antananarivo	ˌæntɐnˌænɑːɹɹˈɪvoʊ
+guwahati	ɡˌʊwɐhˈɑːɾi
+córdoba	kɔːɹdˈoʊbə
+mombasa	məmbˈɑːsə
+meerut	mˈɪɹʌt
+kazan	kˈæzən
+belém	bᵻlˈeɪm
+heze	hˈiːz
+guarulhos	ɡæɹˈʌlhoʊz
+dallas	dˈæləs
+rajkot	ɹˈɑːdʒkɑːt
+onitsha	ˈɑːnɪtʃə
+yichang	jˈɪtʃæŋ
+barranquilla	bˌæɹɐŋkwˈɪlə
+sharjah	ʃˈɑːɹdʒə
+xinxiang	zˈɪŋksjæŋ
+dhabi	dˈɑːbi
+zapopan	zˈæpəpˌæn
+nanchong	nˈæntʃɑːŋ
+chaozhou	kˈeɪəʒˌuː
+kalyan-dombivli	kɐljˈɑːndəmbˈɪvli
+bareilly	bˈɛɹɪli
+jieyang	dʒiːjˈɑːŋ
+shubra	ʃˈʌbɹə
+kheima	kˈeɪmə
+huainan	hjˈuːeɪnən
+port-au-prince	pˈɔːɹtˌoʊpɹˈɪns
+fès	fˈɛs
+changshu	tʃˈæŋʃuː
+mysore	mˈaɪsɔːɹ
+fushun	fˈʌʃʌn
+nizhny	nˈɪʒni
+novgorod	nˈɑːvɡɔːɹˌɑːd
+vasai-virar	vˈæsaɪvˈɜːɹɑːɹ
+suwon	sˈuːwʌn
+qom	kˈɑːm
+hiroshima	hˌɪɹəʃˈiːmə
+qingyuan	kˈɪŋjuːən
+batam	bˈæɾæm
+kaifeng	kaɪfˈɛŋ
+srinagar	sɹˈiːnəɡɚ
+xianyang	zˌaɪənjˈɑːŋ
+fuyang	fˈaɪæŋ
+nelson	nˈɛlsən
+mandela	mændˈɛlə
+nelson mandela bay (gqeberha)	(dʒˈiːkˈɛbɚhə)
+jiaxing	dʒˈaɪəksɪŋ
+anyang	ˈɛnɪˌæŋ
+krasnoyarsk	kɹˈæsnɔɪˌɑːɹsk
+doha	dˈoʊhə
+hengyang	hɛŋjˈɑːŋ
+tbilisi	tˈiːbaɪlˈɪsi
+ahvaz	ˈɑːvæz
+tripoli	tɹˈɪpəli
+jinjiang	dʒˈɪndʒjɑːŋ
+aurangabad	ɔːɹˈæŋɡɐbˌɑːd
+lampung	lˈæmpʌŋ
+lilongwe	laɪlˈɔŋwi
+dhanbad	dˈænbæd
+naypyidaw	nˈeɪpɪˌɪdɔː
+yinchuan	jˈɪntʃjuːən
+iribarren	ˈɪɹɪbˌæɹən
+iribarren (barquisimeto)	(bˌɑːɹkwɪsˈaɪmtoʊ)
+kaduna	kˈædʒuːnə
+rizhao	ɹˈɪʒaʊ
+ufa	jˈuːfə
+monterrey	mˈɔntɛɹi
+rostov-on-don	ɹˈɑːstɑːvˌɔndˈɑːn
+campinas	kˈæmpɪnəz
+dazhou	dˈæʒuː
+luzhou	lˈʌʒuː
+yueyang	jˈuːeɪˌæŋ
+zhenjiang	ʒˈɛndʒjɑːŋ
+bishkek	bˈɪʃkɛk
+prayagraj	pɹˈeɪɐɡɹˌædʒ
+islamabad	ɪslˈɑːmɐbˌɑːd
+baoji	bˈeɪɑːdʒi
+mwanza	ˈɛmwˈɔnzə
+maputo	mæpjˈuːɾoʊ
+yibin	jˈɪbɪn
+krasnodar	kɹˈæsnədˌɑːɹ
+sendai	sˈɛndaɪ
+chifeng	tʃˈaɪfəŋɡ
+n'djamena	ˈɛndʒˈeɪmnə
+yerevan	jˌɛɹəvˈæn
+diyarbakır	dˈɪjɑːɹbˌækɪɹ
+huzhou	hˈʌʒuː
+suqian	sˈuːkiən
+wanzhou	wˈɔnʒuː
+bengbu	bˈɛŋɡbuː
+yangzhou	jˈɑːŋʒuː
+ranchi	ɹˈɑːntʃi
+nezahualcóyotl	nˈɛzɐhjˌuːɐlkˌɔɪɑːɾəl
+lu’an	lˈʌən
+yongin	jˈɑːŋɡɪn
+coimbatore	kˈoʊjəmbʊtˌʊɹ
+managua	mænˈɑːɡwə
+voronezh	vˈɔːɹoʊnəʒ
+zhangjiagang	ʒˈæŋdʒɪˌæɡæŋ
+jabalpur	dʒˈæbɐlpˌʊɹ
+gwalior	ɡwˈæljɚ
+vijayawada	vˌɪdʒeɪɐwˈɑːdə
+salé	sælˈeɪ
+changzhi	tʃˈæŋʒaɪ
+pingdingshan	pˈɪŋdɪŋʃən
+goyang	ɡˈɔɪæŋ
+jinhua	dʒˈɪnhjuːə
+mersin	mˈɜːsɪn
+são luís	sˈaʊ,ljˈuːiz
+zhaoqing	ʒˈeɪɑːkɪŋ
+asmara	ɐsmˈɑːɹɹə
+matola	mætˈoʊlə
+shangqiu	ʃˈæŋkɪˌuː
+qiqihar	kˈɪkɪhˌɑːɹ
+changwon	tʃˈæŋwʌn
+cartagena	kˌɑːɹɾədʒˈiːnə
+volgograd	vˈɑːlɡəɡɹˌæd
+jinzhou	dʒˈɪnʒuː
+liaocheng	lˌaɪəətʃˈɛŋ
+madurai	mˈædʒuːɹˌaɪ
+xinyang	zɪnjˈɑːŋ
+yuyao	jˈuːjaʊ
+rui’an	ɹˈuːɪən
+edmonton	ˈɛdmɔntən
+odesa	ˈoʊdɛsə
+raipur	ɹˈaɪpʊɹ
+vientiane	vjɛntjˈɑːn
+jacksonville	dʒˈæksənvˌɪl
+columbus	kəlˈʌmbəs
+indianapolis	ˌɪndiənˈæpəlˌɪs
+francisco	fɹænsˈɪskoʊ
+seattle	siːˈæɾəl
+denver	dˈɛnvɚ
+oklahoma	ˌoʊklɐhˈoʊmə
+nashville	nˈæʃvɪl
+paso	pˈæsoʊ
+vegas	vˈeɪɡəs
+detroit	dɪtɹˈɔɪt
+portland	pˈɔːɹtlənd
+louisville	lˈuːizvˌɪl
+milwaukee	mɪlwˈɔːkiː
+albuquerque	ˈælbəkˌɜːki
+tucson	tˈʌksən
+kansas	kˈænzəs
+raleigh	ɹˈɑːli
+minneapolis	mˌɪniːˈæpəlɪs
+bakersfield	bˈækɚsfˌiːld
+tampa	tˈæmpə
+arlington	ˈɑːɹlɪŋtən
+cleveland	klˈiːvlənd
+honolulu	hˌɑːnəlˈuːluː
+anaheim	ˈænɐhˌaɪm
+henderson	hˈɛndɚsən
+christi	kɹˈɪsti
+irvine	ˈɜːvaɪn
+cincinnati	sˌɪnsɪnˈæɾi
+newark	nˈuːɚk
+pittsburgh	pˈɪtsbɜːɡ
+greensboro	ɡɹˈiːnsbɚɹˌoʊ
+plano	plˈɑːnoʊ
+madison	mˈædɪsən
+reno	ɹˈiːnoʊ
+buffalo	bˈʌfəlˌoʊ
+chula	tʃˈuːlə
+lubbock	lˈʌbək
+laredo	lˈɛɹdoʊ
+chesapeake	tʃˈɛsəpˌiːk
+glendale	ɡlˈɛndeɪl
+winston-salem	wˈɪnstənsˈeɪləm
+lucie	lˈuːsi
+scottsdale	skˈɑːtsdeɪl
+boise	bˈɔɪsi
+spokane	spoʊkˈæn
+fremont	fɹˈɛmɔnt
+huntsville	hˈʌntzvɪl
+frisco	fɹˈɪskoʊ
+clarita	klæɹˈiːɾə
+bernardino	bˌɜːnɚdˈiːnoʊ
+tacoma	təkˈoʊmə
+hialeah	hˈaɪəlˌiː
+modesto	mɑːdˈɛstoʊ
+fontana	fɔntˈɑːnə
+mckinney	mə kˈɪni
+moreno	mˈɔːɹnoʊ
+des	dˈɛs
+moines	mˈɔɪnz
+fayetteville	fˈeɪətvˌɪl
+yonkers	jˈɑːŋkɚz
+rochester	ɹˈɑːtʃɛstɚ
+tallahassee	tˈælɐhˌæsiː
+oxnard	ˈɑːksnɑːɹd
+vancouver	væŋkˈuːvɚ
+montgomery	mɑːntɡˈɑːmɚɹi
+brownsville	bɹˈaʊnzvɪl
+akron	ˈækɹɑːn
+lauderdale	lˈɔːdɚdˌeɪl
+ontario	ɑːntˈæɹɪˌoʊ
+clarksville	klˈɑːɹkzvɪl
+shreveport	ʃɹˈiːvpɔːɹt
+salem	sˈeɪləm
+cucamonga	kjˈuːkɐmˌɑːŋɡə
+springfield	spɹˈɪŋfiːld
+lancaster	lˈæŋkæstɚ
+murfreesboro	mˈɜːfɹiːsbɚɹˌoʊ
+palmdale	pˈɑːmdeɪl
+roseville	ɹˈoʊzvɪl
+paterson	pˈæɾɚsən
+sunnyvale	sˈʌnɪvˌeɪl
+bellevue	bˈɛlvjuː
+joliet	dʒˈoʊliət
+naperville	nˈeɪpɚvˌɪl
+escondido	ˌɛskəndˈiːdoʊ
+bridgeport	bɹˈɪdʒpɔːɹt
+olathe	ˈɑːleɪð
+pasadena	pˌæsɐdˈiːnə
+mcallen	mək ˈælən
+gainesville	ɡˈeɪnzvɪl
+syracuse	sˈɪɹɐkjˌuːs
+visalia	vɪzˈeɪliə
+thornton	θˈɔːɹntən
+waco	wˈeɪkoʊ
+torrance	tˈɔɹəns
+victorville	vˈɪktɚvˌɪl
+miramar	mˈɜːɹæmɚ
+hampton	hˈæmptən
+dayton	dˈeɪtən
+lewisville	lˈuːizvˌɪl
+heights	hˈaɪts
+fargo	fˈɑːɹɡoʊ
+carrollton	kˈæɹoʊltən
+abilene	ˈæbaɪlˌiːn
+clovis	klˈʌvɪs
+topeka	toʊpˈiːkə
+allentown	ˈæləntˌaʊn
+vallejo	vɐlˈeɪhoʊ
+concord	kəŋkˈɔːɹd
+lafayette	lˌæfeɪˈɛt
+arvada	ɑːɹvˈɑːdə
+fairfield	fˈɛɹfiːld
+hartford	hˈɑːɹtfɚd
+berkeley	bˈɜːkli
+cambridge	kˈeɪmbɹɪdʒ
+richardson	ɹˈɪtʃɚdsən
+antioch	ˈæntiːˌɑːk
+odessa	ˈoʊdɛsə
+evansville	ˈɛvənzvˌɪl
+waterbury	wˈɔːɾɚbˌɛɹi
+nampa	nˈæmpə
+carlsbad	kˈɑːɹlsbæd
+menifee	mˈɛnɪfˌiː
+provo	pɹˈoʊvoʊ
+murrieta	mˌɜːɹiˈɛɾə
+tuscaloosa	tˈʌskɐlˌuːsə
+braunfels	bɹˈɔːnfəlz
+gresham	ɡɹˈɛʃæm
+temecula	tɛmˈɛkjʊlə
+ventura	vɛntˈʊɹɹə
+conroe	kənɹˈoʊ
+davie	dˈeɪvi
+hillsboro	hˈɪlsbɚɹˌoʊ
+jurupa	dʒjˈʊɹɹuːpə
+edison	ˈɛdɪsən
+edinburg	ˈɛdɪnbˌɜːɡ
+renton	ɹˈɛntən
+lee's summit	lˈiːz
+fishers	fˈɪʃɚz
+rialto	ɹˈaɪəltˌoʊ
+woodbridge	wˈʊdbɹɪdʒ
+cajon	kˈædʒɑːn
+inglewood	ɪŋɡlˈuːʊd
+vacaville	vˈeɪkəvˌɪl
+mateo	mɐtˈeɪoʊ
+hesperia	hɛspˈɪɹiə
+pakistan	pˌækɪstˈæn
+bangladesh	bˌæŋɡlɐdˈɛʃ
+mexico	mˈɛksɪkˌoʊ
+vietnam	vˌiːətnˈɑːm
+kingdom	kˈɪŋdəm
+thailand	tˈaɪlənd
+tanzania	tˈænzɐnˈiə
+italy	ˈɪɾəli
+colombia	kəlˈʌmbiə
+kenya	kˈɛnjə
+myanmar	mjˈɑːnmɑːɹ
+korea	kɚɹˈiːə
+spain	spˈeɪn
+algeria	ældʒˈɪɹiə
+uganda	juːɡˈændə
+afghanistan	æfɡˈænɪstˌæn
+uzbekistan	ˌʊzbɛkɪstˈæn
+poland	pˈoʊlənd
+ghana	ɡˈɑːnə
+ukraine	juːkɹˈeɪn
+saudi	sˈaʊdi
+arabia	ɚɹˈeɪbiə
+madagascar	mˌædəɡˈæskɚ
+cameroon	kˌæmɚɹˈuːn
+venezuela	vˌɛnɪzwˈeɪlə
+niger	nˈaɪdʒɚ
+syria	sˈɪɹiə
+burkina	bɜːkˈiːnə
+faso	fˈɑːsoʊ
+taiwan	taɪwˈɑːn
+lanka	lˈæŋkə
+kazakhstan	kˌæzɐkhstˈɑːn
+malawi	mɐlˈɑːwi
+zambia	zˈæmbiə
+romania	ɹoʊmˈeɪniə
+somalia	səmˈɑːliə
+netherlands	nˈɛðɜːləndz
+guatemala	ɡwˌɑːɾɪmˈɑːlə
+ecuador	ˈɛkwɐdˌɔːɹ
+rwanda	ɹʊˈændə
+burundi	bʊɹˈʊndi
+haiti	hˈeɪɾi
+tunisia	tuːnˈiːʒə
+belgium	bˈɛldʒəm
+papua	pˈæpjuːə
+arab	ˈæɹəb
+sweden	swˈiːdən
+tajikistan	tˌædʒɪkɪstˈæn
+honduras	hɑːndjˈʊɹɹəs
+austria	ˈɔːstɹiə
+belarus	bˌɛlɚɹˈuːs
+leone	liːˈoʊn
+togo	tˈoʊɡoʊ
+laos	lˈaʊz
+kyrgyzstan	kˌɜːrɡɪstˈɑːn
+turkmenistan	tˌɜːkmənɪstˈæn
+singapore	sˈɪŋɡɐpˌɔːɹ
+lebanon	lˈɛbənˌɑːn
+palestine	pˈæləstˌaɪn
+slovakia	slʌvˈækiə
+zealand	zˈiːlənd
+rica	ɹˈiːkə
+mauritania	mˌɔːɹɪtˈeɪniə
+kuwait	kuːwˈeɪt
+panama	pˈænəmˌɑː
+eritrea	ˌɛɹɪtɹˈiə
+mongolia	mɔŋɡˈoʊliə
+uruguay	jˈʊɹɹuːɡwˌaɪ
+bosnia	bˈɑːsniə
+herzegovina	hˈɜːzɪɡˌɑːvɪnə
+puerto	pwˈɛɹɾoʊ
+rico	ɹˈiːkoʊ
+armenia	ɑːɹmˈiːniə
+namibia	næmˈɪbiə
+lithuania	lˌɪθjuːˈeɪniə
+qatar	kˈæɾɑːɹ
+moldova	moʊldˈoʊvə
+botswana	bətswˈɑːnə
+gabon	ɡɐbˈoʊn
+lesotho	ləsˈuːɾuː
+slovenia	sloʊvˈiːniə
+macedonia	mˌæsɪdˈoʊniə
+guinea-bissau	ɡˈɪnibˈɪsaʊ
+bahrain	bɑːɹˈeɪn
+kosovo	kˈɑːsəvˌoʊ
+trinidad	tɹˈɪnɪdˌæd
+tobago	toʊbˈeɪɡoʊ
+mauritius	mɔːɹˈɪʃəs
+eswatini	ˌɛswətˈiːni
+djibouti	dʒɪbˈuːɾi
+cyprus	sˈaɪpɹəs
+comoros	kəmˈɔːɹoʊz
+bhutan	buːtˈɑːn
+guyana	ɡaɪˈɑːnə
+islands	ˈaɪləndz
+macau	mˈækaʊ
+luxembourg	lˈʌksəmbˌɜːɡ
+montenegro	mˌɔntənˈiːɡɹoʊ
+suriname	sˌʊɹɹɪnˈæm
+malta	mˈɔltə
+maldives	mɔːldˈiːv
+verde	vˈɜːd
+brunei	bɹuːnˈaɪ
+belize	bɛlˈiːz
+transnistria	tɹænsnˈɪstɹiə
+vanuatu	vˌænjuːˈɑːɾuː
+polynesia	pˌɑːlɪnˈiːʒə
+caledonia	kˌælɪdˈoʊniə
+abkhazia	ɐbkhˈeɪziə
+são tomé and príncipe	sˈaʊ,pɹˈɪnsaɪp
+tomé	təmˈeɪ
+samoa	sæmˈoʊə
+curaçao	kjʊɹɹˈæsaʊ
+guam	ɡwˈɑːm
+seychelles	seɪʃˈɛlz
+kiribati	kˌɪɹɪbˈɑːɾi
+grenada	ɡɹɛnˈɑːdə
+aruba	æɹˈuːbə
+micronesia	mˈaɪkɹoʊnˈiːʒə
+antigua	æntˈiːɡə
+barbuda	bɑːɹbjˈuːdə
+andorra	ˈændɔɹə
+dominica	dəmˈɪnɪkə
+ossetia	ɑːsˈiːʃə
+faroe	fˈɛɹoʊ
+kitts	kˈɪts
+nevis	nˈɛvɪs
+turks	tˈɜːks
+caicos	kˈeɪkoʊz
+liechtenstein	lˈɪxtənstˌaɪn
+monaco	mˈɑːnəkˌoʊ
+marino	mɚɹˈiːnoʊ
+nauru	nˈaʊɹuː
+wallis	wˈɔliz
+futuna	fjˈuːtuːnə
+tuvalu	tuːvˈɑːljuː
+barthélemy	bˈɑːɹθeɪləmi
+miquelon	mˈɪkwɛlən
+saint helena, ascension and tristan da cunha	hɛlˈiːnə,
+montserrat	mˈɔntsɪɹˌæt
+pitcairn	pˈɪtkɛɹn
+amundsen	ˈæmʌndsən
+barents	bˈæɹənts
+beaufort	bˈoʊfɔːɹt
+hudson	hˈʌdsən
+kara	kˈɑːɹɹə
+laptev	lˈæptɛv
+prince gustav adolf	pɹˈɪns ɡˈʌstæv ˈædɑːlf
+pechora	pˈɛkɔːɹə
+wandel	wˈɔndəl
+bellingshausen	bˈɛlɪŋʃˌɔːsən
+cooperation	koʊˈɑːpɚɹˈeɪʃən
+cosmonauts	kˈɑːzmənˌɔːts
+davis	dˈeɪvɪs
+d'urville	dˈɜːvɪl
+st vincent	sənt vˈɪnsənt
+king haakon vii	kˈɪŋ hˈɑːkən ɹˌoʊmən sˈɛvən
+lazarev	lˈæzɛɹv
+mawson	mˈɔːsən
+riiser-larsen	ɹˈɪaɪzɚlˈɑːɹsən
+somov	sˈɑːmɑːv
+weddell	wˈɛdɛl
+aden	ˈeɪdən
+laccadive	lˈækɐdˌɪv
+arafura	ˌæɹɐfjˈʊɹɹə
+bering	bˈɛɹɪŋ
+bohai	bˈoʊhaɪ
+bohol	bˈoʊhɑːl
+mindanao	mˌɪndənˈaʊ
+celebes	sˈɛlɛbz
+chiloé	tʃˌɪləˈeɪ
+california	kˌælɪfˈɔːɹniə
+cortés	kɔːɹtˈeɪz
+carpentaria	kˌɑːɹpəntˈɛɹiə
+halmahera	hˈælmɐhɚɹə
+koro	kˈɔːɹoʊ
+mar de grau	mˈɑːɹ də ɡɹˈaʊ
+savu	sˈɑːvuː
+okhotsk	ˈɑːkhɑːtsk
+seto inland	sˈiːɾoʊ ˈɪnlənd
+sibuyan	sɪbˈuːjən
+tasman	tˈæzmən
+aral	ˈæɹəl
+dead	dˈɛd
+salton	sˈɔltən
+archipelago	ˌɑːɹkɪpɪlˈeɪɡoʊ
+bothnian	bˈoʊθniən
+bothnia	bˈoʊθniə
+riga	ɹˈiːɡə
+oresund	ˈɔːɹsʌnd
+ĺland	ɬænd
+mirtoon	mɜːtˈuːn
+alboran	ˈælbɔːɹən
+sidra	sˈɪdɹə
+ionian	aɪˈɑːniən
+sicily	sˈɪsᵻli
+biscay	bˈɪskeɪ
+campeche	kˈæmpɛtʃ
+st. lawrence	sənt. lˈɔːɹəns
+marmara	mɑːɹmˈɑːɹɹə
+azov	ˈæzɑːv
+hebrides	hˈɛbɹədˌiːz
+wadden	wˈɑːdən
+kagera	kˈædʒɚɹə
+ucayali	jˌuːkeɪˈɑːli
+apurímac	ɐpjˈʊɹɹɪmˌæk
+yangtze	jˈɑːŋtsi
+mississippi	mˌɪsɪsˈɪpi
+jefferson	dʒˈɛfɚsən
+selenge	sˈɛlɛndʒ
+huang he	hwˈɑːŋ hiː
+irtysh	ˈɜːɾɪʃ
+paraná	pˌæɹənˈɑː
+río de la plata	ɹˈiːoʊ də lˌæ plˈɑːɾə
+chambeshi	tʃeɪmbˈɛʃi
+amur	ˈæmɚ
+argun	ˈɑːɹɡʌn
+mekong	mˈɛkɑːŋ
+mackenzie	məkˈɛnzi
+finlay	fˈɪnleɪ
+tocantins	tˈɑːkɐntˌɪnz
+araguaia	ˈæɹɐɡjˌuːeɪə
+volga	vˈɑːlɡə
+shatt al-arab	ʃˈæt ˈælˈæɹəb
+euphrates	juːfɹˈeɪɾiːz
+mamoré	mˌæmɔːɹˈeɪ
+grande	ɡɹˈænd
+caine	kˈeɪn
+rocha	ɹˈɑːtʃə
+purús	pjˈʊɹɹəs
+yukon	jˈuːkən
+são francisco	sˈaʊ fɹænsˈɪskoʊ
+syr darya	sɚ dˈɑːɹɹɪə
+naryn	nˈɑːɹɹɪn
+rio grande	ɹˈiːoʊ ɡɹˈænd
+lower tunguska	lˈoʊɚ tˈʌŋɡʌskə
+brahmaputra	bɹˈɑːmɐpˌʌtɹə
+tsangpo	tsˈæŋpoʊ
+zambezi	zˈæmbɛzi
+vilyuy	vˈɪljuːi
+ganges	ɡˈændʒᵻz
+hooghly	hˈuːɡli
+amu darya	ˈɑːmuː dˈɑːɹɹɪə
+japurá	dʒˌæpjʊɹɹˈɑː
+saskatchewan	sˈæskɐtʃˌuːən
+pilcomayo	pˈɪlkəmˌeɪoʊ
+upper ob	ˌʌpɚɹ ˈɑːb
+juruá	dʒjˌʊɹɹəˈɑː
+olenyok	ˈoʊlnɪˌɑːk
+dnieper	dnˈiːpɚ
+aldan	ˈɔːldən
+ubangi	jˈuːbæŋɡi
+uele	jˈuːl
+zhu jiang	ʒˈuː dʒjˈɑːŋ
+ayeyarwady	ˈaɪaɪˌɑːɹwɑːdi
+kasai	kˈæsaɪ
+allegheny	ˈælɪɡhˌɛni
+orinoco	ˌɔːɹɪnˈoʊkoʊ
+tarim	tˈɑːɹɹɪm
+xingu	zˈɪŋɡuː
+northern salado	nˈɔːɹðɚn sælˈɑːdoʊ
+vitim	vˈɪɾɪm
+songhua	sˈɔŋhjuːə
+tapajós	tæpˈɑːdʒoʊz
+stony tunguska	stˈoʊni tˈʌŋɡʌskə
+kama	kˈɑːmə
+limpopo	lɪmpˈoʊpoʊ
+guaporé	ɡwˌɑːpɔːɹˈeɪ
+indigirka	ɪndˈɪɡɜːkə
+murrumbidgee	mˈɜːɹəmbˌɪdʒ
+churchill	tʃˈɜːtʃɪl
+khatanga	kɑːtˈæŋɡə
+okavango	ˌɑːkɐvˈæŋɡoʊ
+platte	plˈæt
+tobol	tˈɑːbɑːl
+shebelle	ʃɛbˈɛl
+içá	ɪsˈɑː
+magdalena	mˈæɡdeɪlnə
+upper yenisei	ˌʌpɚ jˈɛnaɪsˌaɪ
+godavari	ɡˌɑːdɐvˈɑːɹɹi
+guapay	ɡwˈɑːpeɪ
+belaya	bᵻlˈeɪə
+marañón	mˌæɹɐnjˈɑːn
+dniester	dnˈiːstɚ
+benue	bᵻnˈuː
+ili	ˈɪli
+warburton	wˈɔːɹbɜːtən
+georgina	dʒɔːɹdʒˈiːnə
+sutlej	sˈʌtlɛdʒ
+yamuna	jæmˈuːnə
+vyatka	vˈaɪætkə
+fraser	fɹˈeɪsɚ
+mtkvari	ˌɛmtˌiːkˈeɪvˈɑːɹɹi
+brazos	bɹˈɑːzoʊz
+cauca	kˈɔːkə
+liao	lˈaɪəˌoʊ
+yalong	jɐlˈɔŋ
+iguaçu	ˌɪɡjuːˈɑːsuː
+olyokma	ˈɑːlɪˌɑːkmə
+northern dvina	nˈɔːɹðɚn dəvˈiːnə
+sukhona	sʌkhˈoʊnə
+iriri	ɪɹˈiəɹi
+narmada	nɑːɹmˈɑːdə
+lomami	ləmˈɑːmi
+lerma	lˈɜːmə
+rio grande de santiago	ɹˈiːoʊ ɡɹˈænd də sˌæntɪˈɑːɡoʊ
+elbe	ˈɛlbə
+vltava	vˌiːˈɛltˈɑːvə
+zeya	zˈeɪə
+juruena	dʒjˈʊɹɹuːnə
+upper mississippi	ˌʌpɚ mˌɪsɪsˈɪpi
+athabasca	ˈæθɐbˌæskə
+north saskatchewan	nˈɔːɹθ sˈæskɐtʃˌuːən
+vaal	vˈɑːl
+kızıl	kˈɪzɪl
+chindwin	tʃˈɪndwɪn
+sankuru	sˈæŋkjʊɹɹˌuː
+kapuas	kˈæpjuːəz
+desna	dᵻsnˈæ
+helmand	hˈɛlmænd
+madre de dios	mˈædɚ də dˈiːoʊz
+tietê	tˈaɪɾɛɹ
+vychegda	vˈɪtʃɛɡdə
+cimarron	sˈɪmæɹən
+anadyr	ˈænædɚ
+paraíba do sul	pˌæɹəˈiːbə dˈuː sˈʌl
+jialing river	dʒˈaɪəlɪŋ ɹˈɪvɚ
+huallaga	hjˌuːɐlˈɑːɡə
+kwango	kwˈæŋɡoʊ
+draa	dɹˈɑː
+chenab	tʃˈɛnæb
+yellowstone	jˈɛloʊstˌoʊn
+ghaghara	ɡæɡhˈɑːɹɹə
+huai	hjˈuːaɪ
+aras	ˈɑːɹɹəz
+seversky donets	sˈɛvɚski dˈɑːnɪts
+bermejo	bɜːmˈiːdʒoʊ
+guaviare	ɡwˈɑːvaɪɚ
+kuskokwim	kˈʌskɑːkwɪm
+tennessee	tˌɛnəsˈiː
+vistula	vˈɪstʃələ
+aruwimi	ˈæɹuːwˌɪmi
+daugava	dɔːɡˈɑːvə
+loire	lwˈɑːɹ
+essequibo	ˌɛsɪkwˈiːboʊ
+khoper	kˈoʊpɚ
+tagus	tˈeɪɡəs
+american samoa	ɐmˈɛɹɪkən sæmˈoʊə
+connecticut	kənˈɛɾɪkət
+hawaii	həwˈaɪiː
+idaho	ˈaɪdəhˌoʊ
+massachusetts	mˌæsɐtʃˈuːsɪts
+minnesota	mˌɪnɪsˈoʊɾə
+nebraska	nəbɹˈæskə
+new mexico	nˈuː mˈɛksɪkˌoʊ
+north carolina	nˈɔːɹθ kˌæɹəlˈaɪnə
+northern mariana islands	nˈɔːɹðɚn mˌæɹiˈɑːnə ˈaɪləndz
+oregon	ˈɔːɹɪɡən
+pennsylvania	pˌɛnsɪlvˈeɪniə
+puerto rico	pwˈɛɹɾoʊ ɹˈiːkoʊ
+south carolina	sˈaʊθ kˌæɹəlˈaɪnə
+texas	tˈɛksəs
+u.s. virgin islands	jˈuː.ˈɛs. vˈɜːdʒɪn ˈaɪləndz
+wisconsin	wɪskˈɑːnsɪn
+wyoming	waɪˈoʊmɪŋ
+arashiyama	ˌæɹɐʃɪjˈɑːmə
+everest	ˈɛvɚɹɪst
+matterhorm	mˈæɾɚhˌɔːɹm
+kilimanjaro	kˌɪlɪmɐndʒˈæɹoʊ
+denali	dɛnˈɑːli
+aconcagua	ˌækəŋkˈɑːɡwə
+iguazu	ˌɪɡjuːˈɑːzuː
+moher	mˈoʊhɚ
+uluru	ˈuːlʊɹɹˌuː
+yosemite	joʊsˈɛməɾi
+tugela	tuːdʒˈɛlə
+himalayas	hˌɪməlˈeɪəz
+andes	ˈændiːz
+aaliyah	əlˈiːə
+abdul	ˈæbdʊl
+$onlys	dˈɑːlɚɹ ˈoʊnliz
+aguilera	ˌæɡiːlˈɛɹə
+ahab	ˈeɪhæb
+alana	ɐlˈænə
+aled	ˈælɛd
+alex	ˈælɪks
+alfie	ˈælfi
+alibaba	ˌælɪbˈɑːbə
+alise	ɐlˈiːs
+allyson	ˈælɪsən
+alucard	ˈæluːkˌɑːɹd
+alycen	ˈælɪsən
+alyssa	ɐlˈɪsə
+amando	ɐmˈændoʊ
+andrea	ˈændɹiə
+annamaria	ˌænəmɚɹˈiːə
+annise	ɐnˈiːs
+anya	ˈænjə
+ares	ˈɛɹiːz
+arianna	ˌæɹɪˈɑːnə
+astley	ˈæstli
+avers	ˈeɪvɚz
+ayane	eɪˈæn
+baez	baɪˈɛz
+bambi	bˈæmbiː
+barack	bɚɹˈɑːk
+benoit	bɛnwˈɑː
+bjarne	bjˈɑːɹnə
+blanche	blˈɑːnʃ
+bremen	bɹˈɛmən
+brianna	bɹɪˈænə
+brien	bɹˈaɪən
+caiseal	kˈæʃəl
+camille	kɐmˈiːl
+cassey	kˈeɪsi
+cesar	seɪzˈɑːɹ
+cheney	tʃˈeɪni
+cher	ʃˈɛɹ
+cheri	ʃɛɹˈiː
+cherie	ʃɛɹˈiː
+cheryl	ʃˈɛɹəl
+chevelle	ʃəvˈɛl
+chloe	klˈoʊi
+chris	kɹˈɪs
+cloe	klˈoʊi
+conan	kˈoʊnən
+connell	kˈɑːnəl
+connor	kˈɑːnɚ
+crichton	kɹˈaɪtən
+cristen	kɹˈɪstən
+danelle	dɐnˈɛl
+danilo	dɐnˈiːloʊ
+declan	dˈɛklɐn
+dimitris	dᵻmˈiːtɹɪs
+dengler	dˈɛŋɡlɚ
+denise	dənˈiːs
+devin	dˈɛvɪn
+di	dˈaɪ
+dmitri	dəmˈiːtɹi
+donaghy	dɑːnhˈiː
+draco	dɹˈeɪkoʊ
+duana	dwˈɑːnə
+dvina	dəvˈiːnə
+ebenezar	ˌɛbənˈiːzɚ
+einín	ˈɛniːn
+elice	ᵻlˈiːs
+elijah	ᵻlˈaɪdʒə
+elise	ᵻlˈiːz
+elouise	ˌɛluːwˈiːz
+emerson	ˈɛmɚsən
+emile	eɪmˈiːl
+enrique	ɛnɹˈiːkeɪ
+etheridge	ˈɛθɹɪdʒ
+etienne	ˌɛɾɪˈɛn
+euler	ˈɔɪlɚ
+evette	ᵻvˈɛt
+fainne	fˈænʲə
+felipe	fᵻlˈiːpeɪ
+filipe	fᵻlˈiːp
+freda	fɹˈiːdə
+fírinne	fˈiːɹɪnʲə
+gareth	ɡˈæɹəθ
+geraint	ɡˈɛɹaɪnt
+gerhard	ɡˈɛɹhɑːɹt
+giani	dʒjˈɑːni
+gillespie	ɡᵻlˈɛspi
+giordino	dʒɔːɹdˈiːnoʊ
+godfried	ɡˈɑːdfɹiːd
+gruffydd	ɡɹˈɪfɪθ
+guido	ɡwˈiːdoʊ
+guillaume	ɡiːjˈoʊm
+hadrian	hˈeɪdɹiən
+halima	hɐlˈiːmə
+hamish	hˈeɪmɪʃ
+harriet	hˈæɹiət
+hatsya	hætsˈaɪə
+hecate	hˈɛkətˌeɪ
+hekate	hˈɛkətˌeɪ
+hermann	hˈɜːmən
+horace	hˈɔːɹəs
+huw	hjˈuː
+iain	ˈiːən
+ian	ˈiːən
+igor	ˈiːɡɔːɹ
+imogene	ˈɪmədʒən
+ingrid	ˈɪŋɡɹɪd
+isabela	ˌɪzəbˈɛlə
+isobel	ˈɪzəbˌɛl
+isiah	aɪzˈaɪə
+jamal	dʒɐmˈɑːl
+janine	dʒənˈiːn
+jarrad	dʒˈæɹəd
+javier	hˌɑːvɪˈɛɹ
+jerard	dʒɚɹˈɑːɹd
+jesse	dʒˈɛsi
+jolene	dʒəlˈiːn
+karene	kɚɹˈiːn
+katherine	kˈæθɹɪn
+katrina	kɐtɹˈiːnə
+keighli	kˈeɪli
+keanu	kɪˈɑːnuː
+leann	liːˈæn
+leanne	liːˈæn
+(le ann)	(liːˈæn)
+lelaine	lɛlˈeɪn
+lenore	lᵻnˈɔːɹ
+leola	liːˈoʊlə
+leroy	lˈiːɹɔɪ
+liam	lˈiːəm
+llewellyn	lʊwˈɛlɪn
+llywelyn	lʊwˈɛlɪn
+loinnir	lˈʌniə
+luciano	luːtʃˈɑːnoʊ
+madeleine	mˈædəlɪn
+madelyn	mˈædəlɪn
+maeve	mˈeɪv
+makenna	məkˈɛnə
+malachi	mˈæləkˌaɪ
+margaret	mˈɑːɹɡɹət
+matilda	mɐtˈɪldə
+matteo	mɐtˈeɪoʊ
+maxine	mæksˈiːn
+megan	mˈɛɡən
+mellisa	məlˈɪsə
+mellissa	məlˈɪsə
+meredith	mˈɛɹədˌɪθ
+michaela	mᵻkˈeɪlə
+michele	mɪʃˈɛl
+mikhail	mˈɪkaɪl
+misha	mˈiːʃə
+moet	moʊˈɛt
+moët	moʊˈɛt
+mohamed	moʊhˈæmɪd
+muhammad	məhˈæmɪd
+monaghan	mˈɑːnəhˌæn
+montresor	mɔntɹˈɛsɚ
+nadia	nˈɑːdjə
+nadine	neɪdˈiːn
+nadja	nˈɑːdjə
+natasha	nɐtˈæʃə
+nathalie	nˈæɾəli
+nicci	nˈɪki
+nicola	nˈɪkələ
+nicole	nɪkˈoʊl
+nicosia	nˌɪkəsˈiːə
+pal@s	pˈæl æt ˈɛs
+pepe	pˈɛpeɪ
+persephone	pɚsˈɛfəni
+rachael	ɹˈeɪtʃəl
+rae	ɹˈeɪ
+rafaella	ɹˌɑːfaɪˈɛlə
+rashid	ɹɑːʃˈiːd
+rhys	ɹˈiːs
+rihanna	ɹɪˈɑːnə
+roni	ɹˈɑːni
+salman	sɐlmˈɑːn
+(santa claus)	(sˈæntə klˈɔːz)
+sarisa	sɚɹˈɪsə
+selene	səlˈiːni
+seumus	ʃˈuːməs
+simon	sˈaɪmən
+sinead	ʃɪnˈeɪd
+sinéad	ʃɪnˈeɪd
+siobhan	ʃɪvˈɔːn
+siobhán	ʃɪvˈɔːn
+sonia	sˈɑːnjə
+sophie	sˈoʊfi
+stevie	stˈiːvi
+tatiana	tɑːtjˈɑːnə
+terese	tɚɹˈeɪz
+triani	tɹiːˈæni
+trina	tɹˈiːnə
+vaughan	vˈɔːn
+wallace	wˈɑːlɪs
+wilhelmina	wˌɪlhəlmˈiːnə
+wyatt	wˈaɪət
+yves	ˈiːv
+zia	zˈiə
+zoe	zˈoʊi
+zoë	zˈoʊi
+acura	ˈækjʊɹə
+advil	ˈædvɪl
+allgemeine	ˈælɡəmˌaɪmə
+aquino	ɐkˈiːnoʊ
+asimov	ˈæzᵻmˌɑːf
+assad	ɐsˈɑːd
+atropos	ˈætɹəpˌɑːs
+attlee	ˈætliː
+azkaban	ˈæzkɐbˌæn
+batuta	bɑːtˈuːɾɑː
+baumer	bˈaʊmɚ
+bede	bˈiːd
+beethoven	bˈeɪtoʊvən
+borell	bɚɹˈɛl
+boswell	bˈɑːzwɛl
+bouchard	buːʃˈɑːɹd
+cabrillo	kɐbɹˈiːoʊ
+campbell	kˈæmbəl
+capone	kɐpˈoʊn
+chartier	ʃˌɑːɹɾiˈeɪ
+chavez	tʃˈɑːvɛz
+cialis	siːˈælɪs
+compton	kˈɑːmptən
+connally	kˈɑːnæli
+connelly	kˈɑːnəli
+connolly	kˈɑːnoʊli
+conti	kˈɑːnti
+coor	kˈʊɹ
+corazon	kˈɔːɹəzˌɑːn
+cthulhu	kəθˈuːɬuː
+chrysler	kɹˈaɪslɚ
+daimler	dˈaɪmlɚ
+da vinci)	dɐvˈɪntʃi)
+dante	dˈɑːnteɪ
+datsun	dˈɑːtsən
+decatur	dᵻkˈeɪɾɚ
+degas	dˈeɪɡɑː
+desiree	dˌɛzɚɹˈeɪ
+deslauriers	dᵻlˈɔːɹɪˌeɪ
+deveraux	dˈɛvɚɹˌoʊ
+díaz	dˈiːɐs
+digiorno	dᵻʒˈɔːɹnoʊ
+dimaggio	dᵻmˈɑːʒɪˌoʊ
+di maggio)	dᵻmˈɑːʒɪˌoʊ)
+disney	dˈɪzni
+dolby	dˈoʊlbi
+dolce	dˈɑːltʃeɪ
+dolittle	dˈuːlɪɾəl
+donatello	dˌɑːnətˈɛloʊ
+douglass	dˈʌɡləs
+drysdale	dɹˈaɪsdeɪl
+dulles	dˈʌləs
+dupuis	duːpwˈiː
+dvorak	dəvˈɔːɹʒæk
+earp	ˈɜːp
+ellis	ˈɛlɪs
+emory	ˈɛmɚɹi
+exxon	ˈɛksɑːn
+fernandes	fɚnˈɑːndɛs
+folger	fˈoʊldʒɚ
+forrester	fˈɔːɹᵻstɚ
+forster	fˈɔːɹstɜː
+foushee	fuːʃˈeɪ
+gallagher	ɡˈæləɡɚ
+gandhi	ɡˈɑːndi
+garcia	ɡɑːɹsˈiːɐ
+gauguin	ɡoʊɡˈæn
+genghis	dʒˈɛŋɡɪs
+geico	ɡˈaɪkoʊ
+gevalia	dʒəvˈɑːliə
+ghandhi	ɡˈɑːndi
+gibson	ɡˈɪbsən
+gliese	ɡlˈiːzə
+godzilla	ɡɑːdzˈɪlə
+gogh	ɡˈoʊ
+grigio	ɡɹiːʒˈoʊ
+guinness	ɡˈɪnɪs
+gutierrez	ɡuːtjˈɛɹɛz
+hagen	hˈeɪɡən
+hamid	hæmˈiːd
+harison	hˈæɹɪsən
+haydn	hˈaɪdən
+herodotus	hɪɹˈɑːdəɾəs
+herrera	hɚɹˈɛɹə
+hormel	hɔːɹmˈɛl
+ibuprofen	ˌaɪbjuːpɹˈoʊfən
+ikea	aɪkˈiːə
+jacobi	dʒɐkˈoʊbi
+jamison	dʒˈeɪmɪsən
+jawaharlal	dʒəvɐhˈɑːɹlɑːl
+jerrard	dʒɚɹˈɑːɹd
+jimenez	hɪmˈɛnɛz
+kapoor	kæpˈʊɹ
+kendall	kˈɛndəl
+kendell	kˈɛndəl
+khrushchev	kɹˈuːstʃɛf
+khruschev	kɹˈuːstʃɛf
+kroger	kɹˈoʊɡɚ
+kukulcan	kˌuːkuːkˈɑːn
+kumar	kuːmˈɑːɹ
+kyi	tʃˈiː
+kyocera	kˌaɪəsˈiəɹə
+lamar	lɐmˈɑːɹ
+lamaze	lɐmˈɑːz
+levine	ləvˈiːn
+linkedin	lɪŋkt ˈɪn
+louvre	lˈuːv
+lussier	lˈʌsɪˌeɪ
+machen	mˈeɪtʃᵻn
+mackenna	məkˈɛnə
+maguire	məɡwˈaɪɚ
+malone	mɐlˈoʊn
+mc namara)	mˌæknəmˈɑːɹɹə)
+maurya	mˈaʊɹiə
+mefistofele	mˌɛfɪstˈɑːfəlˌiː
+michelangelo	mˌaɪkəlˈændʒəlˌoʊ
+microsoft	mˈaɪkɹəsˌɑːft
+minet	mɪnˈeɪ
+monet	moʊnˈeɪ
+montague	mˈɑːntəɡjˌuː
+moriarty	mˌɔːɹɪˈɑːɹɾi
+mossad	moʊsˈɑːd
+mozart	mˈoʊtsɑːɹt
+mukherjee	mʊkˈɜːdʒiː
+munoz	mˈuːnjoʊz
+mysql	mˌaɪ ɛskjuːˈɛl
+navasca	nɐvˈæskə
+nehru	nˈɛɹuː
+nescafe	nˈɛskæfˌeɪ
+nginx	ˈɛndʒɪn ˌɛks
+nibelung	nˈaɪblʌŋ
+nichol	nˈɪkəl
+nicholson	nˈɪkəlsən
+nicodemus	nˌɪkədˈiːməs
+nietzsche	nˈiːtʃə
+niro	nˈiəɹoʊ
+nissan	nˈɪsɑːn
+nobel	noʊbˈɛl
+nvaccess	ˈɛnviːˌæksɛs
+oreilly	oʊɹˈaɪli
+ortiz	ɔːɹtˈiːz
+ouya	ˈuːjə
+perez	pɚɹˈɛz
+pérez	pˈɛɹɛz
+perot	pɛɹˈoʊ
+peugeot	pjuːʒˈoʊ
+pius	pˈaɪəs
+plantagenet	plæntˈædʒᵻnət
+pokemon	pˈoʊkeɪmˌɑːn
+porsche	pˈɔːɹʃ
+posner	pˈoʊznɚ
+quijote	kiːhˈoʊɾeɪ
+radeon	ɹˈeɪdiːˌɑːn
+ramirez	ɹɐmˈɪɹɛz
+reagan	ɹˈeɪɡən
+reid	ɹˈiːd
+reineke	ɹˈaɪnɪkə
+reinhold	ɹˈaɪnhoʊld
+renee	ɹənˈeɪ
+reuter	ɹˈɔɪɾɚ
+rivera	ɹɪvˈɛɹə
+rizzoli	ɹɪzˈoʊli
+rhiannon	ɹiːˈænən
+rodrigues	ɹɑːdɹˈiːɡɛz
+rohypnol	ɹoʊhˈɪpnɑːl
+rojas	ɹˈoʊhɑːs
+rowling	ɹˈaʊlɪŋ
+ruiz	ɹuːˈiːz
+sachs	sˈæks
+sanchez	sˈæntʃɛz
+scalia	skɐlˈiːə
+scheherazade	ʃəhˈɛɹəzˌɑːd
+shakur	ʃɐkˈʊɹ
+shinola	ʃaɪnˈoʊlə
+sturgis	stˈɜːdʒɪs
+subaru	sˈuːbɚɹˌuː
+sullivan	sˈʌlɪvən
+symantec	sɪmˈæntɛk
+texaco	tˈɛksəkˌoʊ
+thoreau	θəɹˈoʊ
+trevathan	tɹᵻvˈeɪθən
+truphone	tɹˈuːfoʊn
+tupy	tˈuːpi
+tutankhamen	tˌuːtəŋkˈɑːmən
+tycho	tˈaɪkoʊ
+tyr	tˈɪɹ
+tzu	tsˈuː
+urquhart	ˈɜːkɑːɹt
+versace	vɚsˈɑːtʃi
+vicodin	vˈaɪkədɪn
+volkswagen	vˈoʊlksvˌɑːɡən
+vries	vɹˈiːs
+wegener	vˈeɪɡənɚ
+wii	wˈiːː
+wiimote	wˈiːmoʊt
+willis	wˈɪlɪs
+xeon	zˈiːɑːn
+yaesu	jˈeɪsuː
+yamaha	jˈɑːməhˌɑː
+younge	jˈʌŋ
+zhivago	ʒɪvˈɑːɡoʊ
+zoltán	zˈoʊltɑːn
+zune	zˈuːn
+antiguans	ˌæntɪɡwˈɑːnz
+bahraini	bˈɑːɹeɪni
+bangladeshi	bˌæŋɡlɐdˈɛʃi
+barbudans	bˈɑːɹbjuːdənz
+batswana	bætswˈɑːnə
+belarusian	bˌɛlɚɹˈuːsiən
+belizean	bᵻlaɪzˈiən
+beninese	bᵻnaɪnˈiːz
+bruneian	bɹˈʌneɪən
+burkinabe	bˈɜːkɪnˌeɪb
+burundian	bjʊɹɹˈʌndiən
+cameroonian	kˌæmɚɹˈuːniən
+cape verdean	kˈeɪp vˈɜːdiən
+chadian	tʃˈeɪdiən
+comoran	kəmˈɔːɹən
+costa rican	kˈɔstɚ ɹˈɪkən
+cypriot	sˈɪpɹɪət
+ecuadorean	ˈɛkwɐdˌɔːɹiən
+emirian	ɛmˈɪɹiən
+gabonese	ɡˌæboʊnˈiːz
+gambian	ɡˈæmbiən
+ghanaian	ɡˈæneɪən
+guinea-bissauan	ɡˈɪnibˈɪsɔːən
+guyanese	ɡˌaɪənˈiːz
+herzegovinian	hˌɜːzɪɡəvˈɪniən
+i-kiribati	aɪkˌɪɹɪbˈɑːɾi
+iranian	ɪɹˈeɪniən
+ivorian	aɪvˈɔːɹiən
+japanese	dʒˌæpənˈiːz
+kazakhstani	kˌæzɐkhstˈɑːni
+kenyan	kˈɛnjən
+kuwaiti	kuːwˈeɪɾi
+kyrgyz	kˈɜːrɡɪz
+lebanese	lˌɛbənˈiːz
+liechtensteiner	lˈɪxtənstˌaɪnɚ
+lithuanian	lˌɪθjuːˈeɪniən
+luxembourger	lˈʌksəmbˌɜːɡɚ
+macedonian	mˌæsɪdˈoʊniən
+malawian	mælˈæwiən
+malian	mˈeɪliən
+marshallese	mˈɑːɹʃɐlˌiːz
+mauritanian	mˌɔːɹɪtˈeɪniən
+micronesian	mˈaɪkɹoʊnˈiːʒən
+moldovan	mˈoʊldəvˌæn
+mosotho	məsˈɑːθoʊ
+motswana	mətswˈɑːnə
+namibian	næmˈɪbiən
+nauruan	nˈɔːrjuːən
+ni-vanuatu	nˈaɪvˌænjuːˈɑːɾuː
+nigerien	naɪdʒˈiəɹɪən
+pakistani	pˌækɪstˈæni
+palauan	pˈælɔːən
+panamanian	pˌænɐmˈeɪniən
+papua new guinean	pˈæpjuːə nˈuː ɡˈɪniən
+polish	pˈoʊlɪʃ
+qatari	kætˈɑːɹɹi
+romanian	ɹoʊmˈeɪniən
+rwandan	ɹʊˈændən
+salvadoran	sˈælvɐdˌɔːɹən
+san marinese	sˌæn mɚɹaɪnˈiːz
+sao tomean	sˈaʊ toʊmˈiən
+senegalese	sˌɛnɪɡeɪlˈiːz
+seychellois	sˈeɪtʃɪlwˌɑː
+sierra leonean	siːˈɛɹə lˈiəniən
+singaporean	sˈɪŋɡɐpˌɔːɹiən
+somali	səmˈɑːli
+sri lankan	sɹˌiː lˈæŋkən
+surinamer	sˈɜːɹɪnˌeɪmɚ
+taiwanese	tˌaɪwənˈiːz
+tanzanian	tˈænzɐnˈiən
+togolese	tˌɑːɡoʊlˈiːz
+tuvaluan	tˈuːvɐljˌuːən
+uzbekistani	ˌʊzbɛkɪstˈæni
+zambian	zˈæmbiən
+zimbabwean	zɪmbˈɑːbwɪən
+tobagonian	toʊbˈæɡənˌiən
+nevisian	nɛvˈɪʒən
+kittian	kˈɪtʃən
+europe	jˈʊɹɹəp
+asia	ˈeɪʒə
+aramco	æɹˈæmkoʊ
+alphabet (google)	(ɡˈuːɡəl)
+tesla	tˈɛslə
+hathaway	hˈæθəwˌeɪ
+meta (facebook)	(fˈeɪsbʊk)
+johnson	dʒˈɑːnsən
+unitedhealth	juːnˈaɪɾᵻd hˈɛlθ
+tencent	tˈɛnsənt
+mobil	mˈoʊbɪl
+samsung	sˈæmsʌŋ
+procter	pɹˈɑːktɚ
+mastercard	mˈæstɚkˌɑːɹd
+walmart	wˈɔlmɑːɹt
+chevron	ʃˈɛvɹɑːn
+kweichow	kwˈaɪkaʊ
+moutai	mˈaʊɾaɪ
+nestlé	nɛslˈeɪ
+pfizer	fˈaɪzɚ
+roche	ɹˈɑːtʃ
+eli	ᵻli
+coca-cola	kˈoʊkəkˈoʊlə
+abbvie	ˈæb vˈaɪ
+novo	nˈoʊvoʊ
+nordisk	nˈɔːɹdɪsk
+merck	mˈɜːk
+pepsico	pˈɛpsɪkˌoʊ
+industries	ˈɪndʌstɹiz
+toyota	tɔɪˈoʊɾə
+broadcom	bɹˈɔːdkɑːm
+verizon	vɛɹˈaɪzən
+astrazeneca	ˈæstɹeɪznˌɛkə
+abbott	ˈæbət
+laboratories	lˈæbɹətˌɔːɹiz
+novartis	nˈoʊvəəɾiz
+comcast	kˈɑːmkæst
+costco	kˈɔstkoʊ
+danaher	dˈænæhɚ
+cisco	sˈɪskoʊ
+l'oréal	ˈɛlˈɔːɹeɪəl
+mcdonald	mək dˈɑːnəld
+intel	ˈɪntɛl
+bristol-myers squibb	bɹˈɪstəlmˈaɪɚz
+t-mobile us	tˈiːmˈoʊbəl
+linde	lˈɪnd
+salesforce	sˈeɪlsfɔːɹs
+tata	tˈɑːɾə
+consultancy	kənsˈʌltənsi
+services	sˈɜːvɪsᵻz
+instruments	ˈɪnstɹəmənts
+agricultural	ˌæɡɹɪkˈʌltʃɚɹəl
+prosus	pɹˈoʊsəs
+t	tˈiː
+totalenergies	tˈoʊɾəl ˈɛnɚdʒiz
+nextera	nˈɛkstɚɹə
+energy	ˈɛnɚdʒi
+conocophillips	kənˈoʊkoʊ fˈɪlɪps
+medtronic	mɛdtɹˈɑːnɪk
+sanofi	sænˈoʊfi
+technologies	tɛknˈɑːlədʒiz
+petrochina	pˈɛtɹoʊ tʃˈaɪnə
+amgen	ˈæmdʒən
+fomento	foʊmˈɛntoʊ
+fomento económico mexicano	ˌiːkənˈɑːmɪkˌoʊ
+mexicano	mˌɛksɪkˈɑːnoʊ
+meituan	mˈeɪɾuːən
+honeywell	hˈʌnɪwˌɛl
+lowe's companies	lˈoʊz
+companies	kˈʌmpəniz
+s	ˈɛs
+p	pˈiː
+hermès	hˈɜːmz
+equinor	ˈɛkwɪnɚ
+lockheed	lˈɑːkhiːd
+tinto	tˈɪntoʊ
+glaxosmithkline	ɡlˈæksoʊ smˈɪθ klˈaɪn
+unilever	jˌuːnɪlˈɛvɚ
+anheuser-busch inbev	ˈænhjuːsɚbˈʌʃ
+inbev	ˈɪnbɛv
+sony	sˈoʊni
+gazprom	ɡˈæzpɹɑːm
+telegraph	tˈɛlᵻɡɹˌæf
+petrobras	pˈɛtɹɑːbɹəz
+diageo	dˌaɪədʒˈeɪoʊ
+dior	dɪˈɔːɹ
+deere	dˈɪɹ
+citigroup	sˈɪɾɪɡɹˌuːp
+siemens	sˈiːmɛnz
+deutsche	dˈɔɪtʃ
+telekom	tˈɛlᵻkəm
+rajhi	ɹˈɑːdʒhaɪ
+altria	ˈɔːltɹiə
+paypal	pˈeɪ pˈæl
+shenhua	ʃˈɛnhjuːə
+blackrock	blˈæk ɹˈɑːk
+wuliangye	wˈuːliəŋˌaɪ
+enbridge	ɛnbɹˈɪdʒ
+airbus	ˈɛɹbʌs
+prologis	pɹoʊlˈoʊɡɪz
+stryker	stɹˈaɪkɚ
+chubb	tʃˈʌb
+allianz	ɐlˈɪænts
+servicenow	sˈɜːvɪs nˈaʊ
+jingdong	dʒˈɪŋdɑːŋ
+mondelez	mɔndˈɛlɛz
+glencore	ɡlˈɑːŋkɔːɹ
+estee	ˈɛstiː
+analog	ˈænəlˌɑːɡ
+devices	dɪvˈaɪsᵻz
+hapag-lloyd	hˈæpæɡlˈɔɪd
+netflix	nˈɛtflɪks
+liquide	lˈɪkwaɪd
+gilead	ɡˈɪliˌæd
+sciences	sˈaɪənsᵻz
+infosys	ɪnfˈoʊziz
+communications	kəmjˌuːnɪkˈeɪʃənz
+brookfield	bɹˈʊkfiːld
+scotiabank	skˈoʊʃɪəbˌæŋk
+zoetis	zˈoʊɾiz
+mclennan	mək lˈɛnən
+bancorp	bˈæŋkɔːɹp
+resources	ɹᵻsˈɔːɹsᵻz
+regeneron	ɹiːdʒˈɛnɚɹən
+pharmaceuticals	fˌɑːɹmɐsˈuːɾɪkəlz
+sinopec	sˈɪnoʊpək
+iberdrola	ˌaɪbɚdɹˈoʊlə
+mercedes-benz	mɜːsˈeɪdiːzbˈɛnts
+mitsubishi	mˌɪtsuːbˈiːʃi
+boeing	bˈoʊɪŋ
+becton	bˈɛktən
+dickinson	dˈɪkɪnsən
+hindustan	hˌɪndəstˈɑːn
+northrop	nˈɔːɹθɹɑːp
+essilorluxottica	ˈɛsɪlɚ lʌksˈɑːɾɪkə
+movil	mˈuːvəl
+inditex	ɪndˈaɪɾɛks
+paribas	pæɹˈiːbəz
+bayer	bˈeɪɚ
+zurich	zjˈʊɹɪk
+sherwin-williams	ʃˈɜːwɪnwˈɪljəmz
+enel	ˈɛnəl
+softbank	sˈɔft bˈæŋk
+healthineers	hˌɛlθɪnˈɪɹz
+netease	nˈɛt ˈiːz
+colgate-palmolive	kˈɑːlɡeɪtpˈɑːməlˌɪv
+walmex	wˈɔlmɛks
+fiserv	fˈaɪsɜːv
+truist	tɹˈuːɪst
+schlumberger	ʃlˈʌmbɚdʒɚ
+anglo	ˈæŋɡloʊ
+rosneft	ɹˈɑːsnɛft
+healthcare	hˈɛlθkɛɹ
+equinix	ˈɛkwɪnˌɪks
+activision	ˈæktɪvˌɪʒən
+kering	kˈɜːɹɪŋ
+hynix	hˈaɪnɪks
+edwards	ˈɛdwɚdz
+lifesciences	lˈaɪfsaɪənsᵻz
+investor	ɪnvˈɛstɚ
+nongfu	nˌɑːŋɡfˈuː
+enterprise	ˈɛntɚpɹˌaɪz
+products	pɹˈɑːdʌkts
+shin-etsu chemical	ʃˈɪnˈɛtsuː
+midea	mɪdˈiə
+maersk	mˈɛɹsk
+aon	ˈeɪɑːn
+reckitt	ɹˈɛkɪt
+benckiser	bˈɛŋkaɪzɚ
+nutrien	njˈuːtɹiən
+humana	hjuːmˈɑːnə
+suncor	sˈʌŋkɚ
+heineken	hˈaɪnɛkən
+freeport-mcmoran	fɹˈiːpɔːɹtmək mˈoʊ ɹˈæn
+telecom	tˈɛlᵻkˌɑːm
+nintendo	nɪntˈɛndoʊ
+moderna	mˈɑːdɚnə
+eaton	ˈiːtən
+moody's	mˈuːdiz
+compagnie	kəmpˈæɡni
+financière	faɪnˈænsiˈɛɹ
+richemont	ɹˈɪkiːmˌɔnt
+vinci	vˈɪnsaɪ
+dassault	dˈæsɔlt
+systèmes	sˈɪstəmz
+newmont	nˈuːmɔnt
+mindray	mˈaɪndɹeɪ
+fedex	fˈɛd ˈɛks
+nornickel	nˈɔːɹnɪkəl
+banco	bˈæŋkoʊ
+santander	sˈæntændɚ
+brasil	bɹˈæsəl
+chemicals	kˈɛmɪkəlz
+exchanges	ɛkstʃˈeɪndʒᵻz
+motors	mˈoʊɾɚz
+bancshares	bˈæŋkʃɛɹz
+bharti	bˈɑːɹɾi
+airtel	ˈɛɹɾəl
+metlife	mˈɛt lˈaɪf
+itaú unibanco	ˈɪɾaʊ
+unibanco	jˌuːnɪbˈæŋkoʊ
+marriott	mˈæɹɪət
+sempra	sˈɛmpɹə
+pinduoduo	pˈɪndjuːˌɑːdjuːˌoʊ
+flavouring	flˈeɪvɚɹɪŋ
+foxconn	fˈɑːkskɑːn
+foxconn (hon hai precision industry)	(hˈɑːn,ˈɪndʌstɹi)
+hai	hˈaɪ
+valero	vælˈɛɹoʊ
+copco	kˈɑːpkoʊ
+rakyat	ɹˈækɪˌæt
+vmware	vˌiːˈɛmwˈɛɹ
+novatek	nˈoʊvətˌɛk
+hitachi	hɪtˈætʃi
+keurig	kjˈuːɹɪɡ
+dr	dˈɑːktɚ
+pernod	pˈɜːnɑːd
+ricard	ɹˈɪkɑːɹd
+palo	pˈɑːloʊ
+macquarie	mˈækweɪɹi
+adyen	ɐdɪˈɛn
+daniels	dˈænjəlz
+mckesson	mə kˈɛsən
+kotak	kˈɑːɾæk
+mahindra	mæhˈɪndɹə
+thomson	tˈɑːmsən
+reuters	ɹˈɔɪɾɚz
+semiconductors	sˌɛmɪkəndˈʌktɚz
+hikvision	hˈɪkvɪʒən
+ørsted	ˈɔːɹstᵻd
+synopsys	sˈɪnɑːpsiz
+exelon	ɛɡzˈɛlən
+sberbank	ˈɛsbˈɜːbæŋk
+uber	jˈuːbɚ
+marvell	mˈɑːɹvɛl
+shopify	ʃˈɑːpᵻfˌaɪ
+ambev	ˈæmbɛv
+bradesco	bɹˈeɪdskoʊ
+ecolab	ˈɛkəlˌæb
+daiichi	daɪˈɪtʃi
+daiichi sankyō	sˈæŋkaɪˌoʊ
+fortinet	fˈɔːɹtɪnˌɛt
+adani	ɐdˈæni
+chugai	tʃˈuːɡaɪ
+lukoil	lˈuːkɔɪl
+constellation	kˌɑːnstɪlˈeɪʃən
+biologics	bˌaɪəlˈɑːdʒɪks
+stellantis	stˈɛlæntiz
+bajaj	bˈædʒædʒ
+denso	dˈɛnsoʊ
+mediatek	mˈiːdiːə tˈɛk
+vodafone	vˈɑːdɐfˌoʊn
+atlassian	ætlˈæsiən
+alimentation couche-tard	kˈaʊtʃtˈɑːɹd
+corteva	kˈɔːɹɾɛvə
+warner	wˈɔːɹnɚ
+safran	sˈæfɹən
+kimberly-clark	kˈɪmbɚliklˈɑːɹk
+kinder	kˈaɪndɚ
+cenovus	sˈɛnɑːvəs
+baidu	bˈeɪduː
+sea (garena)	(ɡˈæɹɛnə)
+hershey	hˈɜːʃi
+volvo	vˈɑːlvoʊ
+sumitomo	sˌuːmɪtˈoʊmoʊ
+mitsui	mˈɪtsuːi
+paychex	pˈeɪtʃɛks
+lonza	lˈɑːnzə
+itōchū shōji	aɪtˈɑːtʃuː,ʃˈoʊdʒi
+amphenol	ˈæmfənˌɑːl
+securities	sᵻkjˈʊɹɹᵻɾiz
+travelers	tɹˈævəlɚz
+murata	mjʊɹɹˈɑːɾə
+murata manufacturing (murata seisakusho)	(mjʊɹɹˈɑːɾə,sˌeɪsɐkˈʌʃoʊ)
+intesa	ɪntˈɛsə
+sanpaolo	sænpˈaʊloʊ
+xcel	ˈɛkssˈɛl
+apptec	ˈæp tˈɛk
+jardine	dʒˈɑːɹdiːn
+matheson	mˈæθɛsən
+grupo	ɡɹˈuːpoʊ
+méxico	mˈeɪksɪkˌoʊ
+sysco	sˈɪskoʊ
+autodesk	ˌɔːɾoʊdˈɛsk
+welltower	wˈɛltaʊɚ
+danone	dˈænɑːn
+bank of china (hong kong)	(hˈɑːŋ,kˈɑːŋ)
+wanhua	wˈɔnhjuːə
+bussan	bˈʌsən
+muyuan	mˈaɪjuːən
+mercadolibre	mɜːkˈɑːdoʊ liːbɹə
+infineon	ɪnfˈaɪnɑːn
+zijin	zˈɪdʒɪn
+worldwide	wˈɜːldwaɪd
+illumina	ɪlˈuːmɪnə
+nordea	nˈɔːɹdiə
+tokio	tˈoʊkɪˌoʊ
+o'reilly automotive	oʊɹˈaɪli
+cintas	sˈɪntəz
+agilent	ˈædʒɪlənt
+nidec	nˈaɪdək
+xiaomi	zˌaɪəˈoʊmi
+solutions	səlˈuːʃənz
+wesfarmers	wˈɛsfɑːɹmɚz
+microchip	mˈaɪkɹoʊtʃˌɪp
+maaden	mˈɑːdən
+barrick	bˈæɹɪk
+hess	hˈɛs
+walgreens	wˈɔlɡɹiːnz
+chipotle	tʃᵻpˈoʊtleɪ
+kuaishou	kjˈuːeɪʃˌuː
+alcon	ˈælkən
+controls	kəntɹˈoʊlz
+adidas	ˈædɪdəz
+autozone	ˈɔːɾoʊ zˈoʊn
+engineering	ˌɛndʒɪnˈɪɹɪŋ
+motorola	mˌoʊɾɚɹˈoʊlə
+yili	jˈɪli
+lyondellbasell	lˈaɪəndˌɛl bˈeɪsəl
+lululemon	lˈuːluːlˌɛmən
+athletica	æθlˈɛɾɪkə
+pudong	pjˈuːdɑːŋ
+kai	kˈaɪ
+crédit	kɹˈeɪdɪt
+ferrari	fɚɹˈɑːɹɹi
+crowdstrike	kɹˈaʊd stɹˈaɪk
+halliburton	hˈælɪbˌɜːtən
+allstate	ɔːlstˈeɪt
+manulife	mˈænjuːlˌaɪf
+ad absurdam	ˈæd ɐbsˈɜːdəm
+ad hoc	ˈæd hˈɑːk
+ad infinitum	ˈæd ɪnfˈɪnaɪɾəm
+ad nauseam	ˈæd nˈɔːziəm
+a fortiori	ɐ fˈɔːɹɾɪɹi
+alter ego	ˈɔltɚɹ ˈiːɡoʊ
+anno domini	ˈænoʊ dəmˈiːni
+ante bellum	ˈæntiː bˈɛləm
+a posteriori	ɐ pɑːstˈɪɹiˈɔːɹi
+a priori	ɐ pɹaɪˈɔːɹi
+aqua vitae	ˈækwə vˈɪɾiː
+ars longa vita brevis	ˈɑːɹz lˈɔŋɡə vˈiːɾə bɹˈɛvɪs
+aurora borealis	ɔːɹˈɔːɹə bˌɔːɹɪˈælɪs
+bona fide	bˈoʊnə fˈaɪd
+camera obscura	kˈæmɹə əbskjˈʊɹɹə
+carpe diem	kˈɑːɹp dˈiːm
+casus belli	kˈɑːsʊs bˈɛli
+caveat emptor	kˈævɪˌɑːt ɛmptˈɔːɹ
+ceteris paribus	sˈɛɾɚɹˌɪs pˈæɹɪbəs
+coitus interruptus	kˈɔɪɾəs ˌɪntɚɹˈʌptəs
+compos mentis	kəmpˈoʊz mˈɛntiz
+corpus delicti	kˈɔːɹpəs dᵻlˈɪkti
+cui bono	kjˈuːi bˈoʊnoʊ
+curriculum vitae	kɜːɹˈɪkjʊləm vˈɪɾiː
+de facto	də fˈæktoʊ
+de jure	deɪdʒˈʊɹɹi
+delirium tremens	dᵻlˈɪɹiəm tɹˈɛmɛnz
+de profundis	də pɹəfˈʌndiz
+deus ex machina	dˈeɪʊs ˈɛks məʃˈiːnə
+dramatis personae	dɹæmˈɑːɾiz pˈɜːsənˌiː
+ecce homo	ˈɛks hˈoʊmoʊ
+e pluribus unum	ˈiː plˈʊɹɹɪbəs ʌnˈʌm
+ergo	ˈɜːɡoʊ
+et al	ˈɛt ˈæl
+etc	ɛtsˈɛtɹə
+et tu, brute	ˈɛt tˈuː, bɹˈuːt
+ex cathedra	ˈɛks kæθˈiːdɹə
+exempli gratia	ɛɡzˈɛmpli ɡɹˈeɪʃə
+ex officio	ˈɛks əfˈɪsɪˌoʊ
+ex post facto	ˈɛks pˈoʊst fˈæktoʊ
+flagrante delicto	fleɪɡɹˈɑːnteɪ dᵻlˈɪktoʊ
+id est	aɪdˈiː ˌiːˌɛstˈiː
+in absentia	ɪn æbsˈɛntiːə
+in camera	ɪn kˈæmɹə
+in extremis	ɪn ɛkstɹˈɛmɪs
+in flagrante delicto	ɪn fleɪɡɹˈɑːnteɪ dᵻlˈɪktoʊ
+in loco parentis	ɪn lˈoʊkoʊ pˈɛɹəntiz
+in medias res	ɪn mˈiːdiːəz ɹˈɛz
+in situ	ɪn sˈɪɾuː
+inst	ˈɪnst
+inter alia	ˌɪntɚɹ ˈeɪliə
+in toto	ɪn tˈoʊɾoʊ
+in vino veritas	ɪn vˈiːnoʊ vɛɹˈiːɾəz
+in vitro	ɪn vˈɪtɹoʊ
+ipso facto	ˈɪpsoʊ fˈæktoʊ
+mea culpa	mˈiː kˈʌlpə
+memento mori	məmˈɛntoʊ mˈɔːɹi
+mens sana in corpore sano	mˈɛnz sˈɑːnə ɪn kˈɔːɹpɔːɹ sˈɑːnoʊ
+modus operandi	mˈoʊdəs ˌɑːpɚɹˈændi
+modus vivendi	mˈoʊdəs vaɪvˈɛndi
+mutatis mutandis	mjuːtˈɑːɾiz mjuːtˈændiz
+n.b	ˈɛn.bˈiː
+nil desperandum	nˈɪl dᵻspɚɹˈændəm
+non compos mentis	nˈɑːn kəmpˈoʊz mˈɛntiz
+non sequitur	nˈɑːn sˈɛkwɪɾɚ
+obiter dictum	ˈɑːbaɪɾɚ dˈɪktəm
+op.cit	ˈɑːp.sˈɪt
+pari passu	pˈæɹi pˈæsuː
+pater familias	pˈeɪɾɚ fæmˈɪliəz
+pax	pˈæks
+perpetuum mobile	pɚpˈɛtjuːəm mˈoʊbəl
+per se	pˌɜː sˈeɪ
+persona non grata	pɜːsˈoʊnə nˈɑːn ɡɹˈɑːɾə
+post mortem	pˈoʊst mˈɔːɹɾəm
+post scriptum	pˈoʊst skɹˈɪptəm
+prima facie	pɹˈiːmə fˈeɪsi
+primum mobile	pɹˈaɪməm mˈoʊbəl
+pro bono	pɹˈoʊ bˈoʊnoʊ
+pro forma	pɹˈoʊ fˈɔːɹmə
+q.e.d	kjˈuː.ˈiː.dˈiː
+quo vadis	kwˈoʊ vˈædiz
+q.v	kjˈuː.vˈiː
+rara avis	ɹˈɑːɹɹə ˈævɪs
+reductio ad absurdam	ɹᵻdˈʌktɪˌoʊ ˈæd ɐbsˈɜːdəm
+rigor mortis	ɹˈɪɡɚ mˈɔːɹɾiz
+sanctum sanctorum	sˈæŋktəm sæŋktˈɔːɹəm
+sic transit gloria mundi	sˈɪk tɹˈænsɪt ɡlˈɔːɹiə mˈʌndi
+sine qua non	sˈaɪn kwˈɑː nˈɑːn
+sui generis	sˈuːi dʒənˈɛɹɪs
+summa cum laude	sˈʌmə kʊmlˈaʊdi
+tabula rasa	tˈæbjʊlɚ ɹˈɑːsə
+tempus fugit	tˈɛmpəs fjˈuːdʒɪt
+terra firma	tˈɛɹə fˈɜːmə
+terra incognita	tˈɛɹə ɪŋkɑːɡnˈiːɾə
+ultima ratio	ˈʌltɪmɚ ɹˈeɪʃɪˌoʊ
+vade mecum	vˈeɪd mˈɛkəm
+via dolorosa	vˈaɪə dˌɑːlɔːɹˈoʊsə
+vice versa	vˈaɪs vˈɜːsə
+vox populi	vˈɑːks pˈɑːpjʊlˌaɪ
+affaire de coeur	ɐfˈɛɹ də kˈɜː
+affaire d’honneur	ɐfˈɛɹ dəhənˈʊɹ
+agent provocateur	ˈeɪdʒənt pɹəvˌɑːkɐtˈʊɹ
+à la mode	ˌɑːlæ mˈoʊd
+amour propre	ɐmˈʊɹ pɹˈɑːpɚ
+ancien régime	ˈeɪnʃən ɹˈeɪdʒaɪm
+après moi le déluge	ˈæpɹeɪ mwˈɑː lə dˈeɪluːdʒ
+à propos	æ pɹˈoʊpoʊz
+arriviste	ɚɹɪvˈiːst
+au contraire	ˌoʊ kˌɑːntɹəˈaɪɚ
+au courant	ˌoʊ kʊɹˈɑːnt
+au fait	ˌoʊ fˈeɪt
+au naturel	ˌoʊ nˈeɪtʃɚɹəl
+avant-garde	ˈævəntɡˈɑːɹd
+beau monde	bˈoʊ mˈɔnd
+bel esprit	bˈɛl ɛspɹˈɪt
+belles lettres	bˈɛlz lˈɛɾɚz
+bête noir	bˈɛɹt nwˈɑːɹ
+billet doux	bˈɪlɪt dˈuː
+carte blanche	kˈɑːɹt blˈɑːnʃ
+cause célèbre	kˈɔːz sˈeɪlɛbɚ
+c’est la vie	seɪ læ vˈiː
+cherchez la femme	tʃˈɜːʃeɪ lˌæ fˈɛm
+chez nous	ʃˈeɪ nˈuːz
+comédie humaine	kəmˈeɪdi hjˈuːmeɪn
+comme ci comme ça	kəmˈɛ sˈaɪ kəmˈɛ sˈɑː
+comme il faut	kəmˈɛ ˈɪl fˈaʊt
+cordon bleu	kˈɔːɹdən blˈuː
+coup de grâce	kˌuːdə ɡɹˈɑː
+coup de théâtre	kˈuːp də θˈeɪæɾɚ
+crème de la crème	kɹˈɛm də lˌæ kɹˈɛm
+cri de coeur	kɹˈaɪ də kˈɜː
+déclassé	dˌeɪklɐsˈeɪ
+déjà vu	dˌeɪʒɑː vˈuː
+demi-monde	dˈɛmimˈɔnd
+de rigueur	dɚ ɹˈiːɡˈʊɹ
+dernier cri	dˈɜːniɚ kɹˈaɪ
+détente	deɪtˈɑːnt
+de trop	də tɹˈɑːp
+double entendre	dˈʌbəl ɑːntˈɑːndɹə
+du jour	dˈuː ʒˈʊɹ
+éminence grise	ɪmˈaɪnəns ɡɹˈaɪz
+enfant terrible	ɛnfˈænt tˈɛɹᵻbəl
+en route	ɑːn ɹˈuːt
+entente cordiale	ɑːntˈɑːnt kˈɔːɹdɪˌeɪl
+entre nous	ɛntɹˈɛ nˈuːz
+esprit de corps	ɛspɹˈɪt də kˈɔːɹ
+fait accompli	fˈeɪt ɐkɑːmplˈiː
+faux pas	fˌoʊ pˈɑː
+femme fatale	fˈɛm feɪtˈæl
+fin de siècle	fˈɪn də sˈaɪkəl
+folie à deux	fˈoʊli æ djˈuː
+force majeure	fˈɔːɹs mɐdʒjˈuːɹə
+haute couture	hˈɔːt kuːtˈʊɹ
+haute cuisine	hˈɔːt kwᵻzˈiːn
+hors de combat	hˈɔːɹz də kˈɑːmbæt
+hors d’oeuvre	hˈɔːɹz dˈɜːvɹə
+idée fixe	aɪdˈeɪ fˈɪks
+je ne sais quoi	ʒənəsˈeɪ kwˈɑː
+jeu d’esprit	dʒjˈuː dɛspɹˈɪt
+joie de vivre	ʒwˈɑː də vˈiːvɹə
+laissez faire	lˈeɪsɛz fˈɛɹ
+lèse-majesté	lˈiːzmɐdʒɪstˈeɪ
+manqué	mæŋkˈeɪ
+ménage à trois	meɪnˈɑːʒ æ twˈɑː
+mise en scène	mɪsˈiː ˈɛn sˈiːn
+mot juste	mˈɑːt dʒˈʌst
+née	nˈeɪ
+n’est-ce pas	ˈɛnˈɛstsˈiː pˈæs
+nom de plume	nˈɑːm də plˈuːm
+nouveau riche	nˈuːvoʊ ɹˈɪtʃ
+objet d’art	ɑːbdʒˈɛt dˈɑːɹt
+objet trouvé	ɑːbdʒˈɛt tɹuːvˈeɪ
+outré	aʊtɹˈeɪ
+par avion	pˈɑːɹ ˈeɪvɪən
+passe-partout	pˈæspˈɑːɹɾaʊt
+pièce de résistance	pˈiːs dɚ ɹˌeɪzɪstˈɑ̃ns
+pied-à-terre	pɪˈɛdætˈɛɹ
+plus ça change	plˈʌs sˈɑː tʃˈeɪndʒ
+prêt-à-porter	pɹˈɛɹɾæpˈɔːɹɾɚ
+prix fixe	pɹˈiː fˈɪks
+raison d’être	ɹˌeɪzɑːn dˈɛtɹə
+réchauffé	ɹˌeɪʃoʊfˈeɪ
+recherché	ɹᵻtʃɚʃˈeɪ
+retroussé	ɹˌɛtɹoʊʌsˈeɪ
+roman à clef	ɹˈoʊmən æ klˈɛf
+sang-froid	sˈæŋfɹˈɔɪd
+sans-souci	sˈænzsˈaʊsaɪ
+savoir faire	sˈeɪvwɑːɹ fˈɛɹ
+soi-disant	sˈɔɪdɪsˈænt
+soupçon	sˈuːpsɑːn
+tête-à-tête	tˈɛɹɾætˈɛɹt
+tout le monde	tˈaʊt lə mˈɔnd
+trompe l’oeil	tɹˈɑːmp ˈɛlˈoʊɪl
+vis-à-vis	vˌiːzɐvˈiː
+vive la différence	vˈaɪv lˌæ dˈɪfeɪɹəns
+volte-face	vˈoʊltfˈeɪs
+aficionado	ɐfˌɪʃənˈɑːdoʊ
+desaparecidos	dᵻsˌæpɛɹsˈiːdoʊz
+hora inglesa	hˈɔːɹə ɪŋɡlˈɛsə
+mañana	mænjˈɑːnə
+mano a mano	mˈɑːnoʊ ɐ mˈɑːnoʊ
+poco a poco	pˈoʊkoʊ ɐ pˈoʊkoʊ
+que será será	kwˈɛ səɹˈɑː səɹˈɑː
+cantonese	kˌæntoʊnˈiːz
+$lbs	pˈaʊndz
+mr	mˈɪstɚ
+mrs	mˈɪsɪz
+prof	pɹəfˈɛsɚ
+w/	wɪð
+w/o	wɪðˈaʊt
+$mg	mˈɪlɪɡɹˌæmz
+$min	mˈɪnɪts
+$hr	ˈaʊɚz
+$sec	sˈɛkəndz
+$mm	mˈɪlɪmˌiːɾɚz
+$ml	mˈɪlɪlˌiːɾɚz
+$cm	sˈɛntɪmˌiːɾɚz
+$oz	ˈaʊnsᵻz
+$lb	pˈaʊnd
+$ft	fˈiːt
+jr	dʒˈuːnjɚ
+$km	kɪlˈɑːmɪɾɚ
+$m	mˈiːɾɚ
+sr	sˈiːnjɚ
+vs	vˈɜːsᵻz
+inc	ɪŋkˈɔːɹpɚɹˌeɪɾᵻd
+hoover	hˈuːvɚ
+angkor wat	ˈæŋkɚ wˈɑːt
+eiffel	ˈaɪfəl
+rushmore	ɹˈʌʃmɔːɹ
+la sagrada familia	lˌæ sæɡɹˈɑːdə fæmˈɪliə
+pisa	pˈiːsə
+petra	pˈɛtɹə
+trevi	tɹˈɛvi
+versailles	vˈɜːseɪlz
+alcatraz	ˈælkɐtɹˌæz
+notre dame	nˈɑːɾɚ dˈeɪm
+bellagio	bɛlˈɑːdʒɪˌoʊ
+tikal	tɪkˈɑːl
+machu picchu	mˈætʃuː pˈɪkuː
+adjunctively	ɐdʒˈʌŋktɪvli
+aeoline	ˈiːəlˌiːn
+aerometeorograph	ˈɛɹoʊmˌɛɾɪˌɔːɹəɡɹˌæf
+aeronaut	ˈɛɹoʊnˌɔːt
+aerophilatelist	ˈɛɹoʊfˌɪleɪtlˌɪst
+agranulocytosis	ˌæɡɹɐnˌuːləsɪtˈoʊsɪs
+albuminorrhea	ˈælbjuːmˌɪnɔɹˌiə
+albuminoscope	ˈælbjuːmˌɪnəskˌoʊp
+albuminose	ˈælbjuːmˌɪnoʊz
+albuminosis	ˌælbjuːmɪnˈoʊsɪs
+albuminuria	ˌælbjuːmɪnjˈʊɹɹiə
+albuminuric	ˌælbjuːmɪnjˈʊɹɹɪk
+alcoholically	ˌælkəhˈɑːlɪkli
+alcoholism	ˈælkəhˌoʊlɪzəm
+alcoholization	ˌælkəhˌɑːlᵻzˈeɪʃən
+amphierotic	ˌæmfɪɹˈɑːɾɪk
+anisognathism	ˈænɪsˌɑːɡneɪðˌɪzəm
+anomalogonatous	ɐnˌɑːmɐlˌɑːɡənˈæɾəs
+anticonventional	ˌæntɪkənvˈɛnʃənəl
+anticonventionalism	ˌæntɪkənvˈɛnʃənəlˌɪzəm
+arcticize	ˈɑːɹktɪsˌaɪz
+arcticward	ˈɑːɹktɪkwɚd
+arcticwards	ˈɑːɹktɪkwɚdz
+artemis	ˈɑːɹɾɪmˌɪs
+arthrosporic	ˌɑːɹθɹəspˈɔːɹɪk
+aspergillaceae	ɐspˈɜːɡɪlˌeɪsiː
+aspergillales	ɐspˈɜːɡɪlˌeɪlz
+aspergilliform	ɐspˈɜːɡɪlˌɪfɔːɹm
+aspergillus	ɐspˈɜːɡɪləs
+borosalicylic	bˌɔːɹəzˌælɪsˈɪlɪk
+boughed	bˈaʊd
+calenderer	kˈæləndɚɹɚ
+cevadilla	sˌɛvɐdˈɪlə
+cholecystoduodenostomy	kˌoʊlsɪstˌɑːdjuːoʊdnˈɑːstəmi
+cholecystojejunostomy	kˌoʊlsɪstˌoʊdʒdʒuːnˈɑːstəmi
+cholecystotomy	kˌoʊlsɪstˈɑːɾəmi
+churchful	tʃˈɜːtʃfəl
+churchgoer	tʃˈɜːtʃɡoʊɚ
+churchgoing	tʃˈɜːtʃɡoʊɪŋ
+churchgrith	tʃˈɜːtʃɡɹɪθ
+churchman	tʃˈɜːtʃmən
+churchmanly	tʃˈɜːtʃmənli
+churchmanship	tʃˈɜːtʃmənʃˌɪp
+churchmaster	tʃˈɜːtʃmæstɚ
+churchscot	tʃˈɜːtʃskɑːt
+churchwarden	tʃˈɜːtʃwɔːɹdən
+churchwardenism	tʃˈɜːtʃwɔːɹdˌiːnɪzəm
+churchwardenize	tʃˈɜːtʃwɔːɹdˌɛnaɪz
+churchwardenship	tʃˈɜːtʃwɔːɹdənʃˌɪp
+churchway	tʃˈɜːtʃweɪ
+churchwise	tʃˈɜːtʃwaɪz
+churchwoman	tʃˈɜːtʃwʊmən
+circumclude	sˈɜːkəmklˌuːd
+circumundulate	sˈɜːkəmˌʌndʒuːlˌeɪt
+clonicotonic	klˌɑːnɪkətˈɑːnɪk
+cocksureness	kˌɑːkʃˈʊɹnəs
+conciliatoriness	kənsˈɪlɪətˌɔːɹinəs
+consociate	kənsˈoʊsɪˌeɪt
+consociational	kənsˌoʊsɪˈeɪʃənəl
+consociative	kənsˈoʊsiətˌɪv
+conventionalism	kənvˈɛnʃənəlˌɪzəm
+conventionality	kənvˌɛnʃənˈælᵻɾi
+conventionalize	kənvˈɛnʃənəlˌaɪz
+conventionally	kənvˈɛnʃənəli
+costiform	kˈɔstɪfˌɔːɹm
+counterrevolutionist	kˌaʊntɚɹˌɛvəlˈuːʃənˌɪst
+counterrevolutionize	kˌaʊntɚɹˌɛvəlˈuːʃənˌaɪz
+cryptobranchidae	kɹˈɪptəbɹˌæntʃɪdˌiː
+crystallizability	kɹˌɪstɐlˌaɪzəbˈɪlᵻɾi
+crystallizable	kɹˈɪstɐlˌaɪzəbəl
+disproportionably	dˌɪspɹəpˈɔːɹʃənəbli
+disproportional	dˌɪspɹəpˈɔːɹʃənəl
+disproportionality	dˌɪspɹəpˌɔːɹʃənˈælᵻɾi
+disproportionally	dˌɪspɹəpˈɔːɹʃənəli
+disproportionalness	dˌɪspɹəpˈɔːɹʃənəlnəs
+disproportionate	dˌɪspɹəpˈɔːɹʃənət
+disproportionately	dˌɪspɹəpˈɔːɹʃənətli
+disproportionateness	dˌɪspɹəpˈɔːɹʃənətnəs
+disproportionation	dˌɪspɹəpˈɔːɹʃənˈeɪʃən
+dissertation	dɪsɚtˈeɪʃən
+dissertational	dɪsɚtˈeɪʃənəl
+dissertationist	dɪsɚtˈeɪʃənˌɪst
+dissertative	dɪsˈɜːɾətˌɪv
+dissertator	dɪsˈɜːɾeɪɾɚ
+disserviceable	dɪsˈɜːvɪsəbəl
+disserviceableness	dɪsˈɜːvɪsəbəlnəs
+disserviceably	dɪsˈɜːvɪsəbli
+dissyllabize	dɪsˈɪlɐbˌɪz
+ecclesial	ᵻklˈiːzɪəl
+ecclesiarch	ᵻklˈiːzɪˌɑːɹk
+ecclesiarchy	ᵻklˈiːzɪˌɑːɹki
+ecclesiast	ᵻklˈiːzɪˌæst
+ecclesiastes	ᵻklˈiːzɪˌæsts
+ecclesiastic	ᵻklˌiːzɪˈæstɪk
+ecclesiastical	ᵻklˌiːzɪˈæstɪkəl
+ecclesiastically	ᵻklˌiːzɪˈæstɪkli
+ecclesiasticism	ᵻklˌiːzɪˈæstɪsˌɪzəm
+ecclesiasticize	ᵻklˌiːzɪˈæstɪsˌaɪz
+ecclesiastics	ᵻklˌiːzɪˈæstɪks
+ecclesiasticus	ᵻklˌiːzɪˈæstɪkəs
+ecclesiastry	ᵻklˈiːzɪˌæstɹi
+elaeoblast	ᵻlˈiːəblˌæst
+equiproportional	ɪkwˌɪpɹəpˈɔːɹʃənəl
+equiproportionality	ɪkwˌɪpɹəpˌɔːɹʃənˈælᵻɾi
+erythrinidae	ˈɜːɹɪθɹˌɪnɪdˌiː
+erythrocytosis	ˌɜːɹɪθɹˌɑːsɪtˈoʊsɪs
+erythroneocytosis	ˌɜːɹɪθɹˌoʊnəsɪtˈoʊsɪs
+esophagogastrostomy	ɪsˌɑːfəɡˌɑːɡɐstɹˈɑːstəmi
+eumeromorph	jˈuːmɚɹəmˌɔːɹf
+exalbuminose	ɛɡzˈælbjuːmˌɪnoʊz
+expletory	ɛksplˈɛtˌɔːɹi
+fossilification	fˌɑːsɪlˌɪfɪkˈeɪʃən
+gargoyled	ɡˈɑːɹɡɔɪld
+gargoyley	ɡˈɑːɹɡɔɪli
+glyoxalic	ɡlˌaɪəksˈælɪk
+glyoxalin	ɡlˈaɪəksˌælɪn
+glyoxaline	ɡlˈaɪəksəlˌaɪn
+godfathership	ɡˈɑːdfɑːðɚʃˌɪp
+haematophiline	hˈiːmɐtˌɑːfɪlˌiːn
+hexamethylenamine	hˌɛksɐmɪθˈaɪlnɐmˌiːn
+hexamethylene	hˌɛksɐmˈɛθɪlˌiːn
+higher	hˈaɪɚ
+homomorphous	hˈɑːməmˌɔːɹfəs
+homotransplantation	hˌɑːmətɹˌænsplɐntˈeɪʃən
+hypervascularity	hˌaɪpɚvˌæskjʊlˈæɹᵻɾi
+hypoleucocytosis	hˌaɪpoʊlˌuːkəsɪtˈoʊsɪs
+incomprehensibleness	ɪŋkˌɑːmpɹihˈɛnsᵻbəlnəs
+incomprehensibly	ɪŋkˌɑːmpɹihˈɛnsᵻbli
+incomprehensively	ɪŋkˌɑːmpɹihˈɛnsɪvli
+incomprehensiveness	ɪŋkˌɑːmpɹihˈɛnsɪvnəs
+incorporate	ɪŋkˈɔːɹpɚɹˌeɪt
+incorporated	ɪŋkˈɔːɹpɚɹˌeɪɾᵻd
+incorporatedness	ɪŋkˈɔːɹpɚɹˌeɪɾᵻdnəs
+insultation	ɪnsʌltˈeɪʃən
+insultproof	ɪnsˈʌltpɹuːf
+interproportional	ˌɪntɚpɹəpˈɔːɹʃənəl
+ionicization	ˌaɪənˌɪsᵻzˈeɪʃən
+killeekillee	kˈɪliːkˌɪliː
+languet	lˈæŋt
+leucocytosis	lˌuːkəsɪtˈoʊsɪs
+luciferidae	lˈuːsɪfɚɹˌɪdiː
+melodramaticism	mˌɛlədɹɐmˈæɾɪsˌɪzəm
+melodramatics	mˌɛlədɹɐmˈæɾɪks
+melodramatist	mˈɛlədɹˌæmətˌɪst
+melodramatize	mˈɛlədɹˌæmɐtˌaɪz
+misocapnist	mɪsˈɑːkɐpnˌɪst
+nitrogenization	nˌaɪtɹədʒˌɛnᵻzˈeɪʃən
+octocoralla	ˈɑːktəkˌɔːɹælə
+octocorallan	ˈɑːktəkˌɔːɹælən
+oleaceae	ˈoʊleɪsˌiː
+omphalorrhagia	ˌɑːmfɐlɔɹˈeɪdʒə
+omphaloskepsis	ˌɑːmfɐləskˈɛpsɪs
+onchocerca	ˈɑːntʃoʊsɚkə
+opportunist	ɑːpɚtˈuːnɪst
+opportunistic	ɑːpɚtuːnˈɪstɪk
+opportunistically	ɑːpɚtuːnˈɪstɪkli
+ordainer	ˈɔːɹdeɪnɚ
+orotund	ˈɔːɹətˌʌnd
+orthoepy	ˈɔːɹθoʊpi
+otographical	ˌɑːɾəɡɹˈæfɪkəl
+overproportionate	ˌoʊvɚpɹəpˈɔːɹʃənət
+overproportionated	ˌoʊvɚpɹəpˈɔːɹʃənəɾᵻd
+overproportionately	ˌoʊvɚpɹəpˈɔːɹʃənətli
+paedomorphic	pˌiːdəmˈɔːɹfɪk
+palaeotypographical	pˌæliːˌɑːɾɪpəɡɹˈæfɪkəl
+pelletierine	pˈɛlɪtˌɪɹiːn
+perthiocyanate	pˈɜːθɪˌɑːsɪˌæneɪt
+perturbator	pɚtˈɜːbeɪɾɚ
+perturbatory	pɚtˈɜːbətˌɔːɹi
+perturbatress	pɚtˈɜːbætɹəs
+pervulgate	pˈɜːvəlɡˌeɪt
+poikiloblast	pˈɔɪkɪlˌɑːblæst
+poikiloblastic	pˌɔɪkɪləblˈæstɪk
+poikilocythemia	pˌɔɪkɪlˌɑːsɪθˈiːmiə
+poikilocytosis	pˌɔɪkɪlˌɑːsɪtˈoʊsɪs
+polyphloesboean	pˌɑːlɪflˈoʊsboʊən
+polytrichaceous	pˌɑːlɪtɹɪtʃˈeɪʃəs
+preagriculture	pɹˈiːɡɹɪkˌʌltʃɚ
+precompensation	pɹˌiːkˌɑːmpənsˈeɪʃən
+preincorporate	pɹˌiːɪŋkˈɔːɹpɚɹˌeɪt
+preternaturality	pɹɪtˌɜːnɐtʃɚɹˈælᵻɾi
+probosciger	pɹˈɑːbəsˌaɪdʒɚ
+proembryonic	pɹˌoʊmbɹɪˈɑːnɪk
+progressionally	pɹəɡɹˈɛʃənəli
+progressionary	pɹəɡɹˈɛʃənˌɛɹi
+proportionability	pɹəpˈɔːɹʃənəbˈɪlᵻɾi
+proportionable	pɹəpˈɔːɹʃənəbəl
+proportionableness	pɹəpˈɔːɹʃənəbəlnəs
+proportionably	pɹəpˈɔːɹʃənəbli
+proportional	pɹəpˈɔːɹʃənəl
+proportionalism	pɹəpˈɔːɹʃənəlˌɪzəm
+proportionality	pɹəpˌɔːɹʃənˈælᵻɾi
+proportionally	pɹəpˈɔːɹʃənəli
+proportionate	pɹəpˈɔːɹʃənət
+proportionately	pɹəpˈɔːɹʃənətli
+proportionateness	pɹəpˈɔːɹʃənətnəs
+prorevolutionary	pɹˌɔːɹvəlˈuːʃənˌɛɹi
+prorevolutionist	pɹˌɔːɹvəlˈuːʃənˌɪst
+provincialization	pɹəvˌɪnʃəlᵻzˈeɪʃən
+pseudembryonic	sjˌuːdɪmbɹɪˈɑːnɪk
+pseudoconglomerate	sˈuːdoʊkˌɑːŋɡləmɚɹˌeɪt
+pseudoembryonic	sˌuːdoʊˌɛmbɹɪˈɑːnɪk
+pseudonucleolus	sˌuːdoʊnˌuːklɪˈoʊləs
+ptilopaedes	tˈɪləpˌiːdz
+pudibund	pjˈuːdɪbˌʌnd
+radiogoniometry	ɹˌeɪdɪoʊɡˌoʊnɪˈɑːmətɹi
+reconvalesce	ɹˌiːkˈɑːnvəlˌɛs
+regermination	ɹᵻdʒˌɜːmᵻnˈeɪʃən
+reinforcer	ɹˌiːɪnfˈɔːɹsɚ
+revolutional	ɹˌɛvəlˈuːʃənəl
+revolutionally	ɹˌɛvəlˈuːʃənəli
+revolutionarily	ɹˌɛvəlˈuːʃənˈɛɹᵻli
+revolutionariness	ɹˌɛvəlˈuːʃənˌɛɹinəs
+revolutionary	ɹˌɛvəlˈuːʃənˌɛɹi
+revolutioneering	ɹˌɛvəlˈuːʃənˈɪɹɪŋ
+revolutioner	ɹˌɛvəlˈuːʃənɚ
+revolutionism	ɹˌɛvəlˈuːʃənˌɪzəm
+revolutionist	ɹˌɛvəlˈuːʃənˌɪst
+revolutionize	ɹˌɛvəlˈuːʃənˌaɪz
+revolutionizement	ɹˌɛvəlˈuːʃənˌaɪzmənt
+schopenhauerian	skˌoʊpənhˈaʊɚɹˌiən
+semirevolutionist	sˌɛmɪɹˌɛvəlˈuːʃənˌɪst
+sigher	sˈaɪɚ
+skeuomorph	skjˈuːəmˌɔːɹf
+solmization	sˌɑːlmᵻzˈeɪʃən
+spectropolarimeter	spˌɛktɹəpˈoʊlɑːɹɹˈɪmᵻɾɚ
+sphenoidal	sfˈɛnɔɪdəl
+spongoblast	spˈʌŋɡəblˌæst
+standardization	stˌændɚdᵻzˈeɪʃən
+stegocephalous	stˈɛɡoʊsfələs
+straightwards	stɹˈeɪtwɚdz
+subproportional	sˌʌbpɹəpˈɔːɹʃənəl
+superexpand	sˈuːpɚɹɛkspˌænd
+supposed	səpˈoʊzd
+supposition	səpəzˈɪʃən
+suppositional	səpəzˈɪʃənəl
+suppositionally	səpəzˈɪʃənəli
+suppositionary	səpəzˈɪʃənˌɛɹi
+suppositionless	səpəzˈɪʃənləs
+suppositious	səpəzˈɪʃəs
+supposititious	səpˌɑːzɪtˈɪʃəs
+supposititiously	səpˌɑːzɪtˈɪʃəsli
+supposititiousness	səpˌɑːzɪtˈɪʃəsnəs
+suppositive	səpˈɑːzᵻtˌɪv
+suppositively	səpˈɑːzᵻtˌɪvli
+susception	səsˈɛpʃən
+susceptive	səsˈɛptɪv
+tehseeldar	tˈeɪsiːldˌɑːɹ
+thighed	θˈaɪd
+thomsonianism	tˈɑːmsoʊnˌiənɪzəm
+trichloromethane	tɹˈɪklˌɔːɹoʊmˌɛθeɪn
+triphenylmethane	tɹˈɪfˌiːnaɪlmˌɛθeɪn
+tsutsutsi	tsˈuːtsʌtsi
+turnicomorphae	tɜːnˈɪkəmˌɔːɹfiː
+ultrabrachycephalic	ˌʊltɹɐbɹˌækaɪsfˈælɪk
+unaccommodating	ʌnɐkˈɑːmədˌeɪɾɪŋ
+unconspicuousness	ʌŋkənspˈɪkjuːəsnəs
+unploughed	ʌnplˈaʊd
+unqualification	ʌŋkwˌɔlɪfɪkˈeɪʃən
+uppour	ˈʌpɚ
+volatile	vˈɑːlɐɾəl
+volatilely	vˈɑːlɐɾəlli
+volatileness	vˈɑːlɐtəlnəs
+volatilization	vˌɑːlɐtˌɪlᵻzˈeɪʃən
+volatilize	vˈɑːlɐtˌɪlaɪz
+yugoslavic	jˌuːɡəslˈɑːvɪk
+zeugobranchiata	zjˌuːɡəbɹˌæŋkɪˈɑːɾə
+a#	ɐ
+so	sˈoʊ fˌɑːɹ: far,sˌoʊ mˈɛni: many,sˈoʊ mˌʌtʃ: much
+of	əvə: a,əvən: an,ʌvwˈɪtʃ: which,ʌvwˈɪtʃ: which,ʌvðə: the
+for	fɚɹə: a,fɚɹən: an,fɚðə: the,fɚɹə wˈaɪl: a while,fɚɹə wˈaɪl: a while,fɔːɹwˈʌn: one
+for#	fɔːɹ wˈʌn: one
+to#	təbi: be,təbi: be,tʊtə: to
+to	tə bˈiː: be,tə bˈiː: be,tʊtʊ: to,tˌuːəndfɹˈoʊ: and fro
+at	æɾə: a,ˈæɾɪt: it,ɐtwˈʌns: once,ɐtwˈɪl: will
+at#	æɾ ɪt: it
+with	wɪððə: the
+in	ɪnðə: the,ɪnwˌɪtʃ: which,ˌɪnɐ ɹˈoʊ: a row
+on	ɔnðə: the
+out	ˌaʊɾəv: of
+from	fɹʌmðə: the,fɹʌm wˈɛɹ: where,fɹʌm wˈɛɹ: where,fɹʌm wˈɪtʃ: which,fɹʌm wˈɪtʃ: which
+per	pɚ sˈɛnt: cent,pˌɜː sˈeɪ: se
+was	wʌzɐ: a,wʌzðə: the
+will#	wˈɪltə: to,wɪl
+will	wˈɪltʊ: to
+would#	wʊdhɐv: have,wʊdhɐv: have,wʊdhˌævtə: have to,wʊd
+would	wˈʊdhæv: have,wˈʊdhæv: have,wʊdhˈævtʊ: have to
+wouldn't#	wˌʊdəntəv: have,wˌʊdəntævtə: have to
+wouldn't	wˈʊdəntəv: have,wˈʊdəntævtʊ: have to
+won't#	wˌoʊntɐv: have,wˌoʊntɐv: have,woʊnthˌævɪt: have it,wˈoʊntævtə: have to
+won't	wˈoʊnthæv: have,wˈoʊnthæv: have,woʊnthˈævɪt: have it,wˈoʊntævtʊ: have to
+must#	mˈʌstɐv: have,mˈʌstɐv: have,mˌʌstævtə: have to
+must	mˈʌsthæv: have,mˈʌsthæv: have,mˌʌstævtʊ: have to
+mustn't#	mˌʌsənthɐv: have,mˈʌsənthævtə: have to
+mustn't	mˈʌsənthɐv: have,mˈʌsənthævtʊ: have to
+should#	ʃˌʊdəv: have,ʃˌʊdəv: have,ʃʊdhˌævɪt: have it,ʃʊdhˌævtə: have to,ʃˌʊd
+should	ʃˈʊdhæv: have,ʃˈʊdhæv: have,ʃʊdhˈævɪt: have it,ʃʊdhˈævtʊ: have to
+shouldn't#	ʃˌʊdənthəv: have,ʃˈʊdəntævtə: have to
+shouldn't	ʃˈʊdənthəv: have,ʃˈʊdəntævtʊ: have to
+can't	kˈæntɐv: have,kˌæntˈævtʊ: have to,kˈæntɐv: have,kˌæntˈævtʊ: have to
+can't#	kˈæntɐv tə: have to,kˈæntɐv tə: have to
+could#	kˌʊdɐv: have,kˌʊdɐv: have,kʊdhˌævtə: have to,kʊd
+could	kˈʊdhæv: have,kˈʊdhæv: have,kʊdhˈævtʊ: have to,kʊdhˈævɪt: have it
+couldn't#	kˌʊdəntəv: have,kˈʊdəntævtə: have to
+couldn't	kˈʊdəntəv: have,kˈʊdəntævtʊ: have to
+may#	mˌeɪhɐv: have,mˌeɪhɐv tə: have to
+may	mˈeɪhɐv: have,mˌeɪhˈævtʊ: have to
+might#	mˌaɪthɐv: have,mˌaɪthɐv tə: have to,mˌaɪt
+might	mˈaɪthɐv: have,mˌaɪthˈævtʊ: have to
+have	hɐvbɪn: been,hɐvnˈɑːt: not,hɐvnˈɑːt: not
+have#	hɐvnˌɑːt: not,hɐvnˌɑːt: not,hæv
+has	hˈæzbiːn: been,hˈæztuː: to,hɐznˈɑːt: not,hɐznˈɑːt: not,hˌæzɪt: it
+has#	hɐz tə: to,həznɑːt: not,həznɑːt: not,hɐz ɪt: it
+had#	hædtə: to,hædtə: to,hæd wˈʌn: one,hæd
+had	hˈædtuː: to,hˈædtuː: to,hɐdbɪn: been,hˌædɪt: it,hˌædðɛm: them,hˈædwʌn: one,hˌæd ˌɛni: any,hˌæd sʌm: some
+do#	duːnˌɑːt: not,dˈuː sˌoʊ: so
+do	duːnˈɑːt: not,dˈuː soʊ: so
+does#	dʌznˌɑːt: not
+does	dʌznˈɑːt: not
+did#	dɪdnˌɑːt: not
+did	dɪdnˈɑːt: not
+that's	ðætsˈɪt: it,ðɐtsbˈɪn: been
+I've#	aɪvhˌæd: had
+I've	aɪvhˈæd: had
+you've#	juːvhˌæd: had
+you've	juːvhˈæd: had
+he's#	hiːzhˌæd: had
+he's	hiːzhˈæd: had
+she's#	ʃiːzhˌæd: had
+she's	ʃiːzhˈæd: had
+it's#	ɪtshˌæd: had
+it's	ɪtshˈæd: had
+we've#	wiːvhˌæd: had
+we've	wiːvhˈæd: had
+they've#	ðeɪvhˌæd: had
+they've	ðeɪvhˈæd: had
+I#	aɪɐm: am,aɪɐm: am,aɪʃˌɐl: shall,aɪʃˌɐl: shall
+I	aɪˈæm: am,aɪˈæm: am,aɪʃˈæl: shall,aɪʃˈæl: shall
+it#	ɪt hɐz: has,ɪɾ ɪz: is,ɪt wʌz: was,ɪt wʌz: was
+it	ɪt hˈæz: has,ɪɾ ˈɪz: is,ɪt wˈʌz: was,ɪt wˈʌz: was
+we#	wiːʃˌɐl: shall,wiːʃˌɐl: shall
+we	wiːʃˈæl: shall,wiːʃˈæl: shall
+i#	ˈaɪ hæd: had
+i	aɪ hˈæd: had
+he#	hiː hæd: had
+he	hiː hˈæd: had
+as	ˌæzˌɪz: is,ˌæzɪtˈɪz: it is
+as#	ˌæzɪtˌɪz: it is
+not#	nˌɑːɾɐv: have,nˌɑːɾɐv: have,nˌɑːthævtə: have to
+not	nˈɑːthæv: have,nˈɑːthæv: have,nˈɑːthævtʊ: have to,nˌɑːɾə: a
+many	mˈɛnɪəv: of
+some	sˈʌmwʌn: one
+this	ðˈɪswˌʌn: one
+that	ðˌæɾə: a,ðˈæt æn: an,ðætˈɪt: it,ðætˈɪt: it,ðæt ˈɪz: is,ðɐt wˈʌz: was,ðˈætwˌʌn: one,ðætðə: the,ðɐthɐzbˈɪn: has been
+that#	ðæt æn: an,ðˌɐɾɪt: it,ðˌɐɾɪt: it,ðæt ɪz: is,ðæt wʌz: was,ðɐthɐzbˌɪn: has been,ðæt
+that's#	ðɐtsbˌɪn: been
+there#	ðɛɹˌɑːɹ: are,ðɛɹ ɪz: is,ðɛɹwˌʌz: was,ðɛɹwˌʌz: was,ðɛɹwˌɜː: were,ðɛɹ
+there	ðɛɹˈɑːɹ: are,ðɛɹˈɪz: is,ðɛɹbˈiː: be,ðɛɹwˈʌz: was,ðɛɹwˈʌz: was,ðɛɹwˈɜː: were
+than	ðˌænə: a,ðˌænən: an
+so#	sˌoʊ
+on#	ˌɔn
+onto#	ˌɑːntʊ
+up#	ˌʌp
+down#	dˌaʊn
+across#	əkɹˌɑːs
+through#	θɹuː
+over#	ˌoʊvɚ
+under#	ˌʌndɚ
+within#	wɪðˌɪn
+without#	wɪðˌaʊt
+above#	əbˌʌv
+about#	ɐbˌaʊt
+among#	ɐmˌʌŋ
+amongst#	ɐmˌʌŋst
+before#	bᵻfˌɔːɹ
+behind#	bᵻhˌaɪnd
+below#	bᵻlˌoʊ
+beneath#	bᵻnˌiːθ
+beyond#	bᵻjˌɔnd
+beside#	bᵻsˌaɪd
+between#	bᵻtwˌiːn
+together#	təɡˌɛðɚ
+near#	nˌɪɹ
+being#	bˌiːɪŋ
+shall#	ʃˌæl
+can#	kæn
+having#	hˌævɪŋ
+get#	ɡɛt
+getting#	ɡˌɛɾɪŋ
+got#	ɡɑːt
+go#	ɡˌoʊ
+goes#	ɡoʊz
+going#	ɡˌoʊɪŋ
+gone#	ɡɔn
+went#	wɛnt
+doing#	dˌuːɪŋ
+put#	pˌʊt
+become#	bɪkˌʌm
+became#	bɪkˌeɪm
+#me	mˌiː
+me#	mˌiː
+my#	maɪ
+his#	hɪz
+hers#	hɜːz
+already#	ɔːlɹˌɛdi
+these#	ðiːz
+those#	ðoʊz
+which#	wˌɪtʃ
+who#	hˌuː
+#what#	wʌt
+#what	wˈʌt
+how#	hˌaʊ
+where#	wˌɛɹ
+why#	wˌaɪ
+#when#	wɛn
+#when	wˈɛn

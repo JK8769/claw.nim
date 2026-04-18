@@ -1,0 +1,10 @@
+[
+  {
+    "name": "playwright-cli",
+    "description": "Browser automation for AI agents via @playwright/cli",
+    "install": "npm install -g @playwright/cli && npx playwright install chromium",
+    "check": "npx @playwright/cli --version",
+    "requires": ["npx"],
+    "homepage": "https://github.com/anthropics/playwright-cli"
+  }
+]

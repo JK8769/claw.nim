@@ -1,0 +1,639 @@
+{
+  "schema_version": 2,
+  "canonical": {
+    "ibm/granite-3.0-8b-instruct": {
+      "vendor": "ibm",
+      "family": "granite-3.0",
+      "params_b": 8,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "Apache 2.0"
+    },
+    "deepseek/deepseek-chat": {
+      "vendor": "deepseek",
+      "family": "deepseek-v3",
+      "context_length": 65536,
+      "modality": "text",
+      "capabilities": [
+        "tool-use"
+      ]
+    },
+    "mistralai/codestral-22b": {
+      "vendor": "mistralai",
+      "family": "codestral",
+      "params_b": 22,
+      "context_length": 32000,
+      "modality": "text",
+      "capabilities": [
+        "code"
+      ]
+    },
+    "qwen/qwen2.5-coder-32b-instruct": {
+      "vendor": "qwen",
+      "family": "qwen2.5-coder",
+      "params_b": 32,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "code"
+      ],
+      "license": "Apache 2.0"
+    },
+    "meta/llama-3.3-70b-instruct": {
+      "vendor": "meta",
+      "family": "llama-3.3",
+      "params_b": 70,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "Llama 3.3 Community License",
+      "release_date": "2024-12-06"
+    },
+    "openai/gpt-4o-mini": {
+      "vendor": "openai",
+      "family": "gpt-4o",
+      "context_length": 128000,
+      "modality": "multimodal",
+      "capabilities": [
+        "tool-use",
+        "vision"
+      ],
+      "release_date": "2024-07-18"
+    },
+    "openai/o1": {
+      "vendor": "openai",
+      "family": "o1",
+      "context_length": 200000,
+      "modality": "text",
+      "capabilities": [
+        "reasoning"
+      ],
+      "release_date": "2024-09-12"
+    },
+    "mistralai/mixtral-8x22b": {
+      "vendor": "mistralai",
+      "family": "mixtral",
+      "params_b": 141,
+      "context_length": 65536,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "Apache 2.0"
+    },
+    "google/gemma-2-27b-it": {
+      "vendor": "google",
+      "family": "gemma-2",
+      "params_b": 27,
+      "context_length": 8192,
+      "modality": "text",
+      "capabilities": [
+        "multilingual"
+      ],
+      "license": "Gemma License"
+    },
+    "microsoft/phi-4-mini-instruct": {
+      "vendor": "microsoft",
+      "family": "phi-4",
+      "params_b": 4,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "reasoning"
+      ]
+    },
+    "meta/llama-3.1-70b-instruct": {
+      "vendor": "meta",
+      "family": "llama-3.1",
+      "params_b": 70,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "Llama 3.1 Community License"
+    },
+    "mistralai/mixtral-8x7b": {
+      "vendor": "mistralai",
+      "family": "mixtral",
+      "params_b": 47,
+      "context_length": 32768,
+      "modality": "text",
+      "capabilities": [
+        "tool-use"
+      ],
+      "license": "Apache 2.0"
+    },
+    "meta/llama-3.2-11b-vision-instruct": {
+      "vendor": "meta",
+      "family": "llama-3.2",
+      "params_b": 11,
+      "context_length": 131072,
+      "modality": "multimodal",
+      "capabilities": [
+        "vision",
+        "multilingual"
+      ],
+      "license": "Llama 3.2 Community License"
+    },
+    "anthropic/claude-3-opus": {
+      "vendor": "anthropic",
+      "family": "claude-3",
+      "context_length": 200000,
+      "modality": "multimodal",
+      "capabilities": [
+        "tool-use",
+        "vision",
+        "reasoning"
+      ],
+      "release_date": "2024-02-29"
+    },
+    "openai/o1-mini": {
+      "vendor": "openai",
+      "family": "o1",
+      "context_length": 128000,
+      "modality": "text",
+      "capabilities": [
+        "reasoning"
+      ],
+      "release_date": "2024-09-12"
+    },
+    "z-ai/glm-5.1": {
+      "vendor": "z-ai",
+      "family": "glm-5",
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "reasoning",
+        "multilingual"
+      ],
+      "license": "MIT",
+      "description": "Zhipu AI GLM v5.1 — flagship open-weight Chinese/English model."
+    },
+    "nvidia/nemotron-4-340b-instruct": {
+      "vendor": "nvidia",
+      "family": "nemotron-4",
+      "params_b": 340,
+      "context_length": 4096,
+      "modality": "text",
+      "capabilities": [
+        "tool-use"
+      ],
+      "description": "NVIDIA's flagship 340B alignment-tuned model, trained with synthetic data."
+    },
+    "databricks/dbrx-instruct": {
+      "vendor": "databricks",
+      "family": "dbrx",
+      "params_b": 132,
+      "context_length": 32768,
+      "modality": "text",
+      "capabilities": [
+        "tool-use"
+      ],
+      "license": "Databricks Open Model License"
+    },
+    "z-ai/glm4.7": {
+      "vendor": "z-ai",
+      "family": "glm-4",
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "MIT"
+    },
+    "anthropic/claude-3.5-sonnet": {
+      "vendor": "anthropic",
+      "family": "claude-3.5",
+      "context_length": 200000,
+      "modality": "multimodal",
+      "capabilities": [
+        "tool-use",
+        "vision",
+        "reasoning"
+      ],
+      "release_date": "2024-10-22"
+    },
+    "mistralai/mistral-large-2": {
+      "vendor": "mistralai",
+      "family": "mistral-large",
+      "params_b": 123,
+      "context_length": 128000,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "release_date": "2024-07-24"
+    },
+    "deepseek/deepseek-reasoner": {
+      "vendor": "deepseek",
+      "family": "deepseek-r1",
+      "context_length": 65536,
+      "modality": "text",
+      "capabilities": [
+        "reasoning"
+      ]
+    },
+    "z-ai/glm5": {
+      "vendor": "z-ai",
+      "family": "glm-5",
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "MIT"
+    },
+    "meta/llama-3.1-405b-instruct": {
+      "vendor": "meta",
+      "family": "llama-3.1",
+      "params_b": 405,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "Llama 3.1 Community License"
+    },
+    "anthropic/claude-3.5-haiku": {
+      "vendor": "anthropic",
+      "family": "claude-3.5",
+      "context_length": 200000,
+      "modality": "text",
+      "capabilities": [
+        "tool-use"
+      ],
+      "release_date": "2024-11-04"
+    },
+    "google/gemma-2-9b-it": {
+      "vendor": "google",
+      "family": "gemma-2",
+      "params_b": 9,
+      "context_length": 8192,
+      "modality": "text",
+      "capabilities": [
+        "multilingual"
+      ],
+      "license": "Gemma License"
+    },
+    "meta/llama-3.1-8b-instruct": {
+      "vendor": "meta",
+      "family": "llama-3.1",
+      "params_b": 8,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "multilingual"
+      ],
+      "license": "Llama 3.1 Community License",
+      "release_date": "2024-07-23"
+    },
+    "openai/gpt-4o": {
+      "vendor": "openai",
+      "family": "gpt-4o",
+      "context_length": 128000,
+      "modality": "multimodal",
+      "capabilities": [
+        "tool-use",
+        "vision",
+        "audio"
+      ],
+      "release_date": "2024-05-13"
+    },
+    "mistralai/codestral": {
+      "vendor": "mistralai",
+      "family": "codestral",
+      "context_length": 32000,
+      "modality": "text",
+      "capabilities": [
+        "code"
+      ]
+    },
+    "microsoft/phi-3.5-moe-instruct": {
+      "vendor": "microsoft",
+      "family": "phi-3.5",
+      "params_b": 42,
+      "context_length": 131072,
+      "modality": "text",
+      "capabilities": [
+        "reasoning"
+      ]
+    }
+  },
+  "providers": {
+    "OpenCode Go": {
+      "updated": "2026-04-18",
+      "models": [
+        {
+          "id": "glm-5",
+          "model": "z-ai/glm5"
+        },
+        {
+          "id": "glm-5.1",
+          "model": "z-ai/glm-5.1"
+        },
+        {
+          "id": "kimi-k2.5",
+          "context_length": 200000,
+          "capabilities": [
+            "tool-use",
+            "reasoning",
+            "multilingual"
+          ]
+        },
+        {
+          "id": "mimo-v2-pro",
+          "context_length": 128000,
+          "capabilities": [
+            "tool-use",
+            "reasoning"
+          ]
+        },
+        {
+          "id": "mimo-v2-omni",
+          "context_length": 128000,
+          "capabilities": [
+            "tool-use",
+            "reasoning",
+            "vision",
+            "audio"
+          ]
+        },
+        {
+          "id": "minimax-m2.5",
+          "context_length": 200000,
+          "capabilities": [
+            "tool-use",
+            "multilingual"
+          ]
+        },
+        {
+          "id": "minimax-m2.7",
+          "context_length": 200000,
+          "capabilities": [
+            "tool-use",
+            "multilingual"
+          ]
+        },
+        {
+          "id": "qwen3.5-plus",
+          "context_length": 131072,
+          "capabilities": [
+            "tool-use",
+            "multilingual"
+          ]
+        },
+        {
+          "id": "qwen3.6-plus",
+          "context_length": 131072,
+          "capabilities": [
+            "tool-use",
+            "multilingual"
+          ]
+        }
+      ]
+    },
+    "ollama": {
+      "updated": "2026-04-18",
+      "models": [
+        {
+          "id": "gemma4:e2b",
+          "owned_by": "library",
+          "created": 1775355735,
+          "capabilities": [
+            "completion",
+            "vision",
+            "audio",
+            "tools",
+            "thinking"
+          ],
+          "family": "gemma4"
+        },
+        {
+          "id": "gemma4:31b-cloud",
+          "owned_by": "library",
+          "created": 1775354625,
+          "capabilities": [
+            "completion",
+            "thinking",
+            "tools",
+            "vision"
+          ],
+          "family": "gemma4"
+        }
+      ]
+    },
+    "deepseek": {
+      "updated": "2026-04-18",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "model": "deepseek/deepseek-chat",
+          "owned_by": "deepseek",
+          "input_cost_per_1m_usd": 0.27,
+          "output_cost_per_1m_usd": 1.1
+        },
+        {
+          "id": "deepseek-reasoner",
+          "model": "deepseek/deepseek-reasoner",
+          "owned_by": "deepseek",
+          "input_cost_per_1m_usd": 0.55,
+          "output_cost_per_1m_usd": 2.19
+        }
+      ]
+    },
+    "openai": {
+      "updated": "2026-01-15",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "model": "openai/gpt-4o",
+          "input_cost_per_1m_usd": 2.5,
+          "output_cost_per_1m_usd": 10.0
+        },
+        {
+          "id": "gpt-4o-mini",
+          "model": "openai/gpt-4o-mini",
+          "input_cost_per_1m_usd": 0.15,
+          "output_cost_per_1m_usd": 0.6
+        },
+        {
+          "id": "o1",
+          "model": "openai/o1",
+          "input_cost_per_1m_usd": 15.0,
+          "output_cost_per_1m_usd": 60.0
+        },
+        {
+          "id": "o1-mini",
+          "model": "openai/o1-mini",
+          "input_cost_per_1m_usd": 3.0,
+          "output_cost_per_1m_usd": 12.0
+        }
+      ]
+    },
+    "groq": {
+      "updated": "2026-01-15",
+      "models": [
+        {
+          "id": "llama-3.3-70b-versatile",
+          "model": "meta/llama-3.3-70b-instruct",
+          "input_cost_per_1m_usd": 0.59,
+          "output_cost_per_1m_usd": 0.79
+        },
+        {
+          "id": "llama-3.1-8b-instant",
+          "model": "meta/llama-3.1-8b-instruct",
+          "input_cost_per_1m_usd": 0.05,
+          "output_cost_per_1m_usd": 0.08
+        },
+        {
+          "id": "mixtral-8x7b-32768",
+          "model": "mistralai/mixtral-8x7b",
+          "input_cost_per_1m_usd": 0.24,
+          "output_cost_per_1m_usd": 0.24
+        }
+      ]
+    },
+    "mistral": {
+      "updated": "2026-01-15",
+      "models": [
+        {
+          "id": "mistral-large-latest",
+          "model": "mistralai/mistral-large-2",
+          "input_cost_per_1m_usd": 2.0,
+          "output_cost_per_1m_usd": 6.0
+        },
+        {
+          "id": "mistral-small-latest",
+          "input_cost_per_1m_usd": 0.2,
+          "output_cost_per_1m_usd": 0.6
+        },
+        {
+          "id": "codestral-latest",
+          "model": "mistralai/codestral",
+          "input_cost_per_1m_usd": 0.3,
+          "output_cost_per_1m_usd": 0.9
+        }
+      ]
+    },
+    "anthropic": {
+      "updated": "2026-01-15",
+      "models": [
+        {
+          "id": "claude-3-5-sonnet-latest",
+          "model": "anthropic/claude-3.5-sonnet",
+          "input_cost_per_1m_usd": 3.0,
+          "output_cost_per_1m_usd": 15.0
+        },
+        {
+          "id": "claude-3-5-haiku-latest",
+          "model": "anthropic/claude-3.5-haiku",
+          "input_cost_per_1m_usd": 0.8,
+          "output_cost_per_1m_usd": 4.0
+        },
+        {
+          "id": "claude-3-opus-latest",
+          "model": "anthropic/claude-3-opus",
+          "input_cost_per_1m_usd": 15.0,
+          "output_cost_per_1m_usd": 75.0
+        }
+      ]
+    },
+    "nvidia": {
+      "updated": "2026-01-15",
+      "models": [
+        {
+          "id": "meta/llama-3.3-70b-instruct",
+          "model": "meta/llama-3.3-70b-instruct"
+        },
+        {
+          "id": "meta/llama-3.1-405b-instruct",
+          "model": "meta/llama-3.1-405b-instruct"
+        },
+        {
+          "id": "meta/llama-3.1-70b-instruct",
+          "model": "meta/llama-3.1-70b-instruct"
+        },
+        {
+          "id": "meta/llama-3.1-8b-instruct",
+          "model": "meta/llama-3.1-8b-instruct"
+        },
+        {
+          "id": "meta/llama-3.2-11b-vision-instruct",
+          "model": "meta/llama-3.2-11b-vision-instruct"
+        },
+        {
+          "id": "nvidia/nemotron-4-340b-instruct",
+          "model": "nvidia/nemotron-4-340b-instruct"
+        },
+        {
+          "id": "mistralai/mixtral-8x7b-instruct-v0.1",
+          "model": "mistralai/mixtral-8x7b"
+        },
+        {
+          "id": "mistralai/mixtral-8x22b-instruct-v0.1",
+          "model": "mistralai/mixtral-8x22b"
+        },
+        {
+          "id": "mistralai/codestral-22b-instruct-v0.1",
+          "model": "mistralai/codestral-22b"
+        },
+        {
+          "id": "google/gemma-2-27b-it",
+          "model": "google/gemma-2-27b-it"
+        },
+        {
+          "id": "google/gemma-2-9b-it",
+          "model": "google/gemma-2-9b-it"
+        },
+        {
+          "id": "microsoft/phi-4-mini-instruct",
+          "model": "microsoft/phi-4-mini-instruct"
+        },
+        {
+          "id": "microsoft/phi-3.5-moe-instruct",
+          "model": "microsoft/phi-3.5-moe-instruct"
+        },
+        {
+          "id": "qwen/qwen2.5-coder-32b-instruct",
+          "model": "qwen/qwen2.5-coder-32b-instruct"
+        },
+        {
+          "id": "databricks/dbrx-instruct",
+          "model": "databricks/dbrx-instruct"
+        },
+        {
+          "id": "ibm/granite-3.0-8b-instruct",
+          "model": "ibm/granite-3.0-8b-instruct"
+        },
+        {
+          "id": "z-ai/glm-5.1",
+          "model": "z-ai/glm-5.1"
+        },
+        {
+          "id": "z-ai/glm5",
+          "model": "z-ai/glm5"
+        },
+        {
+          "id": "z-ai/glm4.7",
+          "model": "z-ai/glm4.7"
+        }
+      ]
+    }
+  }
+}

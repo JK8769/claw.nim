@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "name": "anthropic",
+      "envKey": "ANTHROPIC_API_KEY",
+      "apiBase": "https://api.anthropic.com/v1",
+      "authHeader": "x-api-key",
+      "verifyPath": "/models",
+      "defaultModel": "claude-3-5-sonnet-latest"
+    },
+    {
+      "name": "deepseek",
+      "envKey": "DEEPSEEK_API_KEY",
+      "apiBase": "https://api.deepseek.com/v1",
+      "authHeader": "Authorization: Bearer",
+      "verifyPath": "/models",
+      "defaultModel": "deepseek-chat"
+    },
+    {
+      "name": "groq",
+      "envKey": "GROQ_API_KEY",
+      "apiBase": "https://api.groq.com/openai/v1",
+      "authHeader": "Authorization: Bearer",
+      "verifyPath": "/models",
+      "defaultModel": "llama-3.3-70b-versatile"
+    },
+    {
+      "name": "nvidia",
+      "envKey": "NVIDIA_API_KEY",
+      "apiBase": "https://integrate.api.nvidia.com/v1",
+      "authHeader": "Authorization: Bearer",
+      "verifyPath": "/models",
+      "defaultModel": "meta/llama-3.3-70b-instruct"
+    },
+    {
+      "name": "ollama",
+      "apiBase": "http://localhost:11434/v1",
+      "authHeader": "Authorization: Bearer",
+      "verifyPath": "/models",
+      "defaultModel": "llama3.2",
+      "local": true
+    },
+    {
+      "name": "OpenCode Go",
+      "envKey": "OPENCODE_GO_API_KEY",
+      "apiBase": "https://opencode.ai/zen/go/v1",
+      "authHeader": "Authorization: Bearer",
+      "verifyPath": "/models"
+    }
+  ]
+}
