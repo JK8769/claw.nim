@@ -1,5 +1,5 @@
 import std/[os, strutils, posix, json]
-import config, cli_admin, cli_providers, cli_onboard, cli_tts, protocol
+import config, cli_admin, cli_providers, cli_onboard, protocol
 
 type
   ServiceAction* = enum
@@ -11,7 +11,7 @@ type
 
 const
   lifecycleCmds = ["new", "run", "start", "stop", "restart", "status", "deploy", "remove", "list", "use", "export"]
-  configCmds = ["onboard", "provider", "channel", "agent", "plugin", "skill", "auth", "tts"]
+  configCmds = ["onboard", "provider", "channel", "agent", "plugin", "skill", "auth"]
 
 proc isLifecycleCmd(s: string): bool =
   for c in lifecycleCmds:
@@ -482,8 +482,6 @@ proc dispatchConfigCmd(name, cmd: string, rest: seq[string], asJson: bool): Serv
     return (saOutput, runCompetenciesCommand(cfg.workspacePath(), getNimClawDir(), rest))
   of "auth":
     return (saOutput, runAuthCommand(rest, asJson))
-  of "tts":
-    return (saOutput, runTtsCommand(rest))
   else:
     return (saOutput, "Unknown command: " & cmd)
 
@@ -707,7 +705,6 @@ Per-service:
   [Name] plugin <cmd>     Manage plugins (list, add, remove)
   [Name] skill <cmd>      Manage skills (list, install, remove, show)
   [Name] auth <cmd>       Manage API keys (list, set, remove)
-  [Name] tts <cmd>        Manage TTS models (list, add, remove, test)
 
 Examples:
   nimclaw service new MyCompany

@@ -63,7 +63,7 @@ type
     path*: string            ## absolute dir
     owner*: string           ## SuperAdmin Person's name (from @graph)
     agents*: int             ## declared agent count (from BASE.json)
-    skills*: int             ## count of Tier 2 skills in workspace/lab/skills
+    skills*: int             ## count of Tier 2 skills in workspace/skills
     providers*: seq[string]  ## provider names configured
     description*: string     ## from @graph Corporate entity
     modified*: Time          ## mtime of BASE.nims (or BASE.json if nims missing)
@@ -195,11 +195,14 @@ proc inspectCompany*(dir: string): CompanyInfo =
       result.valid = true
     except: discard
 
-  # Skill count from workspace/lab/skills (Tier 2 only — the admin's scope)
-  let skillsDir = dir / "workspace" / "lab" / "skills"
-  if dirExists(skillsDir):
-    for kind, _ in walkDir(skillsDir):
-      if kind == pcDir: inc result.skills
+  # Skill count from workspace/skills (Tier 2 only — the admin's scope).
+  # Also scan legacy workspace/lab/skills for companies pre-refactor.
+  for sd in [dir / "workspace" / "skills",
+             dir / "workspace" / "lab" / "skills"]:
+    if dirExists(sd):
+      for kind, _ in walkDir(sd):
+        if kind == pcDir: inc result.skills
+      break   # only count once, current path wins
 
   # Total LLM tokens across all agents — summed from activity.jsonl files.
   # Each inference entry has shape: {"action":"inference","tokens":N,...}

@@ -60,9 +60,6 @@ proc emitChannelMsg*(se: StatusEmitter, channel, direction, sender: string) =
 proc emitToolCall*(se: StatusEmitter, agent, tool: string, durationMs: int) =
   se.emit(seToolCall, %*{"agent": agent, "tool": tool, "duration_ms": durationMs})
 
-proc emitTts*(se: StatusEmitter, agent, voice: string, durationS: float) =
-  se.emit(seTts, %*{"agent": agent, "voice": voice, "duration_s": durationS})
-
 proc emitGatewayStart*(se: StatusEmitter, pid: int) =
   se.emit(seGatewayStart, %*{"pid": pid})
 

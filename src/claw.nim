@@ -133,7 +133,7 @@ workspace/offices/*/sessions/
 workspace/offices/*/cache/
 
 # Per-machine compiled binaries (consumer rebuilds)
-workspace/lab/mcp/*/bin/
+workspace/skills/*/bin/
 
 # Editor / OS noise
 .DS_Store
@@ -514,11 +514,11 @@ when isMainModule:
         echo "       (otherwise the new company would collide with " & srcCompany & ")"
         quit(1)
       # Rewrite `skill "<name>"` → `skill "claw:<src>/<name>"` for any skill
-      # that lives in <src>'s workspace/lab/skills (company-tier). Foundation
+      # that lives in <src>'s workspace/skills (company-tier). Foundation
       # skills and external refs are left alone. This pins the new company
       # to <src>'s actual skill content, preserving any customizations
       # instead of silently falling back to distribution defaults.
-      let srcSkillsDir = srcDir / "workspace" / "lab" / "skills"
+      let srcSkillsDir = srcDir / "workspace" / "skills"
       var src = readFile(srcBase)
       var modified = ""
       var rewrittenCount = 0
@@ -1860,7 +1860,7 @@ when isMainModule:
       echo "Got: '" & name & "'"
       quit(1)
     let companyDir = getNimClawDir()
-    let labDir = companyDir / "workspace" / "lab" / "skills"
+    let labDir = companyDir / "workspace" / "skills"
     let skillDir = labDir / name
     if dirExists(skillDir):
       echo "Error: skill already exists at " & skillDir
@@ -1937,7 +1937,7 @@ when isMainModule:
   elif args.isCommand("skill", "remove"):
     let name = $args["<name>"]
     let companyDir = getNimClawDir()
-    let skillDir = companyDir / "workspace" / "lab" / "skills" / name
+    let skillDir = companyDir / "workspace" / "skills" / name
     if not dirExists(skillDir):
       # Is the name visible at another tier? Give a helpful error.
       let all = listAllSkills(companyDir)
@@ -1986,7 +1986,7 @@ when isMainModule:
     # Find the skill's SKILL.md across the standard tiers
     var skillMd = ""
     for root in [
-      companyDir / "workspace" / "lab" / "skills",
+      companyDir / "workspace" / "skills",
       companyDir / "foundation" / "skills",
       companyDir / "support" / "skills",
     ]:
@@ -1996,7 +1996,7 @@ when isMainModule:
         break
     if skillMd.len == 0:
       echo "Error: no skill '" & name & "' installed in this company."
-      echo "Searched: workspace/lab/skills, foundation/skills, support/skills"
+      echo "Searched: workspace/skills, foundation/skills, support/skills"
       quit(1)
 
     # Minimal frontmatter parse: find `requires.env:` list between --- markers.
@@ -2144,7 +2144,7 @@ when isMainModule:
       quit(1)
     # Also require the skill dir to exist — can't share a skill that isn't
     # here.
-    let skillDir = companyDir / "workspace" / "lab" / "skills" / name
+    let skillDir = companyDir / "workspace" / "skills" / name
     if promote and not dirExists(skillDir):
       echo "Error: no skill '" & name & "' at " & skillDir
       echo "       Create it first with `claw skill new " & name & "`."
@@ -2211,9 +2211,9 @@ when isMainModule:
     var asAlias = $args["--as"]
     if asAlias == "nil": asAlias = ""
     let companyDir = getNimClawDir()
-    let destLab = companyDir / "workspace" / "lab" / "skills"
+    let destLab = companyDir / "workspace" / "skills"
     if not dirExists(destLab):
-      echo "Error: no lab at " & destLab & " — run `claw company create` first"
+      echo "Error: no skills dir at " & destLab & " — run `claw company create` first"
       quit(1)
     createDir(destLab)
 
@@ -2235,7 +2235,7 @@ when isMainModule:
       let srcCompany = parts[0]
       let srcSkill = parts[1]
       let srcRoot = companyDirForName(srcCompany)
-      let srcSkillDir = srcRoot / "workspace" / "lab" / "skills" / srcSkill
+      let srcSkillDir = srcRoot / "workspace" / "skills" / srcSkill
       if not dirExists(srcSkillDir):
         echo "Error: no skill at " & srcSkillDir
         echo "Source company '" & srcCompany & "' does not have '" & srcSkill & "' in its lab."
@@ -2399,6 +2399,15 @@ when isMainModule:
                       echo "  ⚠ npm install failed — install manually: npm install -g " & pkg
                     elif bin.len > 0:
                       echo "  ✓ " & bin & " available"
+                of "nimble_install":
+                  let pkg = step{"package"}.getStr("")
+                  let bin = step{"binary"}.getStr("")
+                  if pkg.len > 0:
+                    echo "  ⟳ nimble install -y " & pkg
+                    if execCmd("nimble install -y " & quoteShell(pkg)) != 0:
+                      echo "  ⚠ nimble install failed — install manually: nimble install " & pkg
+                    elif bin.len > 0:
+                      echo "  ✓ " & bin & " available"
                 of "cli_install_skills":
                   let cliCmd = step{"command"}.getStr("")
                   let upstreamOut = step{"upstream_output"}.getStr("")
@@ -2453,14 +2462,99 @@ when isMainModule:
       echo "Installed '" & destName & "' from " & src
 
     else:
-      echo "Error: unrecognized reference: " & refStr
-      echo ""
-      echo "Supported forms:"
-      echo "  claw:<company>/<skill>[@<version|id>]   — cross-company"
-      echo "  github:owner/repo[/subpath][@ref]        — github skill or mono-repo"
-      echo "  https://... | git@... | *.git            — git clone"
-      echo "  ./path | /abs/path | ~/path              — local directory"
-      quit(1)
+      # Bare name — look up a registered recipe in res/skills.json.
+      # Used for skills distributed as nimble/pip packages rather than
+      # cloneable git trees (e.g. `claw skill install tts` → tts.nim).
+      # The recipe drives: dependency install, SKILL.md scaffold, and
+      # optional bin/<name> MCP-server shim pointing at an external binary.
+      let mfPath = prov_registry.findDistributionResource("res" / "skills.json")
+      var recipe: JsonNode = nil
+      if mfPath.len > 0 and fileExists(mfPath):
+        try:
+          let mf = parseJson(readFile(mfPath))
+          let entries = mf{"skills"}
+          if entries != nil and entries.hasKey(refStr):
+            recipe = entries[refStr]
+        except: discard
+
+      if recipe == nil:
+        echo "Error: unrecognized reference: " & refStr
+        echo ""
+        echo "Supported forms:"
+        echo "  claw:<company>/<skill>[@<version|id>]   — cross-company"
+        echo "  github:owner/repo[/subpath][@ref]        — github skill or mono-repo"
+        echo "  https://... | git@... | *.git            — git clone"
+        echo "  ./path | /abs/path | ~/path              — local directory"
+        echo "  <bare-name>                              — registered recipe (see res/skills.json)"
+        quit(1)
+
+      let destName = block:
+        if asAlias.len > 0: asAlias
+        else:
+          let n = recipe{"name"}.getStr("")
+          if n.len > 0: n else: refStr
+      let destSkillDir = destLab / destName
+      if dirExists(destSkillDir):
+        echo "Error: '" & destName & "' already installed"
+        quit(1)
+      createDir(destSkillDir)
+      echo "→ Installing '" & destName & "' from registered recipe"
+
+      let supportDir = companyDir / "support" / destName
+      createDir(supportDir)
+      let envPath = companyDir / ".env"
+
+      let steps = recipe{"bootstrap"}
+      if steps != nil and steps.kind == JArray:
+        for step in steps:
+          let kind = step{"kind"}.getStr("")
+          case kind
+          of "nimble_install":
+            let pkg = step{"package"}.getStr("")
+            let bin = step{"binary"}.getStr("")
+            if pkg.len > 0:
+              echo "  ⟳ nimble install -y " & pkg
+              if execCmd("nimble install -y " & quoteShell(pkg)) != 0:
+                echo "  ⚠ nimble install failed — install manually: nimble install " & pkg
+                removeDir(destSkillDir)
+                quit(1)
+              elif bin.len > 0:
+                echo "  ✓ " & bin & " available"
+          of "npm_install":
+            let pkg = step{"package"}.getStr("")
+            let bin = step{"binary"}.getStr("")
+            if pkg.len > 0:
+              echo "  ⟳ npm install -g " & pkg
+              if execCmd("npm install -g " & quoteShell(pkg)) != 0:
+                echo "  ⚠ npm install failed — install manually: npm install -g " & pkg
+              elif bin.len > 0:
+                echo "  ✓ " & bin & " available"
+          else:
+            echo "  ! Unknown bootstrap kind: " & kind
+
+      let skillMd = recipe{"skill_md"}.getStr("")
+      if skillMd.len > 0:
+        writeFile(destSkillDir / "SKILL.md", skillMd)
+        echo "  + wrote SKILL.md"
+
+      let mcpExec = recipe{"mcp_exec"}.getStr("")
+      if mcpExec.len > 0:
+        let binDir = destSkillDir / "bin"
+        createDir(binDir)
+        let shimPath = binDir / destName
+        writeFile(shimPath, "#!/bin/sh\nexec " & mcpExec & " \"$@\"\n")
+        discard execShellCmd("chmod +x " & quoteShell(shimPath))
+        echo "  + wrote MCP shim: bin/" & destName & " → " & mcpExec
+
+      let runtimeEnv = recipe{"runtime_env"}
+      if runtimeEnv != nil and runtimeEnv.kind == JObject:
+        for varName, tmplNode in runtimeEnv.pairs:
+          let tmpl = tmplNode.getStr("")
+          var value = tmpl.replace("{company_support}", companyDir / "support")
+          writeEnvValue(envPath, varName, value)
+          echo "  + env " & varName & "=" & value
+
+      echo "✓ Installed '" & destName & "'."
 
   # Doctor
   elif args["doctor"]:

@@ -6,8 +6,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, tts, learn_skill, provider_auth, model_list]
-import ../tts/engine as tts_engine
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list]
 import ../services/cron as cron_service
 import curly
 import ../lib/malebolgia
@@ -894,7 +893,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let loader = skills_loader.newSkillsLoader(
     workspace,
     workspace / ".nimclaw" / "workspace" / "competencies",
-    getNimClawDir() / "workspace" / "lab" / "skills",   # Tier 2: company lab
+    getNimClawDir() / "workspace" / "skills",   # Tier 2: company skills
     getNimClawDir() / "foundation" / "skills",           # Tier 1: foundation snapshot
     getEnv("OPENCLAW_EXTENSIONS", getHomeDir() / ".openclaw" / "extensions"),
     workstationSkillsDir
@@ -982,16 +981,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let installer = newSkillInstaller(officeDir)
   regTagged(newSkillInstallTool(installer), ["admin", "skills"], "install skill plugins from URL or path")
 
-  # --- TTS ---
-  let ttsModelPath = getEnv("NIMCLAW_TTS_MODEL", "")
-  let ttsEng = newTTSEngine()
-  if ttsModelPath.len > 0 and fileExists(ttsModelPath):
-    try:
-      ttsEng.loadModel(ttsModelPath)
-      infoCF("tts", "TTS engine loaded", {"model": ttsModelPath, "voices": $ttsEng.listVoices().len}.toTable)
-    except Exception as e:
-      errorCF("tts", "Failed to load TTS model", {"path": ttsModelPath, "error": e.msg}.toTable)
-  regTagged(newTTSTool(ttsEng, officeDir), ["audio", "tts", "voice", "speech"], "synthesize speech from text")
+  # TTS/STT is provided externally by the tts.nim nimble package.
+  # Install via `claw skill install tts` — scaffolds workspace/skills/tts/
+  # with a bin/tts shim that execs `tts_cli serve` as an MCP stdio server.
+  # The generic MCP scan below picks it up; no in-tree engine or tool registration.
 
   let sessionsManager = newSessionManager(officeDir / "sessions")
   let contextBuilder = newContextBuilder(officeDir, workspace, cfg.agents.named)
@@ -1040,19 +1033,23 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newQueryGraphTool(contextBuilder), ["admin", "graph", "core"], "query world graph entities and relations")
 
   # Phase 400: Scan Tier 1 (foundation), Tier 2 (company), and system-wide MCPs.
-  # Tier 1 Foundation:  <companyDir>/foundation/mcp/        — from claw distribution
-  # Tier 2 Company lab: <companyDir>/workspace/lab/mcp/     — this company's opt-ins
-  # System-wide:        ~/.nimclaw/os/, ~/.nimclaw/mcp/tools/
-  # Legacy Tier 1 path: <companyDir>/base/mcp/              (scanned with warning)
-  # Legacy Tier 2 paths (deprecated, scanned with warning):
-  #   <companyDir>/lab/mcp/      (pre-move: lab at company root)
-  #   <companyDir>/mcp/          (oldest: before the lab/ directory existed)
+  #
+  # New layout (post skill-as-package refactor):
+  #   Tier 2 Company:  <companyDir>/workspace/skills/<name>/bin/<binname>
+  #                    (binaries live inside the skill's own directory)
+  #   Tier 1 Found.:   <companyDir>/foundation/mcp/<name>/bin/<binname>
+  #   System-wide:     ~/.nimclaw/os/, ~/.nimclaw/mcp/tools/
+  #
+  # Legacy paths (deprecated, scanned with warning for back-compat):
+  #   <companyDir>/workspace/lab/mcp/   (pre-skill-as-package)
+  #   <companyDir>/lab/mcp/, <companyDir>/mcp/   (older iterations)
+  #   <companyDir>/base/mcp/   (pre-foundation-rename)
   let companyDir = getNimClawDir()
-  let companyLabMcp = companyDir / "workspace" / "lab" / "mcp"
+  let companySkillsDir = companyDir / "workspace" / "skills"
   let foundationMcp = companyDir / "foundation" / "mcp"
   let nimclawBase = getHomeDir() / ".nimclaw"
   var searchDirs: seq[(string, string)] = @[  # (path, source-label)
-    (companyLabMcp, "company"),
+    (companySkillsDir, "company"),         # each skill's bin/ is scanned below
     (foundationMcp, "foundation"),
     (nimclawBase / "os", "system"),
     (nimclawBase / "mcp" / "tools", "system")
@@ -1065,13 +1062,14 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       {"legacy_path": legacyBaseMcp, "new_path": foundationMcp}.toTable)
   # Legacy Tier 2 paths
   for (legacyPath, label) in @[
+    (companyDir / "workspace" / "lab" / "mcp", "company-legacy-workspace-lab"),
     (companyDir / "lab" / "mcp", "company-legacy-root-lab"),
     (companyDir / "mcp", "company-legacy-root")
   ]:
     if dirExists(legacyPath):
       searchDirs.add((legacyPath, label))
-      warnCF("agent", "Company MCP tools at legacy path — move to <companyDir>/workspace/lab/mcp/",
-        {"legacy_path": legacyPath, "new_path": companyLabMcp}.toTable)
+      warnCF("agent", "Company MCP tools at legacy path — move binaries to <companyDir>/workspace/skills/<name>/bin/",
+        {"legacy_path": legacyPath, "new_path": companySkillsDir}.toTable)
 
   for (baseDir, srcLabel) in searchDirs:
     if not dirExists(baseDir): continue

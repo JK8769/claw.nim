@@ -1,8 +1,22 @@
 {
   "schema_version": 1,
-  "description": "Bootstrap recipes for third-party skills that need more than a simple git clone — e.g. npm packages, CLI-driven sub-skill installs, runtime env var wiring. Keyed by the install ref the user types.",
+  "description": "Bootstrap recipes for skills that need more than a simple git clone — e.g. npm/nimble packages, CLI-driven sub-skill installs, env var wiring, MCP server shim generation. Keyed by the install ref the user types (github:..., claw:..., or a bare skill name for registered built-ins).",
 
-  "bootstrap": {
+  "skills": {
+    "tts": {
+      "name": "tts",
+      "description": "Text-to-speech (Kokoro) and speech-to-text (Whisper/Qwen3) with full-duplex converse mode. Native Nim engine, no Python, no ONNX. Shipped as a separate nimble package — this skill wraps `tts_cli serve` as an MCP stdio server.",
+      "bootstrap": [
+        {
+          "kind": "nimble_install",
+          "package": "https://github.com/JK8769/tts.nim",
+          "binary": "tts_cli"
+        }
+      ],
+      "mcp_exec": "tts_cli serve",
+      "skill_md": "---\nname: tts\nversion: 0.2.0\ndescription: Text-to-speech, speech-to-text, and full-duplex voice conversation via tts.nim (Kokoro TTS, Whisper/Qwen3 ASR, native Nim, no Python).\nrequires_tools: []\n---\n\n# tts\n\nVoice I/O for agents. Wraps the [tts.nim](https://github.com/JK8769/tts.nim) nimble package via its built-in MCP stdio server (`tts_cli serve`).\n\n## Capabilities\n\n- **Synthesis** — Kokoro multi-language voices (54+ English, plus Chinese). Mix voices with `voice1+voice2:weight` syntax. Speed control 0.5–2.0x.\n- **Recognition** — Whisper (GGML) or Qwen3-ASR (MLX on Apple Silicon). Auto language detection.\n- **Converse** — full-duplex listening with barge-in. VAD-gated. 24kHz output, 16kHz input.\n- **Output** — write WAV file, stream raw PCM, or play through the default audio device.\n\n## Typical tools exposed via MCP\n\n- `synth` — text → WAV file\n- `speak` — text → speaker (play immediately)\n- `listen` — mic → transcribed text\n- `converse_start` / `converse_recv` / `converse_stop` — duplex session\n- `voices` / `models` — enumerate what's available\n\n## Install requirements\n\n`tts_cli` must be on PATH. `claw skill install tts` does this for you via `nimble install https://github.com/JK8769/tts.nim`. On Apple Silicon, the nimble install also builds MLX and downloads Kokoro MLX q4 models (~1.5 GB). On other platforms, it builds ggml and downloads Kokoro GGUF q5 models (~350 MB).\n\nModels land in the nimble package's `res/models/` — not inside the claw workspace.\n\n## Usage in a ClawDSL agent\n\n```nim\nagent \"Lexi\":\n  uses \"tts\"\n```\n\nNo env vars required. The MCP server picks defaults; agents can override per call.\n"
+    },
+
     "github:AnyGenIO/anygen-suite-skill/anygen-suite": {
       "name": "anygen",
       "description": "AnyGen content creation suite — generates slides, docs, diagrams, etc. via www.anygen.io.",

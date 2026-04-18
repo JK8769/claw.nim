@@ -14,7 +14,7 @@ type
     ## default).
     workspace*: string
     projectCompetencies*: string   ## workspace-level competencies (shared by all offices)
-    companySkills*: string         ## Tier 2: <co>/workspace/lab/skills/
+    companySkills*: string         ## Tier 2: <co>/workspace/skills/
     foundationSkills*: string      ## Tier 1: <co>/foundation/skills/ (snapshot of claw distribution)
     openClawExtensions*: string    ## third-party OpenClaw plugins
     workstationSkills*: string     ## Tier 3: <officeDir>/workstation/skills/
@@ -114,9 +114,12 @@ proc listSkills*(sl: SkillsLoader): seq[SkillInfo] =
   if sl.companySkills.len > 0:
     findSkillsRecursive(sl.companySkills, "company", result, 0)
     # Backward compat — scan previous-generation Tier 2 paths.
-    # companySkills = <co>/workspace/lab/skills/ (current).
-    let companyRoot = sl.companySkills.parentDir.parentDir.parentDir  # strip /workspace/lab/skills
-    for legacy in [companyRoot / "lab" / "skills", companyRoot / "skills"]:
+    # Current: <co>/workspace/skills/
+    # Legacy:  <co>/workspace/lab/skills/ (pre-lab-rename), <co>/lab/skills/, <co>/skills/
+    let companyRoot = sl.companySkills.parentDir.parentDir  # strip /workspace/skills
+    for legacy in [companyRoot / "workspace" / "lab" / "skills",
+                   companyRoot / "lab" / "skills",
+                   companyRoot / "skills"]:
       if legacy != sl.companySkills and dirExists(legacy):
         findSkillsRecursive(legacy, "company-legacy", result, 0)
   if sl.foundationSkills.len > 0:

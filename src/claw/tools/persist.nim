@@ -103,10 +103,10 @@ method execute*(t: PersistSkillTool, args: Table[string, JsonNode]): Future[stri
   let skillName = args["skill_name"].getStr().strip()
   let sourcePath = args["source_path"].getStr().strip()
   
-  # Promote to Tier 2 company lab. This is the graduation destination from
+  # Promote to Tier 2 company skills. This is the graduation destination from
   # a Tier 3 workstation skill — puts a curated copy at the company level
   # where every agent with matching `uses` in ClawDSL will see it.
-  let targetDir = getNimClawDir() / "workspace" / "lab" / "skills" / skillName
+  let targetDir = getNimClawDir() / "workspace" / "skills" / skillName
   if not dirExists(targetDir):
     createDir(targetDir)
     

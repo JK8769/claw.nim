@@ -25,7 +25,7 @@ type
 
 proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq[NamedAgentConfig] = @[]): ContextBuilder =
   let foundationSkillsDir = getNimClawDir() / "foundation" / "skills"        # Tier 1: snapshot from claw distribution
-  let companySkillsDir = getNimClawDir() / "workspace" / "lab" / "skills"    # Tier 2: company opt-ins
+  let companySkillsDir = getNimClawDir() / "workspace" / "skills"    # Tier 2: company opt-ins
   let openClawExtensionsDir = getOpenClawDir() / "extensions"
 
   let projectCompetencies = projectWorkspace / "competencies"

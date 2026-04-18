@@ -230,7 +230,7 @@ proc runAuthCommand*(args: seq[string], asJson: bool = false): string =
     # 2. Scan skill configs and support-tool configs for ${...} references.
     # support/ holds runtime state from external tools; some (older integrations)
     # may drop JSON configs there referencing env vars.
-    let skillsDir = getNimClawDir() / "workspace" / "lab" / "skills"
+    let skillsDir = getNimClawDir() / "workspace" / "skills"
     let supportDir = getNimClawDir() / "support"
     for dir in [skillsDir, supportDir]:
       if dirExists(dir):

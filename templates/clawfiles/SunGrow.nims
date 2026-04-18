@@ -13,7 +13,7 @@
 #   2. Compile the sungrow MCP server:
 #        nim c -d:ssl -d:release --threads:on --mm:orc \
 #          --path:src/claw --path:src \
-#          -o:$HOME/.nimclaw-SunGrow/workspace/lab/mcp/sungrow/bin/sungrow \
+#          -o:$HOME/.nimclaw-SunGrow/workspace/skills/sungrow/bin/sungrow \
 #          skills/sungrow/src/sungrow.nim
 #   3. Fill ~/.nimclaw-SunGrow/.env with your iSolarCloud credentials
 #   4. NIMCLAW_DIR=~/.nimclaw-SunGrow claw gateway --debug

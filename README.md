@@ -111,7 +111,7 @@ One command. Every side effect scoped to the active company.
 
 ```
 foundation/                                     shipped with the claw distribution
-workspace/lab/skills/                           company-tier skills (shared across agents)
+workspace/skills/                               company-tier skills (shared across agents)
 workspace/offices/<agent>/workstation/skills/   agent-personal
 ```
 

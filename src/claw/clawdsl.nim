@@ -764,7 +764,7 @@ proc populateFoundation(foundationDir: string) =
   ## Copy every foundation-tier skill from its `path` (res/foundation/<name>/
   ## by convention) into <co>/foundation/skills/<name>/. MIRROR semantics —
   ## existing destination content is overwritten. Users shouldn't edit
-  ## foundation/ directly; to customize, copy into workspace/lab/ instead.
+  ## foundation/ directly; to customize, copy into workspace/skills/ instead.
   let reg = readFoundationRegistry()
   let skills = reg{"skills"}
   if skills == nil or skills.kind != JObject: return
@@ -801,7 +801,7 @@ proc readSkillVersionFromDir(skillDir: string): string =
       return stripped[8..^1].strip().strip(chars = {'"', '\''})
 
 proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]) =
-  ## Install a declared Tier 2 skill from ClawDSL into workspace/lab/skills/.
+  ## Install a declared Tier 2 skill from ClawDSL into workspace/skills/.
   ## tier=foundation skills are skipped — they're already in foundation/ and
   ## don't need to live twice. URL-sourced skills are cloned; bundled tier=lab
   ## skills are copied.
@@ -825,7 +825,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
     let srcCompany = body[0 ..< slash]
     leafName = body[slash + 1 .. ^1]
     bundledLocal = getHomeDir() / (".nimclaw-" & srcCompany) /
-                   "workspace" / "lab" / "skills" / leafName
+                   "workspace" / "skills" / leafName
     if not dirExists(bundledLocal):
       echo "  ! claw:" & srcCompany & "/" & leafName &
            " — source company doesn't have this skill in its lab"
@@ -1238,15 +1238,17 @@ proc hashFileShort(path: string): string =
 proc writeLockfile(s: ClawSpec, serviceDir: string) =
   ## Write claw.lock capturing resolved versions and hashes of declared skills.
   var skillsArr = newJArray()
-  # Skills live under workspace/lab/ at Tier 2. Fall back to older layouts
-  # for backward compat when computing hashes of legacy deployments.
+  # Tier 2 skills live under workspace/skills/<name>/. Fall back to older
+  # layouts for back-compat during migration.
   let workspace = serviceDir / "workspace"
-  var skillsDir = workspace / "lab" / "skills"
+  var skillsDir = workspace / "skills"
   if not dirExists(skillsDir):
-    let legacy1 = serviceDir / "lab" / "skills"   # previous iteration
-    let legacy2 = serviceDir / "skills"            # original
+    let legacy1 = workspace / "lab" / "skills"    # pre-Tier2-rename
+    let legacy2 = serviceDir / "lab" / "skills"   # previous iteration
+    let legacy3 = serviceDir / "skills"            # original
     if dirExists(legacy1): skillsDir = legacy1
     elif dirExists(legacy2): skillsDir = legacy2
+    elif dirExists(legacy3): skillsDir = legacy3
   for sk in s.skills:
     let skillPath = skillsDir / sk.name
     let skillMd = skillPath / "SKILL.md"
@@ -1385,25 +1387,24 @@ proc build*(s: var ClawSpec) =
   echo "  Target: " & serviceDir
 
   # 1. Create directory structure — three tiers, physically visible:
-  #   foundation/      Tier 1  — auto-populated from the claw distribution (universal)
-  #   workspace/lab/   Tier 2  — this company's curated opt-ins (ClawDSL declares these)
+  #   foundation/         Tier 1  — auto-populated from the claw distribution (universal)
+  #   workspace/skills/   Tier 2  — this company's curated opt-ins (ClawDSL declares these)
   #   workspace/offices/<a>/workstation/
-  #                    Tier 3  — agent-authored at runtime
+  #                       Tier 3  — agent-authored at runtime
   # Top-level is config (BASE.*, .env, claw.lock) + runtime state (channels/,
   # logs/, support/). All CONTENT lives under foundation/ or workspace/.
   mkDir serviceDir
   mkDir workspace
   # Tier 1 "Foundation" — what you build on: universal skills from the claw
-  # distribution. Mirror, not editable — to customize, copy into workspace/lab/.
+  # distribution. Mirror, not editable — to customize, copy into workspace/skills/.
   mkDir serviceDir / "foundation"
   mkDir serviceDir / "foundation" / "skills"
   mkDir serviceDir / "foundation" / "mcp"
   mkDir serviceDir / "foundation" / "script"
   # Tier 2 "Company Lab" — shared across all agents in the company
-  mkDir workspace / "lab"
-  mkDir workspace / "lab" / "skills"
-  mkDir workspace / "lab" / "mcp"
-  mkDir workspace / "lab" / "script"
+  # Tier 2 company-shared skills. Each skill is a self-contained package:
+  # workspace/skills/<name>/{SKILL.md, src/, scripts/, bin/}
+  mkDir workspace / "skills"
   # Operational state (not workspace content):
   #   channels/ — per-channel session state (auth tokens, webhook queues)
   #   logs/     — gateway and tool invocation logs
@@ -1416,7 +1417,7 @@ proc build*(s: var ClawSpec) =
   # 1b. Populate Tier 1 foundation/ from the claw distribution.
   # Always refreshed on every `claw create` — users should never edit
   # foundation/ directly; to customize, copy a foundation skill into
-  # workspace/lab/ and edit there.
+  # workspace/skills/ and edit there.
   populateFoundation(serviceDir / "foundation")
   for a in s.agents:
     let office = workspace / "offices" / a.name.toLowerAscii
@@ -1443,12 +1444,12 @@ proc build*(s: var ClawSpec) =
   #    foundation/ and skipped for copy — they already live there.
   let foundationNames = foundationSkillNames()
   for sk in s.skills:
-    installSkill(sk, workspace / "lab" / "skills", foundationNames)
+    installSkill(sk, workspace / "skills", foundationNames)
 
   # 4b. Resolve per-agent capabilities. Search lab first (customizations),
   #     then foundation (distribution default) — lab shadows foundation on collision.
   resolveAgentCapabilities(s, @[
-    workspace / "lab" / "skills",
+    workspace / "skills",
     serviceDir / "foundation" / "skills"
   ])
 

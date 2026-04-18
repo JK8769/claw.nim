@@ -13,7 +13,6 @@ type
     seAgentStatus = "agent_status"
     seChannelMsg = "channel_msg"
     seToolCall = "tool_call"
-    seTts = "tts"
     seGatewayStart = "gateway_start"
     seGatewayStop = "gateway_stop"
 

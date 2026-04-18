@@ -94,11 +94,13 @@ proc listAllSkills*(companyDir: string): seq[SkillMeta] =
   # Legacy foundation path (pre-rename): <co>/base/skills/
   result.add(scanSkillsDir(companyDir / "base" / "skills", "foundation-legacy"))
 
-  # Tier 2 Company — this company's lab
-  result.add(scanSkillsDir(companyDir / "workspace" / "lab" / "skills", "company"))
-  # Legacy company paths:
-  #   <co>/lab/skills/   — before the lab/ → workspace/lab/ move
-  #   <co>/skills/        — before lab/ existed at all
+  # Tier 2 Company — this company's curated opt-ins (skill-as-package)
+  result.add(scanSkillsDir(companyDir / "workspace" / "skills", "company"))
+  # Legacy company paths (scanned for back-compat):
+  #   <co>/workspace/lab/skills/  — before the lab/ → workspace/skills/ rename
+  #   <co>/lab/skills/            — before workspace/ existed at top level
+  #   <co>/skills/                — before lab/ existed at all
+  result.add(scanSkillsDir(companyDir / "workspace" / "lab" / "skills", "company-legacy"))
   result.add(scanSkillsDir(companyDir / "lab" / "skills", "company-legacy"))
   result.add(scanSkillsDir(companyDir / "skills", "company-legacy"))
 

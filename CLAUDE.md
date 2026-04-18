@@ -47,7 +47,7 @@ No sockets between Claw and Zen.
 ### 3-Tier Capability Model
 
 - **System** — built-in tools compiled into `claw` (`src/claw/tools/`). Bundled skills shipped with the distribution at `skills/` are selected into Tier 2 by the company's ClawDSL.
-- **Company** — declared in ClawDSL, installed at `~/.nimclaw-<Co>/workspace/lab/{skills,mcp,script}/`. Per-agent access via `uses "skill-name"` in `.nims`. MCP servers compiled into `workspace/lab/mcp/<name>/bin/<name>` are auto-loaded for all agents.
+- **Company** — declared in ClawDSL, installed at `~/.nimclaw-<Co>/workspace/skills/<name>/`. Each skill is a self-contained package — `SKILL.md`, `src/`, `scripts/`, `bin/` all under one folder. Per-agent access via `uses "skill-name"` in `.nims`. MCP servers compiled to `workspace/skills/<name>/bin/<name>` are auto-loaded for all agents.
 - **Workstation** — agent-authored at runtime under `workspace/offices/<agent>/workstation/{skills,mcp,script}/`. Private to the authoring agent until a human graduates them to Tier 2.
 
 ### SKILL.md Schema
