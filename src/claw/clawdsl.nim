@@ -1524,6 +1524,10 @@ proc build*(s: var ClawSpec) =
     let office = workspace / "offices" / a.name.toLowerAscii
     mkDir office
     mkDir office / "mail"
+    # Three time-axes under every office: memory (past, JSONL store),
+    # sessions (present, per-chat history), notes (future, free-form).
+    mkDir office / "memory"
+    mkDir office / "sessions"
     mkDir office / "notes"
     # Scaffold workstation/ for agents allowed to author skills & forge tools
     if a.workstation:

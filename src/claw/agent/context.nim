@@ -339,9 +339,10 @@ $1
 $2
 
 ## Workspace
-Your workspace is at: $3
-- Memory: $3/memory/MEMORY.md
-- Daily Notes: $3/memory/YYYYMM/YYYYMMDD.md
+Your office is at: $3
+- Memory (past, searchable JSONL): use the `memory` tool — do NOT write to files directly
+- Sessions (present): $3/sessions
+- Notes (future): $3/notes
 - Skills: $3/skills/{skill-name}/SKILL.md
 
 $4
@@ -354,7 +355,7 @@ $4
 
 3. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
 
-4. **Memory** - When remembering something, write to $3/memory/MEMORY.md""".format(now, runtime, workspacePath, toolsSection)
+4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(now, runtime, workspacePath, toolsSection)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
