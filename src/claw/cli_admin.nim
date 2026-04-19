@@ -912,9 +912,10 @@ proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|show|merge|invite|register> [args]\n" &
-           "  list     — table of every human identity\n" &
+    return "Usage: claw user <list|show|trust|merge|invite|register> [args]\n" &
+           "  list     — table of every human identity (no trust — see `trust`)\n" &
            "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
+           "  trust    — N×M trust matrix (agents → persons)\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -927,12 +928,16 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
   if graph == nil:
     return "Error: couldn't load the company graph from " & workspace
 
+  # Visual-width padding — alignLeft counts bytes, so the em-dash
+  # (3 bytes, 1 column) misaligns placeholder cells.
+  proc pad(s: string, width: int): string =
+    s & spaces(max(0, width - s.runeLen))
+
   if subcmd == "list":
-    # Columns split the four-axis schema: PERMISSION is declared on the
-    # person block; ROLE(rel) comes from whatever the first agent calls
-    # this person in its `reportsTo`/`serves` annotations. Seeing "—"
-    # in either column flags a gap worth fixing.
-    type Row = tuple[ncId, name, perm, relRole: string, trust: int, idents: string]
+    # Identity-level view only. Trust is per-edge (agent → person), so a
+    # single TRUST cell would collapse an N×M matrix into a lossy max.
+    # For trust, use `claw user trust`; for one user's edges, `user show`.
+    type Row = tuple[ncId, name, perm, relRole, idents: string]
     var rows: seq[Row]
     for id, ent in graph.entities.pairs:
       if ent.kind != ekPerson: continue
@@ -946,7 +951,6 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         name: ent.name,
         perm: userPermission(ent),
         relRole: userRelRole(graph, id),
-        trust: maxTrustFor(graph, id),
         idents: (if identParts.len > 0: identParts.join(", ") else: "—")
       ))
     rows.sort(proc(a, b: Row): int =
@@ -957,33 +961,91 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         arr.add(%*{"nc_id": r.ncId, "name": r.name,
                    "permission": r.perm,
                    "relationship_role": r.relRole,
-                   "trust": r.trust,
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
       return "No human identities in this company yet. Guests auto-register\n" &
              "on first message; agents are tracked via `claw agent list`."
-    var res = "NC:ID  NAME                  PERMISSION   ROLE(rel)   TRUST  IDENTIFIERS\n"
+    var res = "NC:ID  NAME                  PERMISSION   ROLE(rel)   IDENTIFIERS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
       var idents = r.idents
-      if idents.len > 40: idents = idents[0 ..< 38] & "…"
+      if idents.len > 45: idents = idents[0 ..< 43] & "…"
       let perm = (if r.perm.len > 0: r.perm else: "—")
       let relRole = (if r.relRole.len > 0: r.relRole else: "—")
-      # Visual-width padding — alignLeft counts bytes, so the em-dash
-      # (3 bytes, 1 column) misaligns placeholder cells.
-      proc pad(s: string, width: int): string =
-        s & spaces(max(0, width - s.runeLen))
       res.add(pad(r.ncId, 6) & " " &
               pad(name, 21) & " " &
               pad(perm, 12) & " " &
               pad(relRole, 11) & " " &
-              pad($r.trust, 6) & " " &
               idents & "\n")
-    res.add("\n" & $rows.len & " user(s). PERMISSION is declared on the person block;\n" &
-            "ROLE(rel) is how an agent labels this person in its edges.\n" &
-            "Use `user show <nc:id>` for the full four-axis view.\n")
+    res.add("\n" & $rows.len & " user(s). Trust is per-edge — use `claw user trust`\n" &
+            "for the full matrix, or `claw user show <nc:id>` for one user.\n")
+    return res
+
+  if subcmd == "trust":
+    # Trust matrix: rows = Persons, cols = AI entities. Each cell is the
+    # highest trust annotation on any outbound edge (reportsTo ∪ serves)
+    # from that agent to that person. "—" means no edge exists.
+    var agentRows: seq[tuple[id: WorldEntityID, name: string]]
+    for id, ent in graph.entities.pairs:
+      if ent.kind == ekAI: agentRows.add((id, ent.name))
+    agentRows.sort(proc(a, b: auto): int = cmp(uint32(a.id), uint32(b.id)))
+
+    var personRows: seq[tuple[id: WorldEntityID, name: string]]
+    for id, ent in graph.entities.pairs:
+      if ent.kind == ekPerson: personRows.add((id, ent.name))
+    personRows.sort(proc(a, b: auto): int = cmp(uint32(a.id), uint32(b.id)))
+
+    proc trustEdge(graph: WorldGraph, agentID, personID: WorldEntityID): int =
+      result = low(int)  # sentinel: no edge
+      if not graph.entities.hasKey(agentID): return
+      let a = graph.entities[agentID]
+      for link in a.reportsTo:
+        if link.targetID == personID and link.annotation.isSome:
+          let t = link.annotation.get.trustLevel
+          if t > result: result = t
+      for link in a.serves:
+        if link.targetID == personID and link.annotation.isSome:
+          let t = link.annotation.get.trustLevel
+          if t > result: result = t
+
+    if asJson:
+      # Nested object: { "<user nc:id>": { "<agent nc:id>": trust, ... }, ... }
+      var obj = newJObject()
+      for p in personRows:
+        var row = newJObject()
+        for a in agentRows:
+          let t = trustEdge(graph, a.id, p.id)
+          if t != low(int): row[toAlias(a.id)] = %t
+        obj[toAlias(p.id)] = row
+      return $obj
+
+    if personRows.len == 0 or agentRows.len == 0:
+      return "Need at least one agent and one person to draw a trust matrix.\n" &
+             (if agentRows.len == 0: "No AI entities in the graph yet.\n" else: "") &
+             (if personRows.len == 0: "No Person entities in the graph yet.\n" else: "")
+
+    # Column widths — agent names drive the matrix cell width.
+    var colW = 6
+    for a in agentRows:
+      if a.name.runeLen + 2 > colW: colW = a.name.runeLen + 2
+
+    var res = pad("NC:ID", 6) & " " & pad("NAME", 21) & " "
+    for a in agentRows:
+      res.add(pad(a.name, colW))
+    res.add("\n")
+    for p in personRows:
+      var name = p.name
+      if name.runeLen > 20: name = name[0 ..< 18] & "…"
+      res.add(pad(toAlias(p.id), 6) & " " & pad(name, 21) & " ")
+      for a in agentRows:
+        let t = trustEdge(graph, a.id, p.id)
+        let cell = if t == low(int): "—" else: $t
+        res.add(pad(cell, colW))
+      res.add("\n")
+    res.add("\nCells are agent's trust in that user (max across reportsTo+serves).\n" &
+            "`—` means no edge declared. Use `user show <nc:id>` for per-edge detail.\n")
     return res
 
   if subcmd == "show":
