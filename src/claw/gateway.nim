@@ -408,15 +408,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            "Try `/user list`, `/user show <nc:id>`, `/user trust`, or `/user invite <name>`."
 
   elif cmd.startsWith("/invite"):
-    # `/invite <customer-name> [<agent>] [<uses>]` — SuperAdmin-only
-    # chat shortcut that pre-allocates a Customer Person entity + mints
-    # an invite code, returns the bundled `nc:X/CODE` string to share.
-    # The customer sends that string as their first message to any
-    # channel routing to <agent> and the gateway's customer-invite
-    # intercept authenticates them without involving the LLM.
-    # (Legacy alias — prefer `/user invite` for consistency.)
+    # Legacy alias for `/user invite` — same body, thin wrapper around
+    # the shared `mintCustomerInvite` helper in cli_admin. The CLI
+    # `claw user invite` goes through the same helper so behaviour
+    # and persistence are identical across surfaces.
     let workspace = cfg[].workspacePath()
-    var g = loadWorld(workspace)
+    let g = loadWorld(workspace)
     var permOk = false
     var issuer = ""
     if g != nil:
@@ -430,115 +427,43 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         let p = g.entities[entID].role.toLowerAscii
         if p in ["superadmin", "admin"]: permOk = true
     if not permOk:
-      return "`/invite` requires SuperAdmin. Your current permission " &
-             "doesn't allow minting customer access codes."
+      return "`/invite` requires SuperAdmin."
     let parts = cmd.splitWhitespace()
     if parts.len < 2:
-      return "Usage: `/invite <customer-name> [<agent>] [<uses>]`\n" &
-             "Examples:\n" &
-             "  `/invite Alice`              → customer served by " &
-             (if cfg.agents.named.len > 0: cfg.agents.named[0].name else: "default") &
-             ", 1 use\n" &
-             "  `/invite Acme Lexi 1`        → customer served by Lexi, 1 use\n" &
-             "  `/invite BulkCustomer Lexi 10` → shared code, 10 redemptions"
+      return renderCommandDetail("/user")
     let customerName = parts[1]
     let agentName =
       if parts.len >= 3: parts[2]
-      elif cfg.agents.named.len > 0: cfg.agents.named[0].name
+      elif cfg[].agents.named.len > 0: cfg[].agents.named[0].name
       else: msg.recipient_id
     var maxUses = 1
     if parts.len >= 4:
       try: maxUses = parseInt(parts[3])
       except: discard
-    if '"' in customerName:
-      return "Error: customer name cannot contain a double-quote."
-    # Validate agent exists.
-    var agentID = WorldEntityID(0)
-    if g.nameIndex.hasKey(agentName): agentID = g.nameIndex[agentName]
-    if uint32(agentID) == 0 or not g.entities.hasKey(agentID) or
-       g.entities[agentID].kind != ekAI:
-      var known: seq[string]
-      for id, ent in g.entities.pairs:
-        if ent.kind == ekAI: known.add(ent.name)
-      return "Error: no agent named `" & agentName & "`. Known: " &
-             known.join(", ") & "."
-    # Pre-allocate the customer entity.
-    let newID = WorldEntityID(g.nextID)
-    g.nextID += 1
-    var ent = WorldEntity(
-      id: newID,
-      kind: ekPerson,
-      name: customerName,
-      role: "Customer",
-      identifiers: initTable[string, string]()
-    )
-    g.entities[newID] = ent
-    g.nameIndex[customerName] = newID
-    var agent = g.entities[agentID]
-    let annot = RelationshipAnnotation(
-      role: urCustomer, trustLevel: 40, etiquette: "")
-    agent.serves.add(RelationshipLink(
-      targetID: newID, annotation: some(annot)))
-    g.entities[agentID] = agent
-    g.saveWorld()
-    # Mint the code.
-    var invMap = loadInvites(workspace)
-    randomize()
-    var code = generateInviteCode()
-    while invMap.hasKey(code): code = generateInviteCode()
-    let alias = toAlias(newID)
-    invMap[code] = InviteConstraint(
-      code: code, agentName: agentName, customerName: customerName,
-      role: "customer", maxUses: maxUses, expiry: 0, pinless: false,
-      issuedBy: issuer, createdAt: getTime().toUnix(),
-      usedBy: "", usedAt: 0, targetNcId: alias)
-    saveInvites(workspace, invMap)
-    # Persist the Customer to BASE.nims so `co update` keeps them.
-    # Identifiers get appended when they redeem.
-    let baseNims = getNimClawDir() / "BASE.nims"
-    if fileExists(baseNims):
-      var bLines = readFile(baseNims).splitLines()
-      var exists = false
-      for l in bLines:
-        if l.strip() == "person \"" & customerName & "\":":
-          exists = true; break
-      if not exists:
-        # Insert before `build(currentSourcePath())`.
-        var insertAt = bLines.len
-        for i, l in bLines:
-          if l.strip().startsWith("build(currentSourcePath"):
-            insertAt = i; break
-        let newBlock = @[
-          "",
-          "person \"" & customerName & "\":",
-          "  permission \"Customer\""
-        ]
-        var merged = bLines[0 ..< insertAt]
-        for l in newBlock: merged.add(l)
-        for i in insertAt ..< bLines.len: merged.add(bLines[i])
-        writeFile(baseNims, merged.join("\n"))
-    # Feishu sometimes flags bare alphanumeric codes as suspicious
-    # (spam/phishing filter). Wrap the code in a natural sentence so
-    # IM gateways let it through — the intercept matches on substring,
-    # so any text containing the code works. Give the SuperAdmin three
-    # paste-ready options at different verbosity levels.
-    let paste1 = "Hi — my access code is " & code &
+    let inv = mintCustomerInvite(cfg[], workspace, issuer, customerName,
+                                  agentName, maxUses)
+    if not inv.ok:
+      return "Error: " & inv.error
+    # Feishu spam filter tolerates natural sentences better than bare
+    # codes; give the SuperAdmin three paste-ready options at different
+    # verbosity levels — intercept matches on substring.
+    let paste1 = "Hi — my access code is " & inv.code &
                  ", please activate. Thanks!"
-    let paste2 = customerName & " here. My invite code: " & code & "."
-    let paste3 = alias & "/" & code
+    let paste2 = inv.customerName & " here. My invite code: " & inv.code & "."
+    let paste3 = inv.targetNcId & "/" & inv.code
     return "**Customer invite created**\n\n" &
-           "  Customer: " & customerName & " (" & alias & ")\n" &
-           "  Agent:    " & agentName & "\n" &
-           "  Max uses: " & $maxUses & "\n\n" &
+           codeBlock("Customer: " & inv.customerName & " (" & inv.targetNcId & ")\n" &
+                     "Agent:    " & inv.agentName & "\n" &
+                     "Max uses: " & $inv.maxUses) & "\n\n" &
            "**Share one of these with the customer** (Feishu may block\n" &
            "bare codes — wrapping in a sentence usually passes):\n\n" &
-           "```\n" & paste1 & "\n```\n" &
-           "```\n" & paste2 & "\n```\n" &
-           "```\n" & paste3 & "\n```\n\n" &
+           codeBlock(paste1) & "\n" &
+           codeBlock(paste2) & "\n" &
+           codeBlock(paste3) & "\n\n" &
            "The customer DMs their chosen text to any channel routing " &
-           "to " & agentName & ". The gateway authenticates them " &
-           "before the LLM turn — code match is substring-based, so " &
-           "any message containing `" & code & "` works."
+           "to " & inv.agentName & ". Gateway authenticates pre-LLM — " &
+           "substring match, so any message containing `" & inv.code &
+           "` works."
 
   elif cmd == "/help" or cmd.startsWith("/help "):
     # Resolve the caller's permission to filter the listing.
@@ -587,19 +512,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       return renderCommandDetail("/channel")
     let sub = parts[1]
     if sub == "list":
-      var res = "**Registered channels**\n"
-      if cfg[].channels.feishu.apps.len > 0:
-        res.add("\n**Feishu** (" & $cfg[].channels.feishu.apps.len & " apps):\n")
-        for a in cfg[].channels.feishu.apps:
-          let who = if a.agent.len > 0: a.agent else: "(default)"
-          res.add("  - `" & a.app_id & "` → " & who & "\n")
-      if cfg[].channels.telegram.enabled:  res.add("\n**Telegram**: enabled\n")
-      if cfg[].channels.whatsapp.enabled:  res.add("\n**WhatsApp**: enabled\n")
-      if cfg[].channels.discord.enabled:   res.add("\n**Discord**: enabled\n")
-      if cfg[].channels.nmobile.enabled:   res.add("\n**nMobile**: enabled\n")
-      res.add("\nAfter `/channel auth`, run `/restart` to bring the new\n")
-      res.add("channel online.")
-      return res
+      # Single source of truth — same CLI proc, wrapped in a code block
+      # so the NAME/STATUS/CREDENTIAL/DETAILS columns stay aligned.
+      var cfgCopy = cfg[]
+      return codeBlock(runChannelCommand(cfgCopy, @["list"])) & "\n\n" &
+             "After `/channel auth`, run `/restart` to bring the new " &
+             "channel online."
     if sub == "auth":
       if parts.len < 3:
         return "Usage: `/channel auth <channel_type> <args…>` " &

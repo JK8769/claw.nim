@@ -1056,6 +1056,111 @@ proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[pe
                  lines[i][idx + quotedOld.len ..< lines[i].len]
   (p, a, r, s)
 
+type
+  CustomerInviteResult* = object
+    ok*: bool
+    error*: string
+    code*: string
+    targetNcId*: string
+    customerName*: string
+    agentName*: string
+    maxUses*: int
+    issuer*: string
+
+proc mintCustomerInvite*(cfg: Config, workspace: string,
+                         issuer, customerName, agentName: string,
+                         maxUses: int = 1): CustomerInviteResult =
+  ## Single source of truth for "issue a customer access code". Used by
+  ## both `claw user invite` (CLI) and `/user invite` (slash command).
+  ##
+  ## Does the full dance: pre-allocate a Customer Person entity, mint a
+  ## code with `targetNcId` wired, persist the `person "X":` block into
+  ## BASE.nims so it survives `co update`, register the serves edge on
+  ## the target agent. Callers format the user-facing output themselves
+  ## (CLI terse, chat with paste templates).
+  result = CustomerInviteResult(ok: false)
+  if customerName.len == 0:
+    result.error = "customer name must not be empty"; return
+  if '"' in customerName:
+    result.error = "customer name cannot contain a double-quote"; return
+  if agentName.len == 0:
+    result.error = "agent name must not be empty"; return
+
+  let graph = loadWorld(workspace)
+  if graph == nil:
+    result.error = "couldn't load the company graph"; return
+  var agentID = WorldEntityID(0)
+  if graph.nameIndex.hasKey(agentName): agentID = graph.nameIndex[agentName]
+  if uint32(agentID) == 0 or not graph.entities.hasKey(agentID) or
+     graph.entities[agentID].kind != ekAI:
+    var known: seq[string]
+    for id, ent in graph.entities.pairs:
+      if ent.kind == ekAI: known.add(ent.name)
+    result.error = "no agent named '" & agentName & "'. Known: " &
+                   known.join(", ")
+    return
+
+  # Pre-allocate the Customer entity.
+  let newID = WorldEntityID(graph.nextID)
+  graph.nextID += 1
+  var ent = WorldEntity(
+    id: newID,
+    kind: ekPerson,
+    name: customerName,
+    role: "Customer",
+    identifiers: initTable[string, string]()
+  )
+  graph.entities[newID] = ent
+  graph.nameIndex[customerName] = newID
+  var agent = graph.entities[agentID]
+  let annot = RelationshipAnnotation(
+    role: urCustomer, trustLevel: 40, etiquette: "")
+  agent.serves.add(RelationshipLink(
+    targetID: newID, annotation: some(annot)))
+  graph.entities[agentID] = agent
+  graph.saveWorld()
+
+  # Mint the code.
+  var invMap = loadInvites(workspace)
+  randomize()
+  var code = generateInviteCode()
+  while invMap.hasKey(code): code = generateInviteCode()
+  let alias = toAlias(newID)
+  invMap[code] = InviteConstraint(
+    code: code, agentName: agentName, customerName: customerName,
+    role: "customer", maxUses: maxUses, expiry: 0, pinless: false,
+    issuedBy: issuer, createdAt: getTime().toUnix(),
+    usedBy: "", usedAt: 0, targetNcId: alias)
+  saveInvites(workspace, invMap)
+
+  # Persist the Customer to BASE.nims so `co update` keeps them.
+  let baseNims = getNimClawDir() / "BASE.nims"
+  if fileExists(baseNims):
+    var bLines = readFile(baseNims).splitLines()
+    var exists = false
+    for l in bLines:
+      if l.strip() == "person \"" & customerName & "\":":
+        exists = true; break
+    if not exists:
+      var insertAt = bLines.len
+      for i, l in bLines:
+        if l.strip().startsWith("build(currentSourcePath"):
+          insertAt = i; break
+      let newBlock = @[
+        "",
+        "person \"" & customerName & "\":",
+        "  permission \"Customer\""
+      ]
+      var merged = bLines[0 ..< insertAt]
+      for l in newBlock: merged.add(l)
+      for i in insertAt ..< bLines.len: merged.add(bLines[i])
+      writeFile(baseNims, merged.join("\n"))
+
+  result = CustomerInviteResult(
+    ok: true, code: code, targetNcId: alias,
+    customerName: customerName, agentName: agentName,
+    maxUses: maxUses, issuer: issuer)
+
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
     return "Usage: claw user <list|show|trust|edit|rebind|merge|remove|invite|register> [args]\n" &
@@ -2025,45 +2130,34 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     if uint32(issuerID) == 0 or not graph.entities.hasKey(issuerID):
       return "Error: issuer " & issuerAlias & " not found in graph."
 
-    # Positional args: [role] [uses] [agent] [customer]
-    var role = if args.len >= 3: args[2] else: "customer"
+    # Positional args: [uses] [agent] [customer]
+    # (The `role` arg was dropped — invite is now always customer-tier;
+    # `mintCustomerInvite` pre-allocates an ekPerson + permission=Customer.)
     var uses = 1
-    if args.len >= 4:
-      try: uses = parseInt(args[3])
+    var positional: seq[string]
+    for a in args[2 .. ^1]: positional.add(a)
+    if positional.len >= 1:
+      try: uses = parseInt(positional[0])
       except: discard
-    var agentName = if args.len >= 5: args[4] else: cfg.agents.named[0].name
-    var customer = if args.len >= 6: args[5] else: ""
-
-    # Mint the code and persist.
-    randomize()
+    let agentName =
+      if positional.len >= 2: positional[1]
+      elif cfg.agents.named.len > 0: cfg.agents.named[0].name
+      else: ""
+    let customer =
+      if positional.len >= 3: positional[2] else: "Customer-" & issuerAlias.replace(":", "_")
     let workspace = cfg.workspacePath()
-    var invites = loadInvites(workspace)
-    var code = generateInviteCode()
-    while invites.hasKey(code): code = generateInviteCode()
-    let now = getTime().toUnix()
-    invites[code] = InviteConstraint(
-      code: code,
-      agentName: agentName,
-      customerName: customer,
-      role: role,
-      maxUses: uses,
-      expiry: 0,
-      pinless: false,
-      issuedBy: issuerAlias,
-      createdAt: now,
-      usedBy: "",
-      usedAt: 0
-    )
-    saveInvites(workspace, invites)
-    result = "Invite code: " & code & "\n"
-    result.add("  role:     " & role & "\n")
-    result.add("  agent:    " & agentName & "\n")
-    result.add("  uses:     " & $uses & "\n")
-    result.add("  issuer:   " & issuerAlias & "\n")
-    if customer.len > 0:
-      result.add("  customer: " & customer & "\n")
-    result.add("\nA guest redeems this by sending the code (e.g. '" & code &
-               "') to agent '" & agentName & "' via any channel.")
+    let inv = mintCustomerInvite(cfg, workspace, issuerAlias, customer,
+                                  agentName, uses)
+    if not inv.ok:
+      return "Error: " & inv.error
+    result = "Invite created: " & inv.targetNcId & "/" & inv.code & "\n" &
+             "  customer: " & inv.customerName & "\n" &
+             "  agent:    " & inv.agentName & "\n" &
+             "  uses:     " & $inv.maxUses & "\n" &
+             "  issuer:   " & inv.issuer & "\n\n" &
+             "The customer redeems by sending the bundled string (or just\n" &
+             "the code) to any channel routing to '" & inv.agentName &
+             "'. The gateway authenticates pre-LLM."
     return
 
   return "Unknown user command: " & subcmd
