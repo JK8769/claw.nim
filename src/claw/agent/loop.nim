@@ -754,8 +754,10 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
 
     let targetRecipient = if opts.recipientID != "": opts.recipientID else: al.agentId
 
-    # Refresh memory-tool context so store/recall see the current requester.
-    # Trust comes from the graph edge (or legacy relationship) resolved above.
+    # Refresh memory-tool context so store/recall scope to the current
+    # partner's own isolated file. `logicalUserID` is already the nc:id
+    # alias once the graph has resolved the sender (see above). Trust
+    # comes from the graph edge (or legacy relationship) resolved above.
     let reqTrust = al.contextBuilder.resolveRequesterTrust(
       logicalUserID, targetRecipient, opts.channel)
     if al.memTool != nil:

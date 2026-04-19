@@ -658,10 +658,16 @@ $1""".format(skillsSummary))
     let handbookSection = cb.buildHandbooksSection(recipientID, practices)
     if handbookSection != "": parts.add(handbookSection)
 
-  # Memory — data-layer gated. Only entries the requester is authorised
-  # to see reach the LLM. Filter happens inside getMemoryContext.
+  # Memory — two-tier:
+  #   1. conversation memory scoped to THIS partner's nc:id file only
+  #   2. agent's own memory from self.jsonl, filtered by requester trust
+  # Neither path can leak another partner's conversation memory; they
+  # live in separate files and only ncId's own file is opened.
   let reqTrust = cb.resolveRequesterTrust(userID, recipientID, channel)
-  let memoryContext = cb.memory.getMemoryContext(userID, reqTrust)
+  var senderNcId = userID
+  if cb.graph != nil and cb.graph.nameIndex.hasKey(userID):
+    senderNcId = toAlias(cb.graph.nameIndex[userID])
+  let memoryContext = cb.memory.getMemoryContext(senderNcId, reqTrust)
   if memoryContext != "":
     parts.add(memoryContext)
 
