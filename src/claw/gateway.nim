@@ -384,9 +384,16 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
     # Read-only subcommands work for anyone with enough role.
+    # Wrap output in a fenced code block so monospace column alignment
+    # survives the channel's markdown renderer (Feishu / Telegram /
+    # Discord all need ``` for this). Skip wrapping when the caller
+    # asked for JSON — raw JSON is more useful unwrapped.
     if sub in ["list", "show", "trust"]:
       var cfgCopy = cfg[]
-      return runUserCommand(cfgCopy, @[sub] & subArgs)
+      let body = runUserCommand(cfgCopy, @[sub] & subArgs)
+      let wantsJson = "--format=json" in subArgs or "--json" in subArgs
+      if wantsJson: return body
+      return codeBlock(body)
     if sub == "invite":
       # SuperAdmin gate.
       if callerPerm != pmSuperAdmin:
