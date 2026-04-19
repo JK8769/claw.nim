@@ -341,7 +341,13 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       if uint32(entID) > 0 and g.entities.hasKey(entID):
         let p = g.entities[entID].role.toLowerAscii
         if p in ["superadmin", "admin"]: callerPerm = pmSuperAdmin
-    let parts = cmd.splitWhitespace()
+    let rawParts = cmd.splitWhitespace()
+    let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
+    if argv.len == 0 or argv[0] == "help":
+      return renderCommandDetail("/user")
+    let pr = parseArgs("/user", cmd, argv)
+    if not pr.ok: return pr.error
+    let parts = rawParts
     if parts.len < 2 or parts[1] == "help":
       return "**`/user` — user management**\n\n" &
              "**Subcommands**\n\n" &
@@ -564,13 +570,14 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         if p in ["superadmin", "admin"]: permOk = true
     if not permOk:
       return "`/channel` requires SuperAdmin."
-    let parts = cmd.splitWhitespace()
+    let rawParts = cmd.splitWhitespace()
+    # parts[0] = "/channel", pass the rest to docopt.
+    let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
+    let pr = parseArgs("/channel", cmd, argv)
+    if not pr.ok: return pr.error
+    let parts = rawParts
     if parts.len < 2:
-      return "Usage:\n" &
-             "  `/channel list` — show registered apps (grouped by channel type)\n" &
-             "  `/channel auth feishu <app_id> <app_secret> [<agent>]`\n\n" &
-             "Example:\n" &
-             "  `/channel auth feishu cli_a9xxxxxxxxxxxxx ABCSecretABC Atlas`"
+      return renderCommandDetail("/channel")
     let sub = parts[1]
     if sub == "list":
       var res = "**Registered channels**\n"
@@ -825,24 +832,40 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
   register(SystemCommand(
     name: "/channel", summary: "Register or inspect chat channels (Feishu apps, etc.).",
     usage: "/channel <list|auth> [<args>...]",
+    doc: """Channel management.
+
+Usage:
+  /channel list
+  /channel auth feishu <app_id> <app_secret> [<agent>]
+""",
     group: "admin", menuHint: "Channels", permission: pmSuperAdmin,
-    args: @[
-      CmdArg(name: "subcommand", description: "list | auth", required: true),
-      CmdArg(name: "type", description: "channel type (e.g. feishu)", required: false),
-      CmdArg(name: "app_id", description: "Feishu App ID (cli_...)", required: false),
-      CmdArg(name: "app_secret", description: "Feishu App Secret", required: false),
-      CmdArg(name: "agent", description: "Agent to route to", required: false)],
     examples: @["/channel list",
                 "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas"]))
   register(SystemCommand(
     name: "/user", summary: "User management (list, show, trust, invite).",
     usage: "/user <list|show|trust|invite> [<args>...]",
+    doc: """User management.
+
+Usage:
+  /user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<s>] [--reverse] [--format=<f>]
+  /user show <nc-id>
+  /user trust
+  /user invite <customer-name> [<agent>] [<uses>]
+
+Options:
+  --kind=<k>        Person | AI | Unknown | Service
+  --tier=<t>        int | ext | ?
+  --permission=<p>  Filter by declared permission
+  --sort=<s>        nc | name | kind | permission | tier | role
+  --reverse         Reverse sort order
+  --format=<f>      table | json  [default: table]
+""",
     group: "admin", menuHint: "Users", permission: pmAny,
-    args: @[
-      CmdArg(name: "subcommand", description: "list | show | trust | invite", required: true),
-      CmdArg(name: "args", description: "subcommand-specific (e.g. `invite Alice Atlas`)", required: false)],
-    examples: @["/user list", "/user show nc:4", "/user trust",
-                "/user invite Alice", "/user invite Acme Atlas 1"]))
+    examples: @["/user list --kind=Unknown",
+                "/user show nc:4",
+                "/user trust",
+                "/user invite Alice",
+                "/user invite Acme Atlas 1"]))
   register(SystemCommand(
     name: "/restart", summary: "Restart the gateway (picks up config changes).",
     usage: "/restart", group: "admin",
