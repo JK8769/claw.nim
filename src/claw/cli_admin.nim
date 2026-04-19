@@ -937,10 +937,11 @@ proc entityTier(cfg: Config, graph: WorldGraph, ent: WorldEntity): string =
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|show|trust|merge|invite|register> [args]\n" &
+    return "Usage: claw user <list|show|trust|edit|merge|invite|register> [args]\n" &
            "  list     — table of every human identity (no trust — see `trust`)\n" &
            "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
-           "  trust    — N×M trust matrix (agents → persons)\n" &
+           "  trust    — edge graph (agent → person) with role + trust per row\n" &
+           "  edit     — rename a person in BASE.nims (person + reportsTo/serves refs)\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -1194,6 +1195,86 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       if ent.archetype.len > 0:
         res.add("  archetype: " & ent.archetype & "\n")
     return res
+
+  if subcmd == "edit":
+    # Rename a Person in BASE.nims. Catches the source-of-truth block
+    # (`person "X":`) and every agent-side reference (`reportsTo "X":`,
+    # `serves "X":`) so the graph stays consistent after `co update`.
+    if args.len < 3:
+      return "Usage: claw user edit <nc:id> <new-name>\n" &
+             "Renames a person in BASE.nims. Updates the person block and\n" &
+             "any `reportsTo \"X\":` / `serves \"X\":` references in agent\n" &
+             "blocks. Etiquette text is left alone. Run `claw co update`\n" &
+             "afterwards to regenerate BASE.json."
+    let alias = args[1]
+    if not alias.startsWith("nc:"):
+      return "Error: give an nc:id (e.g. nc:4). `claw user list` shows them."
+    let id = parseAlias(alias)
+    if uint32(id) == 0 or not graph.entities.hasKey(id):
+      return "Error: " & alias & " not found in graph."
+    let ent = graph.entities[id]
+    if ent.kind != ekPerson:
+      return "Error: " & alias & " is not a Person (kind=" & $ent.kind & ")."
+    let newName = args[2].strip()
+    if newName.len == 0:
+      return "Error: new name must not be empty."
+    if '"' in newName:
+      return "Error: new name cannot contain a double-quote."
+    if newName == ent.name:
+      return "No change: name is already \"" & newName & "\"."
+    # Reject collisions with another existing entity of the same kind.
+    for otherID, other in graph.entities.pairs:
+      if otherID == id: continue
+      if other.name == newName:
+        return "Error: another " & $other.kind & " (" & toAlias(otherID) &
+               ") is already named \"" & newName & "\". Use `user merge` if\n" &
+               "you want to fold " & alias & " into " & toAlias(otherID) & "."
+
+    let baseNims = getNimClawDir() / "BASE.nims"
+    if not fileExists(baseNims):
+      return "Error: no BASE.nims at " & baseNims
+    let existing = readFile(baseNims)
+    let oldName = ent.name
+    let quotedOld = "\"" & oldName & "\""
+    let quotedNew = "\"" & newName & "\""
+    let lines = existing.splitLines()
+    var updated: seq[string]
+    var changes = 0
+    var perPerson = 0
+    var perReports = 0
+    var perServes = 0
+    for line in lines:
+      let stripped = line.strip(leading = true, trailing = false)
+      # Only replace the first `"oldName"` on lines whose DSL prefix
+      # references the person by name — skip etiquette / comments.
+      var prefix = ""
+      if stripped.startsWith("person " & quotedOld):
+        prefix = "person "
+        inc perPerson
+      elif stripped.startsWith("reportsTo " & quotedOld):
+        prefix = "reportsTo "
+        inc perReports
+      elif stripped.startsWith("serves " & quotedOld):
+        prefix = "serves "
+        inc perServes
+      if prefix.len > 0:
+        let idx = line.find(quotedOld)
+        updated.add(line[0 ..< idx] & quotedNew &
+                    line[idx + quotedOld.len ..< line.len])
+        inc changes
+      else:
+        updated.add(line)
+    if changes == 0:
+      return "Error: no `person \"" & oldName & "\":`, `reportsTo \"" & oldName &
+             "\":`, or `serves \"" & oldName & "\":` lines found in BASE.nims.\n" &
+             "The graph knows " & alias & " as \"" & oldName & "\" but the\n" &
+             "DSL source doesn't — was it edited by hand?"
+    writeFile(baseNims, updated.join("\n"))
+    return "Renamed " & alias & ": \"" & oldName & "\" → \"" & newName & "\"\n" &
+           "  person block:     " & $perPerson & "\n" &
+           "  reportsTo refs:   " & $perReports & "\n" &
+           "  serves refs:      " & $perServes & "\n" &
+           "Run `claw co update` to regenerate BASE.json."
 
   if subcmd == "register":
     # Reify runtime-added Person entities into BASE.nims so they survive
