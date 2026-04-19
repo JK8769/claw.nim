@@ -559,7 +559,22 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
                       break
             except: discard
           let chan = if channelOverride.len > 0: channelOverride else: "cli"
-          let resp = await gCtx.offices[officeKey].processDirect(message, cliSender, cliSender, chan)
+          # Same SuperAdmin bind-code check as the bus path — lets
+          # `claw agent send --from=<raw-id> --channel=<ch> <code>`
+          # exercise the bootstrap flow without a real channel.
+          var resp = ""
+          block bindCheck:
+            let workspace = cfg[].workspacePath()
+            let g = loadWorld(workspace)
+            let bound = tryBind(g, workspace, chan, cliSender, message)
+            if bound.isSome:
+              let b = bound.get
+              resp = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
+                     ", SuperAdmin). You're now authenticated on channel " &
+                     chan & "."
+              break bindCheck
+          if resp == "":
+            resp = await gCtx.offices[officeKey].processDirect(message, cliSender, cliSender, chan)
           respChan[].send(resp)
         except Exception as e:
           respChan[].send("Error: " & e.msg)
