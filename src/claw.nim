@@ -42,7 +42,7 @@ Usage:
   claw agent list
   claw agent caps <name>
   claw agent prompt <name> [--as=<userID>]
-  claw agent send <name> <message>
+  claw agent send <name> <message> [--from=<id>] [--channel=<ch>]
   claw skill list [--sort=<key>] [--reverse] [--format=<fmt>]
   claw skill new <name>
   claw skill remove <name>
@@ -1581,9 +1581,15 @@ when isMainModule:
     if not dc.isRunning():
       echo "Error: gateway not running. Start with: claw gateway"
       quit(1)
+    var fromID = $args["--from"]
+    if fromID == "nil": fromID = ""
+    var chanOverride = $args["--channel"]
+    if chanOverride == "nil": chanOverride = ""
     let resp = dc.callOrDie("agent.send", %*{
       "name": $args["<name>"],
-      "message": $args["<message>"]
+      "message": $args["<message>"],
+      "from": fromID,
+      "channel": chanOverride
     })
     if resp.kind == JString: echo resp.getStr()
     else: echo resp.pretty(2)

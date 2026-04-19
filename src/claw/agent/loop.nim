@@ -73,6 +73,11 @@ type
     # Per-agent capability scoping (resolved by ClawDSL → BASE.json)
     allowedTools*: seq[string]  ## If non-empty, only these tools exposed to LLM
     memTool*: UnifiedMemoryTool  ## retained for per-turn sender/trust refresh
+    turnAllowedTools*: seq[string]
+      ## Dispatch-time allow-list from the current requester's role.grant.
+      ## Computed per turn by setRequesterTurnContext. Empty = unrestricted.
+      ## When non-empty, tool calls not in this list are refused BEFORE
+      ## execution — the role.grant list becomes authoritative, not cosmetic.
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
 
@@ -525,7 +530,18 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         emptyRetries = 0  # Reset on successful tool call
         if tc.name == "reply" or tc.name == "message":
           ctx.responseSent = true
-        let result = await al.tools.executeWithContext(tc.name, tc.arguments, toolCtx)
+
+        # Dispatch-time gate: refuse tools outside the current requester's
+        # role.grant. This turns role.grant into an enforcement boundary,
+        # not a prompt decoration. A Guest asking the agent to call a
+        # high-privilege tool gets a tool-result error, not execution.
+        var result: string
+        if al.turnAllowedTools.len > 0 and tc.name notin al.turnAllowedTools:
+          warnCF("agent", "Tool refused — not in requester's role.grant",
+            {"tool": tc.name, "allowed": al.turnAllowedTools.join(",")}.toTable)
+          result = "Error: tool '" & tc.name & "' is not authorised at the current requester's trust level. Allowed tools are: " & al.turnAllowedTools.join(", ") & ". If the user needs a higher-privilege action, they must upgrade via redeem_invite or a SuperAdmin must edit BASE.nims."
+        else:
+          result = await al.tools.executeWithContext(tc.name, tc.arguments, toolCtx)
         # Record in tool call log for forced summary context
         let resultPreview = if result.len > 200: result[0..199] & "..." else: result
         toolCallLog.add("[" & $iteration & "] " & tc.name & " → " & resultPreview)
@@ -740,10 +756,24 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
 
     # Refresh memory-tool context so store/recall see the current requester.
     # Trust comes from the graph edge (or legacy relationship) resolved above.
+    let reqTrust = al.contextBuilder.resolveRequesterTrust(
+      logicalUserID, targetRecipient, opts.channel)
     if al.memTool != nil:
-      let reqTrust = al.contextBuilder.resolveRequesterTrust(
-        logicalUserID, targetRecipient, opts.channel)
       al.memTool.setRequesterContext(logicalUserID, reqTrust)
+
+    # Dispatch-time tool gate. Role.grant in the ClawDSL `trust:` block was
+    # previously a cosmetic schema filter (the LLM could still call any
+    # tool by name). Now we resolve the requester's role every turn and
+    # hold its grant list; the tool loop refuses any call outside it.
+    al.turnAllowedTools = @[]
+    if al.contextBuilder.trust.roles.len > 0:
+      let reqRole = al.contextBuilder.resolveRequesterRole(
+        logicalUserID, targetRecipient, opts.channel)
+      let roleCfg = findTrustRole(al.contextBuilder.trust, reqRole)
+      if roleCfg.isSome:
+        let g = roleCfg.get.grant
+        if g.len > 0 and "*" notin g:
+          al.turnAllowedTools = g
 
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
 

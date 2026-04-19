@@ -31,8 +31,13 @@ var gChanManager: channel_manager.Manager = nil
 var gSocketServer: SocketServer = nil
 var isShuttingDown = false
 
-# Channel for HTTP thread → async event loop agent requests
-type AgentRequest = tuple[officeKey, message: string, respChan: ptr system.Channel[string]]
+# Channel for HTTP thread → async event loop agent requests.
+# `senderOverride` and `channelOverride` let the CLI spoof the requester
+# for testing data-layer gating (`agent send --from=<id>`). Empty strings
+# mean "use the default SuperAdmin-as-sender resolution".
+type AgentRequest = tuple[
+  officeKey, message, senderOverride, channelOverride: string,
+  respChan: ptr system.Channel[string]]
 var gAgentRequestChan: system.Channel[AgentRequest]
 gAgentRequestChan.open()
 
@@ -219,7 +224,7 @@ proc handleStdio(msg: JsonNode): seq[JsonNode] {.gcsafe.} =
       # Route to agent via channel
       var respChan: system.Channel[string]
       respChan.open()
-      gAgentRequestChan.send((agent.toLowerAscii(), message, addr respChan))
+      gAgentRequestChan.send((agent.toLowerAscii(), message, "", "", addr respChan))
       let resp = respChan.recv()
       respChan.close()
 
@@ -272,9 +277,12 @@ proc handleSocketRpc(req: RpcRequest): JsonNode {.gcsafe.} =
       let message = req.params{"message"}.getStr("")
       if name == "" or message == "":
         return %*{"error": "name and message required"}
+      let fromOverride = req.params{"from"}.getStr("")
+      let chanOverride = req.params{"channel"}.getStr("")
       var respChan: system.Channel[string]
       respChan.open()
-      gAgentRequestChan.send((name.toLowerAscii(), message, addr respChan))
+      gAgentRequestChan.send((name.toLowerAscii(), message,
+                              fromOverride, chanOverride, addr respChan))
       let resp = respChan.recv()
       respChan.close()
       return %resp
@@ -482,27 +490,34 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
       let (dataAvailable, data) = gAgentRequestChan.tryRecv()
       if dataAvailable:
         req = data
-        let (officeKey, message, respChan) = req
+        let (officeKey, message, senderOverride, channelOverride, respChan) = req
         try:
           if not gCtx.offices.hasKey(officeKey):
             gCtx.offices[officeKey] = newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider,
               officeKey.capitalizeAscii(), gCtx.cronService)
-          # CLI invocations come from the owner's terminal — find a SuperAdmin
-          # Person in the graph and use them as sender so forge/shell tools work.
+          # Sender resolution:
+          #   --from=<id> explicit override → use that verbatim (lets CLI
+          #                spoof a guest/customer for testing gating)
+          #   otherwise → scan BASE.json for a SuperAdmin Person so the
+          #               default "CLI terminal" invocation routes as Owner
           var cliSender = "cli:user"
-          try:
-            let basePath = getNimClawDir() / "BASE.json"
-            if fileExists(basePath):
-              let base = parseJson(readFile(basePath))
-              let graph = base{"@graph"}
-              if graph != nil and graph.kind == JArray:
-                for ent in graph:
-                  if ent{"kind"}.getStr() == "Person" and
-                     ent{"permission-group"}.getStr() == "SuperAdmin":
-                    cliSender = ent{"name"}.getStr("cli:user")
-                    break
-          except: discard
-          let resp = await gCtx.offices[officeKey].processDirect(message, "cli:user", cliSender)
+          if senderOverride.len > 0:
+            cliSender = senderOverride
+          else:
+            try:
+              let basePath = getNimClawDir() / "BASE.json"
+              if fileExists(basePath):
+                let base = parseJson(readFile(basePath))
+                let graph = base{"@graph"}
+                if graph != nil and graph.kind == JArray:
+                  for ent in graph:
+                    if ent{"kind"}.getStr() == "Person" and
+                       ent{"permission-group"}.getStr() == "SuperAdmin":
+                      cliSender = ent{"name"}.getStr("cli:user")
+                      break
+            except: discard
+          let chan = if channelOverride.len > 0: channelOverride else: "cli"
+          let resp = await gCtx.offices[officeKey].processDirect(message, cliSender, cliSender, chan)
           respChan[].send(resp)
         except Exception as e:
           respChan[].send("Error: " & e.msg)

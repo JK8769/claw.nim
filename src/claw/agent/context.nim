@@ -134,6 +134,35 @@ proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq
 proc setToolsRegistry*(cb: ContextBuilder, registry: ToolRegistry) =
   cb.tools = registry
 
+proc resolveRequesterRole*(cb: ContextBuilder, userID, recipientID, channel: string): string =
+  ## Companion to resolveRequesterTrust — returns the requester's role name
+  ## (lower-case, matching trust-DSL role keys) for per-turn dispatch-time
+  ## tool gating. Mirrors the graph fallback chain.
+  if cb.graph == nil: return "guest"
+  var agentID = WorldEntityID(0)
+  if recipientID != "":
+    if recipientID.startsWith("nc:"):
+      agentID = parseAlias(recipientID)
+    elif cb.graph.nameIndex.hasKey(recipientID):
+      agentID = cb.graph.nameIndex[recipientID]
+  let res = cb.graph.resolveUserGraph(channel, userID, agentID)
+  var entityID = res[0]
+  if uint32(entityID) > 0 and res[1].isSome:
+    return ($res[1].get.role).toLowerAscii
+  if uint32(entityID) == 0 and cb.graph.nameIndex.hasKey(userID):
+    entityID = cb.graph.nameIndex[userID]
+  if uint32(entityID) > 0:
+    let ent = cb.graph.entities[entityID]
+    let r = ent.role.toLowerAscii
+    case r
+    of "boss", "superadmin": return "boss"
+    of "master", "admin": return "master"
+    else:
+      if r.len > 0: return r
+  if cb.relations.hasKey(userID):
+    return cb.relations[userID].identity.toLowerAscii
+  return "guest"
+
 proc resolveRequesterTrust*(cb: ContextBuilder, userID, recipientID, channel: string): int =
   ## Find the requester's trust level for a given agent-context. Mirrors
   ## the graph lookup inside buildSocialSection so both the Social section
