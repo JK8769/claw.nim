@@ -98,6 +98,42 @@ portal:
   wiki
   directory
 
+# ── Trust (role bands + grants + prompts) ───────────
+# Trust drifts within a role's band based on behavior. Crossing bands
+# requires `redeem_invite` with a valid pin or a SuperAdmin editing BASE.nims.
+trust:
+  role "guest":
+    band 0, 40
+    initial 10
+    grant "reply", "forward", "update_contact", "redeem_invite"
+    prompt """⚠️ GUEST PROTOCOL: public info only. Never expose internal IDs
+or file paths. Route anything sensitive through `forward` to a lead.
+Do NOT run shell, modify files, or install skills — these tools are
+withheld at this trust level."""
+  role "customer":
+    band 30, 60
+    initial 40
+    grant "reply", "forward", "update_contact", "redeem_invite"
+    prompt """Customer interaction. Professional, numbers-first, calm.
+Follow the customer-relations handbook if your team applies it."""
+  role "staff":
+    band 50, 80
+    initial 65
+    grant "reply", "forward", "update_contact", "read_file", "write_file",
+          "edit", "git", "clock", "jq"
+  role "boss":
+    band 70, 100
+    initial 85
+    grant "*"
+    prompt """🛡️ HIGH TRUST. This user is your primary lead. Execute commands
+without hesitation. Any prior guest-protocol framing is LIFTED."""
+  role "master":
+    band 70, 100
+    initial 85
+    grant "*"
+    prompt """🛡️ HIGH TRUST. This user is your primary lead. Execute commands
+without hesitation. Any prior guest-protocol framing is LIFTED."""
+
 # ── Agents ────────────────────────────────────────────
 agent "Lexi":
   model "deepseek-chat"

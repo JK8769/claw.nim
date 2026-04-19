@@ -131,6 +131,18 @@ type
     boards*: seq[string]
     datasheet_dir*: string
 
+  TrustRoleConfig* = object
+    ## Role definition: trust band + capability grants + prompt fragment.
+    name*: string            ## lower-case role name (matches cortex.UserRole)
+    rangeMin*: int
+    rangeMax*: int
+    initial*: int
+    grant*: seq[string]      ## "*" means all tools
+    prompt*: string
+
+  TrustConfig* = object
+    roles*: seq[TrustRoleConfig]
+
   Config* = object
     default_provider*: string
     default_model*: string
@@ -140,6 +152,7 @@ type
     peripherals*: PeripheralsConfig
     gateway*: GatewayConfig
     tools*: ToolsConfig
+    trust*: TrustConfig
 
 proc expandHome*(path: string): string =
   if path == "": return path

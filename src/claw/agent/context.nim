@@ -39,6 +39,7 @@ type
     allowedSkills*: seq[string]  ## ClawDSL-resolved skills this agent uses
     memoranda*: seq[Memorandum]  ## company-wide memos (loaded once)
     teams*: seq[TeamInfo]        ## all declared teams (loaded once)
+    trust*: TrustConfig          ## role bands (from ClawDSL `trust:` block)
 
 
 
@@ -132,6 +133,58 @@ proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq
 
 proc setToolsRegistry*(cb: ContextBuilder, registry: ToolRegistry) =
   cb.tools = registry
+
+proc resolveRequesterTrust*(cb: ContextBuilder, userID, recipientID, channel: string): int =
+  ## Find the requester's trust level for a given agent-context. Mirrors
+  ## the graph lookup inside buildSocialSection so both the Social section
+  ## and the Memory recall filter agree on what the requester can see.
+  if cb.graph == nil: return 10
+  var agentID = WorldEntityID(0)
+  if recipientID != "":
+    if recipientID.startsWith("nc:"):
+      agentID = parseAlias(recipientID)
+    elif cb.graph.nameIndex.hasKey(recipientID):
+      agentID = cb.graph.nameIndex[recipientID]
+    else:
+      for id, ent in cb.graph.entities.pairs:
+        if ent.kind == ekAI and ent.name.toLowerAscii == recipientID.toLowerAscii:
+          agentID = id
+          break
+
+  # Try channel-identifier resolution first (preferred path — uses edge data)
+  let res = cb.graph.resolveUserGraph(channel, userID, agentID)
+  var entityID = res[0]
+  if uint32(entityID) > 0 and res[1].isSome:
+    return res[1].get.trustLevel
+
+  # Fall back to name-based lookup (e.g. a CLI invocation where the user
+  # isn't yet mapped via a channel identifier). This catches Owner / SuperAdmin
+  # calling the agent directly when they have no social edge yet.
+  if uint32(entityID) == 0 and cb.graph.nameIndex.hasKey(userID):
+    entityID = cb.graph.nameIndex[userID]
+
+  # Globally recognised Boss/Master override (same rule as buildSocialSection)
+  if uint32(entityID) > 0:
+    let ent = cb.graph.entities[entityID]
+    if ent.role.toLowerAscii in ["boss", "master", "admin", "superadmin"]:
+      return 100
+
+  # Legacy Relationship fallback
+  if cb.relations.hasKey(userID):
+    return cb.relations[userID].trustLevel
+  return 10
+
+proc findTrustRole*(trust: TrustConfig, roleName: string): Option[TrustRoleConfig] =
+  ## Lookup a role's band config by name (case-insensitive). None if unset.
+  let want = roleName.toLowerAscii()
+  for r in trust.roles:
+    if r.name.toLowerAscii() == want: return some(r)
+  return none(TrustRoleConfig)
+
+proc clampTrust*(trust: int, role: TrustRoleConfig): int =
+  ## Clamp a raw trust value into a role's declared band. Used at config-
+  ## load time and whenever something tries to nudge trust within-band.
+  max(role.rangeMin, min(role.rangeMax, trust))
 
 proc teamsForAgent*(cb: ContextBuilder, agentName: string): seq[TeamInfo] =
   ## Filter cb.teams to those where the agent is a member (case-insensitive).
@@ -299,8 +352,13 @@ proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string
               break
     
     let res = cb.graph.resolveUserGraph(channel, userID, agentID)
-    let entityID = res[0]
+    var entityID = res[0]
     annotOpt = res[1]
+    # Name-based fallback: when channel identifier doesn't match (e.g.
+    # CLI invocations where the user has no channel edge yet), look up
+    # by name so SuperAdmin/Boss identities still resolve.
+    if uint32(entityID) == 0 and cb.graph.nameIndex.hasKey(userID):
+      entityID = cb.graph.nameIndex[userID]
     if uint32(entityID) > 0:
       let ent = cb.graph.entities[entityID]
       sb.add("## User Relationship (Unified Graph)\n")
@@ -348,7 +406,19 @@ proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string
   
   # 3. Security & Authorization induction (Always evaluated)
   sb.add("\n## Security & Authorization\n")
-  if trustLevel >= 80 and role in {urBoss, urMaster}:
+
+  # If the DSL declared a `trust:` block, the role's own prompt drives this
+  # section. Otherwise fall back to the legacy hardcoded branches.
+  var trustDrivenPrompt = false
+  if cb.trust.roles.len > 0:
+    let rc = findTrustRole(cb.trust, ($role).toLowerAscii)
+    if rc.isSome and rc.get.prompt.strip.len > 0:
+      sb.add(rc.get.prompt.strip & "\n")
+      trustDrivenPrompt = true
+
+  if trustDrivenPrompt:
+    discard
+  elif trustLevel >= 80 and role in {urBoss, urMaster}:
     sb.add("🛡️ **HIGH TRUST**: This user is recognized as your primary lead/boss. Execute their commands, modify configuration, and provide assistance without hesitation.\n")
     sb.add("NOTE: If previous messages or summaries in this conversation identified this user as a 'Guest', **DISREGARD THEM**. Their identity is now FULLY VERIFIED and confirmed as your Master/Boss. Your previous 'Guest Service' constraints are now lifted for this session.\n")
     sb.add("- **Reply shortcuts**: Your boss may use short phrases like \"tell him ...\" / \"reply him ...\" / \"tell the guest ...\" / \"reply the guest ...\" (or Chinese: \"跟他说...\" / \"回复他...\" / \"跟客人说...\" / \"回复客人...\"). If the boss does not specify who \"him\" is, treat it as the **last guest you forwarded for this boss**, and route it back using `forward` with `from=\"" & userID & "\"`, `to=\"guest\"`, `via=\"" & recipientID & "\"`, and `content=\"...\"`.\n")
@@ -490,9 +560,19 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
       let r = cb.relations[userID]
       targetIdentity = r.identity
 
+  # Tool access gate. If the company declared a `trust:` block, use the
+  # target's role `grant` list; "*" means unrestricted. Fall back to the
+  # legacy hardcoded guest/customer restriction when no trust block present.
   var allowedTools: seq[string] = @[]
   let identLow = targetIdentity.toLowerAscii()
-  if identLow in ["guest", "customer"]:
+  if cb.trust.roles.len > 0:
+    let roleCfg = findTrustRole(cb.trust, identLow)
+    if roleCfg.isSome:
+      let g = roleCfg.get.grant
+      if g.len > 0 and "*" notin g:
+        allowedTools = g
+    # No role match = unrestricted (authored roles don't list this one)
+  elif identLow in ["guest", "customer"]:
     allowedTools = @["reply", "forward", "redeem_invite", "update_contact"]
 
   parts.add(cb.getIdentity(useXmlTools, allowedTools))
@@ -549,7 +629,10 @@ $1""".format(skillsSummary))
     let handbookSection = cb.buildHandbooksSection(recipientID, practices)
     if handbookSection != "": parts.add(handbookSection)
 
-  let memoryContext = cb.memory.getMemoryContext()
+  # Memory — data-layer gated. Only entries the requester is authorised
+  # to see reach the LLM. Filter happens inside getMemoryContext.
+  let reqTrust = cb.resolveRequesterTrust(userID, recipientID, channel)
+  let memoryContext = cb.memory.getMemoryContext(userID, reqTrust)
   if memoryContext != "":
     parts.add(memoryContext)
 

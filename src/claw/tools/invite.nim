@@ -47,7 +47,7 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
   # It's valid! Add to relations.
   var relations = loadRelations(workspace)
   let (logicalUID, _) = relations.resolveUser(t.channel, t.senderID)
-  
+
   # Create or update relationship entry
   var newID = logicalUID
   if logicalUID == t.senderID:
@@ -56,11 +56,21 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
     let shortCode = if inv.code.len > 3: inv.code[0..2] else: inv.code
     newID = "customer_" & sanitizedName & "_" & shortCode
 
-  
+  # Initial trust when transitioning INTO a role comes from the DSL
+  # `trust:` block (role.initial). Falls back to 50 when the company
+  # hasn't declared a trust block for this role.
+  let cfg = loadConfig(getConfigPath())
+  let roleName = ($parseEnum[UserRole](inv.role, urGuest)).toLowerAscii
+  var initTrust = 50
+  for r in cfg.trust.roles:
+    if r.name.toLowerAscii == roleName:
+      initTrust = r.initial
+      break
+
   var rel = Relationship(
     name: newID,
     identity: $parseEnum[UserRole](inv.role, urGuest),
-    trustLevel: 50,
+    trustLevel: initTrust,
     etiquette: "",
     kind: ekPerson,
     identifiers: initTable[string, seq[string]]()

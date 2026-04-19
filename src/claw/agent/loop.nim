@@ -72,6 +72,7 @@ type
     curly*: Curly  # shared HTTP client, closed in stop()
     # Per-agent capability scoping (resolved by ClawDSL → BASE.json)
     allowedTools*: seq[string]  ## If non-empty, only these tools exposed to LLM
+    memTool*: UnifiedMemoryTool  ## retained for per-turn sender/trust refresh
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
 
@@ -736,6 +737,14 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
           saveRelations(al.officeDir, al.contextBuilder.relations)
 
     let targetRecipient = if opts.recipientID != "": opts.recipientID else: al.agentId
+
+    # Refresh memory-tool context so store/recall see the current requester.
+    # Trust comes from the graph edge (or legacy relationship) resolved above.
+    if al.memTool != nil:
+      let reqTrust = al.contextBuilder.resolveRequesterTrust(
+        logicalUserID, targetRecipient, opts.channel)
+      al.memTool.setRequesterContext(logicalUserID, reqTrust)
+
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
 
     let historyLabel = if logicalUserID != "": logicalUserID else: opts.senderID
@@ -990,6 +999,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let contextBuilder = newContextBuilder(officeDir, workspace, cfg.agents.named)
   contextBuilder.tools = toolsRegistry # Manually bridge for now
   contextBuilder.agentName = agentName
+  contextBuilder.trust = cfg.trust
   # Populate allowedSkills from this agent's ClawDSL uses
   for na in cfg.agents.named:
     if na.name.toLowerAscii() == agentName.toLowerAscii():
@@ -1149,9 +1159,13 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     let pwTool = newPlaywrightTool(pwDir)
     regTagged(pwTool, ["browser", "web", "ui", "automation"], "browser navigate click type screenshot playwright web automation")
 
-  # --- Memory (unified) ---
-  let markdownMemory = newMarkdownMemory(officeDir, workspace)
-  regTagged(newUnifiedMemoryTool(markdownMemory), ["memory", "data", "core"], "store recall list forget memory facts preferences")
+  # --- Memory (unified, trust-gated) ---
+  # Shares the same MemoryStore the ContextBuilder uses for system-prompt
+  # injection so both the auto-injected memory and explicit recall tool
+  # calls see exactly the same data (filtered by the same authorisation).
+  # The loop updates the tool's requester context before each LLM turn.
+  let memTool = newUnifiedMemoryTool(contextBuilder.memory)
+  regTagged(memTool, ["memory", "data", "core"], "store recall list forget memory facts preferences trust-gated")
 
   var al = AgentLoop(
     bus: msgBus,
@@ -1174,7 +1188,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     cronService: cronService,
     summarizing: initTable[string, bool](),
     agentId: "",
-    curly: toolCurly
+    curly: toolCurly,
+    memTool: memTool
   )
   debugCF("agentLoop", "Instance created", {"agent": agentName}.toTable)
   initLock(al.summarizingLock)

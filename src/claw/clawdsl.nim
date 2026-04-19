@@ -67,6 +67,20 @@ type
     policies*: seq[tuple[name, text: string]]
     allowedPaths*: seq[string]
 
+  ClawTrustRole* = object
+    ## A role's trust band + capability grants. Trust is clamped to
+    ## [rangeMin, rangeMax] within this role; crossing requires role change
+    ## via redeem_invite or BASE.nims edit by a SuperAdmin.
+    name*: string         ## lower-case role name (matches cortex UserRole)
+    rangeMin*: int
+    rangeMax*: int
+    initial*: int         ## default trust when transitioning INTO this role
+    grant*: seq[string]   ## tool names granted; "*" = all
+    prompt*: string       ## prose injected into the Social/Security section
+
+  ClawTrust* = object
+    roles*: seq[ClawTrustRole]
+
   ClawGateway* = object
     host*: string
     port*: int
@@ -141,6 +155,7 @@ type
     security*: ClawSecurity
     gateway*: ClawGateway
     tools*: ClawTools
+    trust*: ClawTrust
 
 # ── Global State ──────────────────────────────────────────────────
 
@@ -301,6 +316,41 @@ template security*(body: untyped) =
       spec.security.policies.add((name: polName, text: polText))
     template allowedPath(p: string) {.used.} =
       spec.security.allowedPaths.add(p)
+    body
+
+# ── DSL: Trust ────────────────────────────────────────────────────
+# Role = trust band. Trust drifts inside the band based on behavior; crossing
+# requires role change via `redeem_invite` (with a valid pin) or a SuperAdmin
+# editing BASE.nims. Runtime clamps on write.
+#
+#   trust:
+#     role "guest":
+#       band 0, 40
+#       initial 10
+#       grant "reply", "forward", "update_contact", "redeem_invite"
+#       prompt "⚠️ GUEST PROTOCOL: public info only, never expose internals."
+#     role "master":
+#       band 70, 100
+#       initial 85
+#       grant "*"
+#       prompt "🛡️ HIGH TRUST: this user is your lead."
+
+template trust*(body: untyped) =
+  block:
+    template role(roleName: string, roleBody: untyped) {.used.} =
+      block:
+        var r = ClawTrustRole(name: roleName)
+        template band(lo, hi: int) {.used.} =
+          r.rangeMin = lo
+          r.rangeMax = hi
+        template initial(v: int) {.used.} =
+          r.initial = v
+        template grant(toolNames: varargs[string]) {.used.} =
+          for n in toolNames: r.grant.add(n)
+        template prompt(s: string) {.used.} =
+          r.prompt = s
+        roleBody
+        spec.trust.roles.add(r)
     body
 
 # ── DSL: Gateway ──────────────────────────────────────────────────
@@ -676,6 +726,21 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
   for pol in spec.security.policies:
     policies[pol.name] = %pol.text
 
+  # Trust roles — bands + grants + prompts. Runtime reads this to gate tool
+  # access and render the right Social/Security section text.
+  var trustRoles = newJArray()
+  for r in spec.trust.roles:
+    var grantArr = newJArray()
+    for g in r.grant: grantArr.add(%g)
+    trustRoles.add(%*{
+      "name": r.name.toLowerAscii,
+      "rangeMin": r.rangeMin,
+      "rangeMax": r.rangeMax,
+      "initial": r.initial,
+      "grant": grantArr,
+      "prompt": r.prompt
+    })
+
   result = %*{
     "default_provider": defProvider,
     "default_model": defModel,
@@ -698,6 +763,7 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     "channels": buildChannelConfig(spec),
     "peripherals": {"boards": [], "datasheet_dir": ""},
     "gateway": {"host": spec.gateway.host, "port": spec.gateway.port},
+    "trust": {"roles": trustRoles},
     "tools": {
       "web": {
         "search": {

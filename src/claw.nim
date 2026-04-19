@@ -41,7 +41,7 @@ Usage:
   claw channel <cmd> [<args>...]
   claw agent list
   claw agent caps <name>
-  claw agent prompt <name>
+  claw agent prompt <name> [--as=<userID>]
   claw agent send <name> <message>
   claw skill list [--sort=<key>] [--reverse] [--format=<fmt>]
   claw skill new <name>
@@ -1567,11 +1567,14 @@ when isMainModule:
       quit(1)
     let cb = newContextBuilder(officeDir, workspace, cfg.agents.named)
     cb.agentName = canonical
+    cb.trust = cfg.trust
     for a in cfg.agents.named:
       if a.name == canonical:
         cb.allowedSkills = a.skills
         break
-    echo cb.buildSystemPrompt(userID = "Owner", recipientID = canonical)
+    var asUser = $args["--as"]
+    if asUser == "nil" or asUser.len == 0: asUser = "Owner"
+    echo cb.buildSystemPrompt(userID = asUser, recipientID = canonical)
 
   elif args.isCommand("agent", "send"):
     let dc = newDaemonClient()
