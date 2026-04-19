@@ -6,7 +6,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list]
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app]
 import ../services/cron as cron_service
 import curly
 import ../lib/malebolgia
@@ -1174,6 +1174,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # exposes the key value to the LLM; never writes .env (that's CLI-only).
   regTagged(newProviderAuthTool(), ["admin", "diagnostics", "providers"],
             "verify provider api key deepseek openai anthropic reachable")
+  # SuperAdmin-only: chat-driven Feishu app registration. Lets the
+  # SuperAdmin add new apps without dropping to `claw channel auth`.
+  regTagged(newFeishuAddAppTool(), ["admin", "channels", "feishu"],
+            "register new feishu lark app id secret route agent")
   regTagged(newModelListTool(), ["diagnostics", "providers", "models"],
             "list available llm models capabilities context pricing")
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
