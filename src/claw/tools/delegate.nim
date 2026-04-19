@@ -117,14 +117,29 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
       if ac.apiKey.isSome: tech.apiKey = ac.apiKey.get()
       if ac.systemPrompt.isSome: sysPrompt = ac.systemPrompt.get()
       if ac.temperature.isSome: temperature = ac.temperature.get()
-    
-    # Fallback for provider resolution if still empty
-    if tech.apiKey == "":
-      let providerKey = if tech.model.contains("/"): tech.model.split("/")[0] else: cfg.default_provider
-      if graph.providers.hasKey(providerKey):
-        let pNode = graph.providers[providerKey]
-        tech.apiKey = pNode{"apiKey"}.getStr("")
-        tech.apiBase = pNode{"apiBase"}.getStr("")
+
+  # If graph resolution left apiBase empty (common — agent graph
+  # entities don't carry usesConfig), fall back to the agent's
+  # declared `provider` in cfg.agents.named and read credentials from
+  # the top-level providers vault. This mirrors what the main agent
+  # loop does when constructing its own provider, keeping delegate's
+  # tech resolution consistent with the rest of the system.
+  if tech.apiBase == "":
+    var providerKey = ""
+    for ac in t.agents:
+      if ac.name == agentName:
+        providerKey = ac.provider
+        if tech.model == "" or tech.model == cfg.agents.defaults.model:
+          if ac.model.len > 0: tech.model = ac.model
+        break
+    if providerKey == "" and tech.model.contains("/"):
+      providerKey = tech.model.split("/")[0]
+    if providerKey == "": providerKey = cfg.default_provider
+    if providerKey != "" and graph.providers != nil and
+       graph.providers.hasKey(providerKey):
+      let pNode = graph.providers[providerKey]
+      if tech.apiKey == "": tech.apiKey = expandEnv(pNode{"apiKey"}.getStr(""))
+      tech.apiBase = expandEnv(pNode{"apiBase"}.getStr(""))
 
   try:
     let provider = createProvider(tech.model, tech.apiKey, tech.apiBase)
