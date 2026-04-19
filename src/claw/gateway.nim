@@ -323,6 +323,51 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
     al.sessions.clearSession(msg.session_key)
     return "Switched to `" & providerKey & "/" & modelName & "`. Session cleared."
+  elif cmd.startsWith("/user"):
+    # Namespace for user management: `/user <subcmd> [<args>...]`.
+    # Subcommands dispatch through `runUserCommand` from cli_admin so
+    # the CLI and chat surfaces stay consistent. `/user invite` runs
+    # the same pre-allocated-Customer flow the old top-level `/invite`
+    # did — legacy `/invite` alias is preserved below.
+    let workspace = cfg[].workspacePath()
+    let g = loadWorld(workspace)
+    var callerPerm: Permission = pmAny
+    if g != nil:
+      let channelKey =
+        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+          msg.channel & ":" & msg.metadata["app_id"]
+        else: msg.channel
+      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+      if uint32(entID) > 0 and g.entities.hasKey(entID):
+        let p = g.entities[entID].role.toLowerAscii
+        if p in ["superadmin", "admin"]: callerPerm = pmSuperAdmin
+    let parts = cmd.splitWhitespace()
+    if parts.len < 2:
+      return "Usage: `/user <list|show|trust|invite> [<args>...]`\n" &
+             "Examples:\n" &
+             "  `/user list`\n" &
+             "  `/user show nc:4`\n" &
+             "  `/user trust`\n" &
+             "  `/user invite Alice Atlas`"
+    let sub = parts[1]
+    let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
+    # Read-only subcommands work for anyone with enough role.
+    if sub in ["list", "show", "trust"]:
+      var cfgCopy = cfg[]
+      return runUserCommand(cfgCopy, @[sub] & subArgs)
+    if sub == "invite":
+      # SuperAdmin gate.
+      if callerPerm != pmSuperAdmin:
+        return "`/user invite` requires SuperAdmin."
+      # Rewrite and fall through to the shared invite handler below.
+      # We synthesize `cmdRewrite` and let the /invite branch process it.
+      let cmdRewrite = "/invite " & subArgs.join(" ")
+      var fakeMsg = msg
+      fakeMsg.content = cmdRewrite
+      return await handleSystemCommand(cfg, fakeMsg, al)
+    return "Unknown /user subcommand: `" & sub & "`.\n" &
+           "Try `/user list`, `/user show <nc:id>`, `/user trust`, or `/user invite <name>`."
+
   elif cmd.startsWith("/invite"):
     # `/invite <customer-name> [<agent>] [<uses>]` — SuperAdmin-only
     # chat shortcut that pre-allocates a Customer Person entity + mints
@@ -330,6 +375,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # The customer sends that string as their first message to any
     # channel routing to <agent> and the gateway's customer-invite
     # intercept authenticates them without involving the LLM.
+    # (Legacy alias — prefer `/user invite` for consistency.)
     let workspace = cfg[].workspacePath()
     var g = loadWorld(workspace)
     var permOk = false
@@ -763,14 +809,14 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
     examples: @["/channel list",
                 "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas"]))
   register(SystemCommand(
-    name: "/invite", summary: "Mint a one-shot customer-access code (nc:X/CODE).",
-    usage: "/invite <customer-name> [<agent>] [<uses>]",
-    group: "admin", menuHint: "Invite customer", permission: pmSuperAdmin,
+    name: "/user", summary: "User management (list, show, trust, invite).",
+    usage: "/user <list|show|trust|invite> [<args>...]",
+    group: "admin", menuHint: "Users", permission: pmAny,
     args: @[
-      CmdArg(name: "customer-name", description: "Customer display name", required: true),
-      CmdArg(name: "agent", description: "Agent that serves them (default: first declared)", required: false),
-      CmdArg(name: "uses", description: "How many redemptions (default: 1)", required: false)],
-    examples: @["/invite Alice", "/invite Acme Atlas 1"]))
+      CmdArg(name: "subcommand", description: "list | show | trust | invite", required: true),
+      CmdArg(name: "args", description: "subcommand-specific (e.g. `invite Alice Atlas`)", required: false)],
+    examples: @["/user list", "/user show nc:4", "/user trust",
+                "/user invite Alice", "/user invite Acme Atlas 1"]))
   register(SystemCommand(
     name: "/restart", summary: "Restart the gateway (picks up config changes).",
     usage: "/restart", group: "admin",
