@@ -16,24 +16,48 @@ proc newDelegateTool*(workspace: string, agents: seq[NamedAgentConfig] = @[], fa
   return DelegateTool(workspace: workspace, agents: agents, fallbackApiKey: fallbackApiKey, depth: depth)
 
 method name*(t: DelegateTool): string = "delegate"
-method description*(t: DelegateTool): string = "Delegate a subtask to a specialized agent. Use when a task benefits from a different model."
+method description*(t: DelegateTool): string =
+  ## Enumerate declared peers so the LLM picks a real agent (not a
+  ## skill name, not a hallucinated one). Include each peer's
+  ## jobTitle + skills so the LLM has enough context to route.
+  var lines: seq[string] = @[
+    "Delegate a sub-task to a peer agent in this company. Use when " &
+    "the task requires a tool or expertise that you don't have but a " &
+    "peer does — the peer answers, you relay."]
+  if t.agents.len > 0:
+    lines.add("")
+    lines.add("Available peer agents (pick by exact name):")
+    for a in t.agents:
+      var bits: seq[string] = @[]
+      if a.role.isSome and a.role.get().len > 0: bits.add("role: " & a.role.get())
+      if a.skills.len > 0: bits.add("skills: " & a.skills.join(", "))
+      let detail = if bits.len > 0: " — " & bits.join(" · ") else: ""
+      lines.add("  - \"" & a.name & "\"" & detail)
+  lines.join("\n")
+
 method parameters*(t: DelegateTool): Table[string, JsonNode] =
+  var agentParam = %*{
+    "type": "string",
+    "minLength": 1,
+    "description": "Exact name of the peer agent to delegate to. Must match one of the declared agents listed in this tool's description — NOT a skill name."
+  }
+  # Constrain the agent name to a real enum so the LLM can't hallucinate.
+  if t.agents.len > 0:
+    var names = newJArray()
+    for a in t.agents: names.add(%a.name)
+    agentParam["enum"] = names
   {
     "type": %"object",
     "properties": %*{
-      "agent": {
-        "type": "string",
-        "minLength": 1,
-        "description": "Name of the agent to delegate to"
-      },
+      "agent": agentParam,
       "prompt": {
         "type": "string",
         "minLength": 1,
-        "description": "The task/prompt to send to the sub-agent"
+        "description": "The task/prompt to send to the peer. Include caller's nc:id, verbatim question, and any format hint (table, brief, per-plant, etc.)."
       },
       "context": {
         "type": "string",
-        "description": "Optional context to prepend"
+        "description": "Optional context to prepend."
       }
     },
     "required": %["agent", "prompt"]
