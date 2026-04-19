@@ -43,6 +43,7 @@ Usage:
   claw role <cmd> [<args>...]
   claw agent list
   claw agent caps <name>
+  claw agent edit <name> <field> <value>
   claw agent prompt <name> [--as=<userID>]
   claw agent send <name> <message> [--from=<id>] [--channel=<ch>]
   claw skill list [--sort=<key>] [--reverse] [--format=<fmt>]
@@ -1495,6 +1496,11 @@ when isMainModule:
   elif args.isCommand("agent", "list"):
     var cfg = loadConfig(getConfigPath())
     echo runAgentsCommand(cfg, @["list"])
+
+  elif args.isCommand("agent", "edit"):
+    var cfg = loadConfig(getConfigPath())
+    let editArgs = @["edit", $args["<name>"], $args["<field>"], $args["<value>"]]
+    echo runAgentsCommand(cfg, editArgs)
 
   elif args.isCommand("agent", "caps"):
     let name = $args["<name>"]

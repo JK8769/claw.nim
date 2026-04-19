@@ -2097,7 +2097,7 @@ proc renderQRAsString(qr: DrawedQRCode): string =
 
 proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: nimclaw agents <list|add|remove|access|bizcard|rename|status|journal> [args]\n\nCommands:\n  list              List all named agents\n  add <name> <model> [provider] [prompt]\n                    Add a new named agent\n  remove <name>     Remove a named agent\n  rename <old> <new> Rename an agent in config and graph\n  access <name> <mode> \n                    Toggle public/private access\n  bizcard <name> [customer]\n                    Generate a business card\n  status <name>     Check detailed agent status\n  journal <name>    View recent agent activity journal"
+    return "Usage: nimclaw agents <list|add|remove|edit|access|bizcard|rename|status|journal> [args]\n\nCommands:\n  list              List all named agents\n  add <name> <model> [provider] [prompt]\n                    Add a new named agent\n  remove <name>     Remove a named agent\n  edit <name> <field> <value>\n                    Set a DSL field in BASE.nims (jobTitle, model, role,\n                    identity, profile, provider)\n  rename <old> <new> Rename an agent in config and graph\n  access <name> <mode> \n                    Toggle public/private access\n  bizcard <name> [customer]\n                    Generate a business card\n  status <name>     Check detailed agent status\n  journal <name>    View recent agent activity journal"
 
   var subcmd = args[0]
   var targetAgent = ""
@@ -2106,7 +2106,7 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
   # Support flexible syntax:
   # 1. nimclaw agents bizcard secretary "Boss"
   # 2. nimclaw agents secretary bizcard "Boss"
-  let knownCmds = ["list", "add", "remove", "access", "bizcard", "rename", "status", "journal"]
+  let knownCmds = ["list", "add", "remove", "edit", "access", "bizcard", "rename", "status", "journal"]
   if subcmd notin knownCmds:
     # Check if first arg is an agent name
     for a in cfg.agents.named:
@@ -2413,10 +2413,97 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
     else:
       return "Error: Invalid mode. Use 'public' or 'private'."
 
+  if subcmd == "edit":
+    # Set a string-valued field in the agent's declaration block in
+    # BASE.nims. Only touches direct children of `agent "<name>":` (2-
+    # space indent), so nested `role` inside a reportsTo annotation is
+    # safe from accidental rewrites.
+    let needName = (targetAgent == "" and finalArgs.len < 4) or
+                   (targetAgent != "" and finalArgs.len < 3)
+    if needName:
+      return "Usage: claw agent edit <name> <field> <value>\n" &
+             "Fields: jobTitle, model, role, identity, profile, provider.\n" &
+             "Example: claw agent edit Lexi jobTitle Secretary\n" &
+             "Run `claw co update` afterwards to regenerate BASE.json."
+    let name = if targetAgent != "": targetAgent else: finalArgs[1]
+    let fieldRaw = if targetAgent != "": finalArgs[1] else: finalArgs[2]
+    let value = if targetAgent != "": finalArgs[2] else: finalArgs[3]
+    # DSL uses camelCase; accept any case from the user.
+    let fieldMap = {
+      "jobtitle": "jobTitle",
+      "title": "jobTitle",
+      "model": "model",
+      "role": "role",
+      "identity": "identity",
+      "profile": "profile",
+      "provider": "provider"
+    }.toTable
+    let fl = fieldRaw.toLowerAscii
+    if not fieldMap.hasKey(fl):
+      return "Error: unsupported field \"" & fieldRaw & "\".\n" &
+             "Supported: jobTitle, model, role, identity, profile, provider."
+    let field = fieldMap[fl]
+    if value.len == 0:
+      return "Error: value must not be empty."
+    if '"' in value:
+      return "Error: value cannot contain a double-quote."
+
+    let baseNims = getNimClawDir() / "BASE.nims"
+    if not fileExists(baseNims):
+      return "Error: no BASE.nims at " & baseNims
+    let existing = readFile(baseNims)
+    let lines = existing.splitLines()
+    var start = -1
+    for i, l in lines:
+      if l.strip() == "agent \"" & name & "\":":
+        start = i; break
+    if start < 0:
+      return "Error: no `agent \"" & name & "\":` block in BASE.nims."
+    var endIdx = start + 1
+    while endIdx < lines.len:
+      let l = lines[endIdx]
+      if l.strip().len > 0 and not l.startsWith(" ") and not l.startsWith("\t"):
+        break
+      inc endIdx
+
+    proc leadIndent(s: string): int =
+      var i = 0
+      while i < s.len and s[i] == ' ': inc i
+      i
+
+    var fieldLine = -1
+    var oldValue = ""
+    for i in start + 1 ..< endIdx:
+      let line = lines[i]
+      # Direct children of the agent block live at 2-space indent — this
+      # skips `role "boss"` inside a 4-space-indented reportsTo block.
+      if leadIndent(line) != 2: continue
+      let s = line[2 ..< line.len]
+      if s.startsWith(field & " \""):
+        fieldLine = i
+        let open = line.find("\"")
+        let close = line.rfind("\"")
+        if open >= 0 and close > open: oldValue = line[open + 1 ..< close]
+        break
+    var updated = lines
+    let newLine = "  " & field & " \"" & value & "\""
+    if fieldLine < 0:
+      # Field absent — insert directly after the agent header.
+      updated.insert(newLine, start + 1)
+      writeFile(baseNims, updated.join("\n"))
+      return "Added " & name & "." & field & " = \"" & value & "\" in BASE.nims.\n" &
+             "Run `claw co update` to regenerate BASE.json."
+    if oldValue == value:
+      return "No change: " & name & "." & field & " is already \"" & value & "\"."
+    updated[fieldLine] = newLine
+    writeFile(baseNims, updated.join("\n"))
+    return "Set " & name & "." & field & ": \"" & oldValue & "\" → \"" & value & "\"\n" &
+           "Run `claw co update` to regenerate BASE.json."
+
   if subcmd == "rename":
     if finalArgs.len < 2 and targetAgent == "":
       return "Usage: nimclaw agents rename <old_name> <new_name>"
-    
+
     let oldName = if targetAgent != "": targetAgent else: finalArgs[1]
     let newName = if targetAgent != "": finalArgs[1] else: finalArgs[2]
     
