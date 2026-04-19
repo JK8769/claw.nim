@@ -342,13 +342,39 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         let p = g.entities[entID].role.toLowerAscii
         if p in ["superadmin", "admin"]: callerPerm = pmSuperAdmin
     let parts = cmd.splitWhitespace()
-    if parts.len < 2:
-      return "Usage: `/user <list|show|trust|invite> [<args>...]`\n" &
-             "Examples:\n" &
-             "  `/user list`\n" &
-             "  `/user show nc:4`\n" &
+    if parts.len < 2 or parts[1] == "help":
+      return "**`/user` — user management**\n\n" &
+             "**Subcommands**\n\n" &
+             "  `/user list` [filters]\n" &
+             "    Roster of all users in this company. Filters:\n" &
+             "      `--kind=<Person|AI|Unknown|Service>`\n" &
+             "      `--tier=<int|ext|?>`\n" &
+             "      `--permission=<role>`\n" &
+             "      `--sort=<nc|name|kind|permission|tier|role>`\n" &
+             "      `--reverse`  `--format=<table|json>`\n" &
+             "    Example: `/user list --kind=Unknown` (guests to classify)\n\n" &
+             "  `/user show <nc:id>`\n" &
+             "    Detailed view of one user — declared permission, tier,\n" &
+             "    job title, every identifier, outbound + inbound\n" &
+             "    relationships (trust + etiquette), mood for agents.\n" &
+             "    Example: `/user show nc:4`\n\n" &
              "  `/user trust`\n" &
-             "  `/user invite Alice Atlas`"
+             "    Edge list of the trust graph: one row per declared\n" &
+             "    agent→person edge (agent, edge kind, person, tier,\n" &
+             "    role, trust, etiquette). Shows per-agent divergence\n" &
+             "    that `/user list` collapses.\n" &
+             "    Example: `/user trust`\n\n" &
+             "  `/user invite <customer-name> [<agent>] [<uses>]`   🔒 SuperAdmin\n" &
+             "    Pre-allocates a Customer Person entity + mints a\n" &
+             "    one-shot access code (`nc:X/CODE`). Returns three\n" &
+             "    paste-ready sentence templates the customer can\n" &
+             "    forward to their channel. On first message, the\n" &
+             "    gateway authenticates them before the LLM.\n" &
+             "    Examples:\n" &
+             "      `/user invite Alice`          — Atlas, 1 use\n" &
+             "      `/user invite Acme Atlas 3`   — Atlas, 3 redemptions\n\n" &
+             "Read-only subs (list, show, trust) work for any caller.\n" &
+             "`invite` is SuperAdmin only."
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
     # Read-only subcommands work for anyone with enough role.
