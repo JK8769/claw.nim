@@ -2,7 +2,7 @@
 ## gateway — Long-running gateway process: agents, channels, cron.
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
-import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets]
+import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin
 import providers/http, providers/types as providers_types, protocol
@@ -295,6 +295,100 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
     al.sessions.clearSession(msg.session_key)
     return "Switched to `" & providerKey & "/" & modelName & "`. Session cleared."
+  elif cmd.startsWith("/invite"):
+    # `/invite <customer-name> [<agent>] [<uses>]` — SuperAdmin-only
+    # chat shortcut that pre-allocates a Customer Person entity + mints
+    # an invite code, returns the bundled `nc:X/CODE` string to share.
+    # The customer sends that string as their first message to any
+    # channel routing to <agent> and the gateway's customer-invite
+    # intercept authenticates them without involving the LLM.
+    let workspace = cfg[].workspacePath()
+    var g = loadWorld(workspace)
+    var permOk = false
+    var issuer = ""
+    if g != nil:
+      let channelKey =
+        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+          msg.channel & ":" & msg.metadata["app_id"]
+        else: msg.channel
+      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+      if uint32(entID) > 0 and g.entities.hasKey(entID):
+        issuer = toAlias(entID)
+        let p = g.entities[entID].role.toLowerAscii
+        if p in ["superadmin", "admin"]: permOk = true
+    if not permOk:
+      return "`/invite` requires SuperAdmin. Your current permission " &
+             "doesn't allow minting customer access codes."
+    let parts = cmd.splitWhitespace()
+    if parts.len < 2:
+      return "Usage: `/invite <customer-name> [<agent>] [<uses>]`\n" &
+             "Examples:\n" &
+             "  `/invite Alice`              → customer served by " &
+             (if cfg.agents.named.len > 0: cfg.agents.named[0].name else: "default") &
+             ", 1 use\n" &
+             "  `/invite Acme Lexi 1`        → customer served by Lexi, 1 use\n" &
+             "  `/invite BulkCustomer Lexi 10` → shared code, 10 redemptions"
+    let customerName = parts[1]
+    let agentName =
+      if parts.len >= 3: parts[2]
+      elif cfg.agents.named.len > 0: cfg.agents.named[0].name
+      else: msg.recipient_id
+    var maxUses = 1
+    if parts.len >= 4:
+      try: maxUses = parseInt(parts[3])
+      except: discard
+    if '"' in customerName:
+      return "Error: customer name cannot contain a double-quote."
+    # Validate agent exists.
+    var agentID = WorldEntityID(0)
+    if g.nameIndex.hasKey(agentName): agentID = g.nameIndex[agentName]
+    if uint32(agentID) == 0 or not g.entities.hasKey(agentID) or
+       g.entities[agentID].kind != ekAI:
+      var known: seq[string]
+      for id, ent in g.entities.pairs:
+        if ent.kind == ekAI: known.add(ent.name)
+      return "Error: no agent named `" & agentName & "`. Known: " &
+             known.join(", ") & "."
+    # Pre-allocate the customer entity.
+    let newID = WorldEntityID(g.nextID)
+    g.nextID += 1
+    var ent = WorldEntity(
+      id: newID,
+      kind: ekPerson,
+      name: customerName,
+      role: "Customer",
+      identifiers: initTable[string, string]()
+    )
+    g.entities[newID] = ent
+    g.nameIndex[customerName] = newID
+    var agent = g.entities[agentID]
+    let annot = RelationshipAnnotation(
+      role: urCustomer, trustLevel: 40, etiquette: "")
+    agent.serves.add(RelationshipLink(
+      targetID: newID, annotation: some(annot)))
+    g.entities[agentID] = agent
+    g.saveWorld()
+    # Mint the code.
+    var invMap = loadInvites(workspace)
+    randomize()
+    var code = generateInviteCode()
+    while invMap.hasKey(code): code = generateInviteCode()
+    let alias = toAlias(newID)
+    invMap[code] = InviteConstraint(
+      code: code, agentName: agentName, customerName: customerName,
+      role: "customer", maxUses: maxUses, expiry: 0, pinless: false,
+      issuedBy: issuer, createdAt: getTime().toUnix(),
+      usedBy: "", usedAt: 0, targetNcId: alias)
+    saveInvites(workspace, invMap)
+    return "**Customer invite created**\n\n" &
+           "Share this string:  `" & alias & "/" & code & "`\n\n" &
+           "  Customer: `" & customerName & "` (" & alias & ")\n" &
+           "  Agent:    " & agentName & "\n" &
+           "  Max uses: " & $maxUses & "\n\n" &
+           "The customer DMs that string to any channel routing to " &
+           agentName & " and gets authenticated before the LLM turn. " &
+           "Use `/status` to confirm."
+
   elif cmd == "/restart":
     # SuperAdmin-only: stop the current gateway and launch a fresh one
     # so config/DSL changes (e.g. a freshly added Feishu app) take
