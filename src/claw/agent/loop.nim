@@ -939,7 +939,8 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     al.logTaskHeader(ctx, atFinish)
 
 proc processMessage*(al: AgentLoop, msg: InboundMessage): Future[string] {.async.} =
-  infoCF("agent", "Processing message from " & msg.channel & ":" & msg.sender_id, {"session_key": msg.session_key}.toTable)
+  infoCF("agent", "Processing message from " & msg.channel & ":" & msg.sender_id,
+    {"session_key": msg.session_key, "chat_kind": $msg.chat_kind, "chat_id": msg.chat_id}.toTable)
 
   # Determine streamIntermediary based on channel config, fallback to agent defaults
   let channelStreamIntermediary = case msg.channel:

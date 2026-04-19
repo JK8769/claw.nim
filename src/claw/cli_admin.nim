@@ -953,11 +953,137 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     return res
 
   if subcmd == "merge":
-    return "TODO: `user merge <source-nc> <target-nc>` — SuperAdmin-only\n" &
-           "identity consolidation. Will move channel identifiers, memory,\n" &
-           "and sessions from the source nc:id into the target, then drop\n" &
-           "the source entity. Not yet implemented — use `claw user list`\n" &
-           "to see candidates."
+    if args.len < 3:
+      return "Usage: claw user merge <source-nc:id> <target-nc:id>\n" &
+             "Folds the source entity into the target: identifiers, memory\n" &
+             "files, session files, and any inbound relationship edges are\n" &
+             "moved across, then the source is removed from the graph.\n" &
+             "Both must resolve to existing Person entities."
+    let srcAlias = args[1]
+    let tgtAlias = args[2]
+    if not srcAlias.startsWith("nc:") or not tgtAlias.startsWith("nc:"):
+      return "Error: both arguments must be nc:id form (e.g. nc:4, nc:5)."
+    let srcID = parseAlias(srcAlias)
+    let tgtID = parseAlias(tgtAlias)
+    if uint32(srcID) == 0 or not graph.entities.hasKey(srcID):
+      return "Error: source " & srcAlias & " not found in graph."
+    if uint32(tgtID) == 0 or not graph.entities.hasKey(tgtID):
+      return "Error: target " & tgtAlias & " not found in graph."
+    if srcID == tgtID:
+      return "Error: source and target are the same entity."
+    if graph.entities[srcID].kind != ekPerson or
+       graph.entities[tgtID].kind != ekPerson:
+      return "Error: merge is only defined over Person entities."
+
+    let srcEnt = graph.entities[srcID]
+    var tgtEnt = graph.entities[tgtID]
+    var moves: seq[string] = @[]
+
+    # 1. Channel identifiers — merge source's slots into target, skipping
+    #    any that target already has (target wins on conflict).
+    for chan, sid in srcEnt.identifiers.pairs:
+      if not tgtEnt.identifiers.hasKey(chan):
+        tgtEnt.identifiers[chan] = sid
+        moves.add("  + identifier " & chan & " → " & tgtAlias)
+      else:
+        moves.add("  ~ identifier " & chan & " already on " & tgtAlias &
+                  " (source value dropped)")
+    graph.entities[tgtID] = tgtEnt
+
+    # 2. Per-office memory + session file migration. Each agent's office
+    #    has its own nc_<N>.jsonl under memory/ and sessions/. We append
+    #    source lines into the target file so conversation history is
+    #    preserved (order by timestamp stays roughly correct since both
+    #    streams are already timestamp-ordered per-file).
+    let srcKey = srcAlias.replace(":", "_")
+    let tgtKey = tgtAlias.replace(":", "_")
+    let officesDir = cfg.workspacePath() / "offices"
+    if dirExists(officesDir):
+      for kind, office in walkDir(officesDir):
+        if kind != pcDir: continue
+        for sub in ["memory", "sessions"]:
+          let srcFile = office / sub / (srcKey & ".jsonl")
+          let tgtFile = office / sub / (tgtKey & ".jsonl")
+          if fileExists(srcFile):
+            let body = readFile(srcFile)
+            let f = open(tgtFile, fmAppend)
+            if not tgtFile.fileExists() or body.len > 0:
+              f.write(body)
+            f.close()
+            removeFile(srcFile)
+            moves.add("  + merged " & sub & "/" & srcKey &
+                      ".jsonl → " & office.lastPathPart & "/" & sub &
+                      "/" & tgtKey & ".jsonl")
+          # Session .meta.json: take target's if present, else source's.
+          if sub == "sessions":
+            let srcMeta = office / sub / (srcKey & ".meta.json")
+            let tgtMeta = office / sub / (tgtKey & ".meta.json")
+            if fileExists(srcMeta):
+              if not fileExists(tgtMeta):
+                moveFile(srcMeta, tgtMeta)
+                moves.add("  + moved session meta → " & office.lastPathPart)
+              else:
+                removeFile(srcMeta)
+
+    # 3. Relationship edges — every agent whose serves/reportsTo points
+    #    at srcID gets redirected to tgtID. Duplicates (already pointing
+    #    at tgtID) are dropped.
+    for id, ent in graph.entities.mpairs:
+      if ent.kind != ekAI: continue
+      var changed = false
+      var newServes: seq[RelationshipLink]
+      for link in ent.serves:
+        if link.targetID == srcID:
+          # Skip if target already has an inbound edge from this agent.
+          var dup = false
+          for existing in ent.serves:
+            if existing.targetID == tgtID: dup = true; break
+          if not dup:
+            var redirected = link
+            redirected.targetID = tgtID
+            newServes.add(redirected)
+          changed = true
+        else:
+          newServes.add(link)
+      if changed: ent.serves = newServes
+
+      var newReports: seq[RelationshipLink]
+      var chRep = false
+      for link in ent.reportsTo:
+        if link.targetID == srcID:
+          var dup = false
+          for existing in ent.reportsTo:
+            if existing.targetID == tgtID: dup = true; break
+          if not dup:
+            var redirected = link
+            redirected.targetID = tgtID
+            newReports.add(redirected)
+          chRep = true
+        else:
+          newReports.add(link)
+      if chRep: ent.reportsTo = newReports
+      if changed or chRep:
+        moves.add("  ~ " & ent.name & "'s relationship edges redirected")
+
+    # 4. Drop source entity + indexes.
+    graph.entities.del(srcID)
+    if graph.nameIndex.hasKey(srcEnt.name) and
+       graph.nameIndex[srcEnt.name] == srcID:
+      graph.nameIndex.del(srcEnt.name)
+    graph.idAliasIndex.del(srcAlias)
+    # nknIndex slot (legacy addUserToGraph writes "nkn": senderID)
+    for nknKey in srcEnt.identifiers.values:
+      if graph.nknIndex.hasKey(nknKey) and graph.nknIndex[nknKey] == srcID:
+        graph.nknIndex.del(nknKey)
+
+    graph.saveWorld()
+
+    var res = "Merged " & srcAlias & " → " & tgtAlias & ".\n"
+    res.add(moves.join("\n"))
+    if moves.len == 0:
+      res.add("  (source had no movable data)")
+    res.add("\n\nGraph updated. Verify with `claw user list`.")
+    return res
 
   if subcmd == "invite":
     return "TODO: `user invite <inviter-nc> [role]` — generate a one-time\n" &
