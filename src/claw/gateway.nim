@@ -380,6 +380,30 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       issuedBy: issuer, createdAt: getTime().toUnix(),
       usedBy: "", usedAt: 0, targetNcId: alias)
     saveInvites(workspace, invMap)
+    # Persist the Customer to BASE.nims so `co update` keeps them.
+    # Identifiers get appended when they redeem.
+    let baseNims = getNimClawDir() / "BASE.nims"
+    if fileExists(baseNims):
+      var bLines = readFile(baseNims).splitLines()
+      var exists = false
+      for l in bLines:
+        if l.strip() == "person \"" & customerName & "\":":
+          exists = true; break
+      if not exists:
+        # Insert before `build(currentSourcePath())`.
+        var insertAt = bLines.len
+        for i, l in bLines:
+          if l.strip().startsWith("build(currentSourcePath"):
+            insertAt = i; break
+        let newBlock = @[
+          "",
+          "person \"" & customerName & "\":",
+          "  permission \"Customer\""
+        ]
+        var merged = bLines[0 ..< insertAt]
+        for l in newBlock: merged.add(l)
+        for i in insertAt ..< bLines.len: merged.add(bLines[i])
+        writeFile(baseNims, merged.join("\n"))
     return "**Customer invite created**\n\n" &
            "Share this string:  `" & alias & "/" & code & "`\n\n" &
            "  Customer: `" & customerName & "` (" & alias & ")\n" &
@@ -769,14 +793,22 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
                       msg.channel & ":" & msg.metadata["app_id"]
                     else: msg.channel
                   var ent = g.entities[targetID]
+                  var persisted: seq[(string, string)] =
+                    @[(channelKey, msg.sender_id)]
                   ent.identifiers[channelKey] = msg.sender_id
                   if msg.channel == "feishu":
                     let unionID = msg.metadata.getOrDefault("union_id", "")
-                    if unionID.len > 0: ent.identifiers["feishu:union"] = unionID
+                    if unionID.len > 0:
+                      ent.identifiers["feishu:union"] = unionID
+                      persisted.add(("feishu:union", unionID))
                     let userID = msg.metadata.getOrDefault("user_id", "")
-                    if userID.len > 0: ent.identifiers["feishu:user"] = userID
+                    if userID.len > 0:
+                      ent.identifiers["feishu:user"] = userID
+                      persisted.add(("feishu:user", userID))
                   g.entities[targetID] = ent
                   g.saveWorld()
+                  persistPersonIdentifiers(
+                    getNimClawDir() / "BASE.nims", ent.name, persisted)
                   # Burn / decrement.
                   inv.usedBy = channelKey & ":" & msg.sender_id
                   inv.usedAt = getTime().toUnix()

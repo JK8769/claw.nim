@@ -100,6 +100,67 @@ proc ensureSuperAdminBindings*(graph: WorldGraph, workspace: string): seq[Bindin
     saveBindings(workspace, active)
   newOnes
 
+proc persistPersonIdentifiers*(baseNimsPath, personName: string,
+                               idents: openArray[(string, string)]) =
+  ## Append missing `identifier "chan", "val"` lines to the given
+  ## `person "<name>":` block in BASE.nims. Idempotent — skips pairs
+  ## already present on that channel key (same or different value, so
+  ## a bind-then-rebind overwrites cleanly instead of appending dupes).
+  ## No-op if the person block doesn't exist or the file is missing.
+  if not fileExists(baseNimsPath): return
+  var lines = readFile(baseNimsPath).splitLines()
+  let marker = "person \"" & personName & "\":"
+  var start = -1
+  for i, l in lines:
+    if l.strip() == marker: start = i; break
+  if start < 0: return
+  var endIdx = start + 1
+  while endIdx < lines.len:
+    let l = lines[endIdx]
+    if l.strip().len > 0 and not l.startsWith(" ") and not l.startsWith("\t"):
+      break
+    inc endIdx
+  # Build a set of existing channel keys inside the block — drop any
+  # prior `identifier "K", ...` lines for channel keys we're writing
+  # (an update replaces rather than duplicates).
+  var wanted = initTable[string, string]()
+  for (k, v) in idents:
+    if k.len > 0 and v.len > 0: wanted[k] = v
+  if wanted.len == 0: return
+  var updated: seq[string]
+  for i in 0 ..< lines.len:
+    if i >= start + 1 and i < endIdx:
+      let stripped = lines[i].strip(leading = true, trailing = false)
+      var drop = false
+      for k in wanted.keys:
+        if stripped.startsWith("identifier \"" & k & "\","):
+          drop = true; break
+      if drop: continue
+    updated.add(lines[i])
+  # Recompute block bounds after any drops — we want to insert before
+  # the block ends. Simplest: find the marker again in `updated`.
+  var ns = -1
+  for i, l in updated:
+    if l.strip() == marker: ns = i; break
+  var ne = ns + 1
+  while ne < updated.len:
+    let l = updated[ne]
+    if l.strip().len > 0 and not l.startsWith(" ") and not l.startsWith("\t"):
+      break
+    inc ne
+  # Insert new lines at the end of the block (before ne).
+  var insertAt = ne
+  # Skip trailing blanks — keep insertion inside the block body.
+  while insertAt > ns + 1 and updated[insertAt - 1].strip().len == 0:
+    dec insertAt
+  var inserts: seq[string]
+  for k, v in wanted.pairs:
+    inserts.add("  identifier \"" & k & "\", \"" & v & "\"")
+  var finalLines = updated[0 ..< insertAt]
+  for l in inserts: finalLines.add(l)
+  for i in insertAt ..< updated.len: finalLines.add(updated[i])
+  writeFile(baseNimsPath, finalLines.join("\n"))
+
 proc tryBind*(graph: WorldGraph, workspace: string,
               channelKey, senderID, message: string,
               extras: openArray[(string, string)] = []): Option[BindingCode] =
@@ -132,6 +193,14 @@ proc tryBind*(graph: WorldGraph, workspace: string,
   graph.saveWorld()
   codes.delete(matchedIdx)
   saveBindings(workspace, codes)
+  # Persist the new identifiers into BASE.nims so `co update` doesn't
+  # wipe them. Silent no-op if the person isn't declared there (which
+  # would be odd for a SuperAdmin bind target but defensible).
+  var pairs: seq[(string, string)] = @[(channelKey, senderID)]
+  for (k, v) in extras:
+    if k.len > 0 and v.len > 0: pairs.add((k, v))
+  persistPersonIdentifiers(
+    workspace.parentDir / "BASE.nims", ent.name, pairs)
   some(matched)
 
 proc rebind*(graph: WorldGraph, workspace: string,
