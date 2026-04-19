@@ -490,8 +490,14 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
             if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
               msg.channel & ":" & msg.metadata["app_id"]
             else: msg.channel
+          # Tenant-scoped identifiers — let Feishu's union_id cover every
+          # app in the same tenant with a single bind.
+          var extras: seq[(string, string)]
+          if msg.channel == "feishu":
+            let unionID = msg.metadata.getOrDefault("union_id", "")
+            if unionID.len > 0: extras.add(("feishu:union", unionID))
           let bound = tryBind(g, workspace, channelKey,
-                              msg.sender_id, plainContent)
+                              msg.sender_id, plainContent, extras)
           if bound.isSome:
             let b = bound.get
             stderr.writeLine "claw: bound " & b.targetNcId & " (" & b.targetName &

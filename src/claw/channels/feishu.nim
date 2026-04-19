@@ -526,6 +526,15 @@ proc readEvents(p: Process, c: FeishuChannel, appID: string) =
         finalContent = "[Non-text message: " & messageType & "]"
 
       var metadata = {"message_id": messageID, "app_id": appID}.toTable
+      # Tenant-scoped cross-app identifiers: `union_id` is stable across
+      # all apps published by the same Feishu tenant; `user_id` is the
+      # tenant's internal employee ID (only present for corporate users
+      # in the same org). Either lets the binding/resolver recognize
+      # the same human on a different app without a second bind.
+      let unionID = evt.getOrDefault("union_id").getStr()
+      if unionID.len > 0: metadata["union_id"] = unionID
+      let userID = evt.getOrDefault("user_id").getStr()
+      if userID.len > 0: metadata["user_id"] = userID
       if rootID.len > 0:
         metadata["root_id"] = rootID
       if parentID.len > 0:

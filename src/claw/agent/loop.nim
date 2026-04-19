@@ -39,6 +39,8 @@ type
     chatKind*: ChatKind
     replyToMessageID*: string
     appID*: string
+    unionID*: string  ## Feishu tenant-stable ID (cross-app). Resolver
+                      ## uses it when the per-app key misses.
     userMessage*: string
     defaultResponse*: string
     enableSummary*: bool
@@ -651,6 +653,21 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
     channelKey, opts.senderID, agentId)
   var entityID = resolvedID
 
+  # Feishu cross-app fallback: tenant-stable `union_id` matches the same
+  # human across every app the bind never touched directly.
+  if uint32(entityID) == 0 and opts.channel == "feishu" and
+     opts.unionID.len > 0:
+    let (uID, _) = graph.resolveUserGraph(
+      "feishu:union", opts.unionID, agentId)
+    if uint32(uID) > 0:
+      # Found via union — stamp this app's per-app (channelKey, senderID)
+      # onto the entity so subsequent messages hit the fast path.
+      entityID = uID
+      var ent = graph.entities[entityID]
+      ent.identifiers[channelKey] = opts.senderID
+      graph.entities[entityID] = ent
+      graph.saveWorld()
+
   # Name-based fallback — CLI or any channel where the sender hasn't yet
   # been registered with a channel identifier. Matches resolveRequesterTrust
   # so session + trust agree on who's talking.
@@ -730,6 +747,18 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       let chKey = channelIdentifierKey(opts.channel, opts.appID)
       let (resolvedID, annotOpt) = al.contextBuilder.graph.resolveUserGraph(chKey, opts.senderID, agentId)
       var entityID = resolvedID
+      # Feishu cross-app fallback: try union_id when the per-app key
+      # misses, then stamp the per-app key for future fast-path lookups.
+      if uint32(entityID) == 0 and opts.channel == "feishu" and
+         opts.unionID.len > 0:
+        let (uID, _) = al.contextBuilder.graph.resolveUserGraph(
+          "feishu:union", opts.unionID, agentId)
+        if uint32(uID) > 0:
+          entityID = uID
+          var ent = al.contextBuilder.graph.entities[entityID]
+          ent.identifiers[chKey] = opts.senderID
+          al.contextBuilder.graph.entities[entityID] = ent
+          al.contextBuilder.graph.saveWorld()
       # Name-based fallback — catches CLI / first-contact cases where the
       # sender isn't yet mapped via a channel identifier. Matches the
       # identitySessionKey derivation and resolveRequesterTrust, so
@@ -965,6 +994,7 @@ proc processMessage*(al: AgentLoop, msg: InboundMessage): Future[string] {.async
     chatKind: msg.chat_kind,
     replyToMessageID: msg.metadata.getOrDefault("message_id", ""),
     appID: msg.metadata.getOrDefault("app_id", ""),
+    unionID: msg.metadata.getOrDefault("union_id", ""),
     userMessage: msg.content,
     defaultResponse: "I've completed processing but have no response to give.",
     enableSummary: true,

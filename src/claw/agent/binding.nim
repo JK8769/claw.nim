@@ -101,10 +101,14 @@ proc ensureSuperAdminBindings*(graph: WorldGraph, workspace: string): seq[Bindin
   newOnes
 
 proc tryBind*(graph: WorldGraph, workspace: string,
-              channelKey, senderID, message: string): Option[BindingCode] =
+              channelKey, senderID, message: string,
+              extras: openArray[(string, string)] = []): Option[BindingCode] =
   ## If the message contains a pending binding code, stamp the sender's
   ## (channelKey, senderID) onto the target's identifiers, burn the code,
-  ## and return the consumed code. Returns none() otherwise.
+  ## and return the consumed code. `extras` passes additional (key, value)
+  ## identifiers to stamp alongside — e.g. `feishu:union` → the Feishu
+  ## tenant-stable union_id, so the second app in the same tenant
+  ## doesn't need another bind. Returns none() otherwise.
   if graph == nil: return none(BindingCode)
   var codes = loadBindings(workspace)
   let norm = normalizeCode(message)
@@ -121,6 +125,9 @@ proc tryBind*(graph: WorldGraph, workspace: string,
     return none(BindingCode)
   var ent = graph.entities[id]
   ent.identifiers[channelKey] = senderID
+  for (k, v) in extras:
+    if k.len > 0 and v.len > 0:
+      ent.identifiers[k] = v
   graph.entities[id] = ent
   graph.saveWorld()
   codes.delete(matchedIdx)
