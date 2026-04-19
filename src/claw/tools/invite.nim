@@ -1,4 +1,4 @@
-import std/[os, json, strutils, tables, asyncdispatch, times]
+import std/[os, json, strutils, tables, asyncdispatch, times, options]
 import types
 import ../config
 import ../agent/[invites, cortex]
@@ -89,6 +89,67 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
     
   relations[newID] = rel
   saveRelations(workspace, relations)
+
+  # Also promote the redeemer in the unified graph so `user list` and
+  # the runtime trust-gate both reflect the new role/trust. Find the
+  # sender's entity (via graph identifier lookup) and the target agent's
+  # entity; rewrite the serves/reportsTo edge with the new annotation.
+  var graph = loadWorld(workspace)
+  if graph != nil:
+    # Resolve sender → user entity. Match t.senderID against ANY of the
+    # entity's identifier slots — handles both per-app Feishu keys
+    # (feishu:<app_id>) and legacy channel keys.
+    var userID = WorldEntityID(0)
+    for id, ent in graph.entities.pairs:
+      for key, value in ent.identifiers.pairs:
+        if value == t.senderID and
+           (key == t.channel or key.startsWith(t.channel & ":")):
+          userID = id
+          break
+      if uint32(userID) > 0: break
+    # Resolve agent — inv.agentName is the declared agent name.
+    var agentID = WorldEntityID(0)
+    if graph.nameIndex.hasKey(inv.agentName):
+      agentID = graph.nameIndex[inv.agentName]
+    if uint32(userID) > 0 and uint32(agentID) > 0:
+      let newRole = parseEnum[UserRole](inv.role, urGuest)
+      let newAnnot = RelationshipAnnotation(
+        role: newRole, trustLevel: initTrust, etiquette: "")
+      var agent = graph.entities[agentID]
+      # Update an existing link, or add a new one — promote from
+      # serves → reportsTo when the new role is boss/master.
+      proc updateList(links: var seq[RelationshipLink]): bool =
+        for i in 0 ..< links.len:
+          if links[i].targetID == userID:
+            links[i].annotation = some(newAnnot)
+            return true
+        false
+      let inServes = updateList(agent.serves)
+      let inReports = updateList(agent.reportsTo)
+      let wantsLead = newRole in {urBoss, urMaster}
+      if not inServes and not inReports:
+        # Never-before-annotated — add to the correct list.
+        let link = RelationshipLink(targetID: userID, annotation: some(newAnnot))
+        if wantsLead: agent.reportsTo.add(link)
+        else:         agent.serves.add(link)
+      elif wantsLead and inServes and not inReports:
+        # Promotion path: move from serves to reportsTo.
+        var kept: seq[RelationshipLink]
+        for link in agent.serves:
+          if link.targetID != userID: kept.add(link)
+        agent.serves = kept
+        agent.reportsTo.add(RelationshipLink(
+          targetID: userID, annotation: some(newAnnot)))
+      elif not wantsLead and inReports and not inServes:
+        # Demotion path: move from reportsTo to serves.
+        var kept: seq[RelationshipLink]
+        for link in agent.reportsTo:
+          if link.targetID != userID: kept.add(link)
+        agent.reportsTo = kept
+        agent.serves.add(RelationshipLink(
+          targetID: userID, annotation: some(newAnnot)))
+      graph.entities[agentID] = agent
+      graph.saveWorld()
 
   # Stamp provenance (who actually redeemed this, and when). t.senderID
   # is the channel-level ID of the speaker. For full nc:id provenance
