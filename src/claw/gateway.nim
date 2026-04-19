@@ -4,7 +4,7 @@
 
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random]
 import curly, webby/httpheaders
-import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin
+import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
 import tools/delegate as delegate_tool
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
@@ -455,6 +455,25 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            "before the LLM turn — code match is substring-based, so " &
            "any message containing `" & code & "` works."
 
+  elif cmd == "/help" or cmd.startsWith("/help "):
+    # Resolve the caller's permission to filter the listing.
+    let workspace = cfg[].workspacePath()
+    let g = loadWorld(workspace)
+    var callerPerm: Permission = pmAny
+    if g != nil:
+      let channelKey =
+        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+          msg.channel & ":" & msg.metadata["app_id"]
+        else: msg.channel
+      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+      if uint32(entID) > 0 and g.entities.hasKey(entID):
+        let p = g.entities[entID].role.toLowerAscii
+        if p in ["superadmin", "admin"]: callerPerm = pmSuperAdmin
+    let parts = cmd.splitWhitespace()
+    if parts.len >= 2:
+      return renderCommandDetail(parts[1])
+    return renderHelp(callerPerm)
+
   elif cmd.startsWith("/channel"):
     # `/channel auth feishu <app_id> <app_secret> [<agent>]`
     # `/channel list`
@@ -702,6 +721,61 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
   discard enableFileLogging(logDir / "gateway.log")
   gStartTime = epochTime()
   infoCF("claw", "Starting", {"host": host, "port": $port, "pid": $myPid}.toTable)
+
+  # Register the system-command catalog once per process. Source of truth
+  # that every channel adapter reads to render its platform-native menu.
+  register(SystemCommand(
+    name: "/help", summary: "List all slash commands.",
+    usage: "/help [<command>]", group: "utility",
+    menuHint: "Help", permission: pmAny,
+    examples: @["/help", "/help /invite"]))
+  register(SystemCommand(
+    name: "/status", summary: "System status snapshot (PID, uptime, users, agents, channels).",
+    usage: "/status", group: "utility",
+    menuHint: "Status", permission: pmAny,
+    examples: @["/status"]))
+  register(SystemCommand(
+    name: "/reset", summary: "Clear the current session's history.",
+    usage: "/reset", group: "agent-control",
+    menuHint: "New session", permission: pmAny,
+    examples: @["/reset"]))
+  register(SystemCommand(
+    name: "/stream", summary: "Toggle intermediary thought streaming.",
+    usage: "/stream <on|off>", group: "agent-control",
+    permission: pmSuperAdmin,
+    args: @[CmdArg(name: "value", description: "on or off", required: true)],
+    examples: @["/stream on", "/stream off"]))
+  register(SystemCommand(
+    name: "/model", summary: "Switch model, or list known models.",
+    usage: "/model [<provider:model> | list [<provider>]]",
+    group: "agent-control", permission: pmSuperAdmin,
+    examples: @["/model", "/model list", "/model deepseek:deepseek-reasoner"]))
+  register(SystemCommand(
+    name: "/channel", summary: "Register or inspect chat channels (Feishu apps, etc.).",
+    usage: "/channel <list|auth> [<args>...]",
+    group: "admin", menuHint: "Channels", permission: pmSuperAdmin,
+    args: @[
+      CmdArg(name: "subcommand", description: "list | auth", required: true),
+      CmdArg(name: "type", description: "channel type (e.g. feishu)", required: false),
+      CmdArg(name: "app_id", description: "Feishu App ID (cli_...)", required: false),
+      CmdArg(name: "app_secret", description: "Feishu App Secret", required: false),
+      CmdArg(name: "agent", description: "Agent to route to", required: false)],
+    examples: @["/channel list",
+                "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas"]))
+  register(SystemCommand(
+    name: "/invite", summary: "Mint a one-shot customer-access code (nc:X/CODE).",
+    usage: "/invite <customer-name> [<agent>] [<uses>]",
+    group: "admin", menuHint: "Invite customer", permission: pmSuperAdmin,
+    args: @[
+      CmdArg(name: "customer-name", description: "Customer display name", required: true),
+      CmdArg(name: "agent", description: "Agent that serves them (default: first declared)", required: false),
+      CmdArg(name: "uses", description: "How many redemptions (default: 1)", required: false)],
+    examples: @["/invite Alice", "/invite Acme Atlas 1"]))
+  register(SystemCommand(
+    name: "/restart", summary: "Restart the gateway (picks up config changes).",
+    usage: "/restart", group: "admin",
+    menuHint: "Restart gateway", permission: pmSuperAdmin,
+    examples: @["/restart"]))
 
   # Config & provider
   var cfg = new(Config)
