@@ -505,7 +505,45 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
             response = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
                        ", SuperAdmin). You're now authenticated on this channel."
             break bindCheck
-        if response == "":
+        # Group-chat response policy: reply iff @mention OR the sender
+        # has a `reportsTo`/`serves` relationship with this agent (in
+        # either direction). Otherwise stay silent — avoids the group-
+        # chat firehose without needing require_mention=true.
+        var shouldRespond = true
+        if msg.chat_kind == ckGroup and response == "":
+          let agentName = recipient
+          let mentioned = ("@" & agentName.toLowerAscii) in plainContent.toLowerAscii
+          if not mentioned:
+            let workspace = cfg[].workspacePath()
+            let g = loadWorld(workspace)
+            let channelKey =
+              if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+                msg.channel & ":" & msg.metadata["app_id"]
+              else: msg.channel
+            var senderID = WorldEntityID(0)
+            let (rid, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+            if uint32(rid) > 0: senderID = rid
+            elif msg.channel == "feishu" and
+                 msg.metadata.getOrDefault("union_id", "").len > 0:
+              let (uid, _) = g.resolveUserGraph(
+                "feishu:union", msg.metadata["union_id"])
+              if uint32(uid) > 0: senderID = uid
+            var hasRel = false
+            if uint32(senderID) > 0 and g.nameIndex.hasKey(agentName):
+              let aID = g.nameIndex[agentName]
+              if g.entities.hasKey(aID):
+                let agentEnt = g.entities[aID]
+                for lk in agentEnt.reportsTo:
+                  if lk.targetID == senderID: hasRel = true; break
+                if not hasRel:
+                  for lk in agentEnt.serves:
+                    if lk.targetID == senderID: hasRel = true; break
+            if not hasRel:
+              shouldRespond = false
+              infoCF("claw", "Group-chat silent (no mention, no relationship)",
+                     {"agent": agentName, "sender": msg.sender_id,
+                      "chat": msg.chat_id}.toTable)
+        if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
             var sysMsg = msg
             sysMsg.content = plainContent
