@@ -776,11 +776,14 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
           let (parsedNcId, parsedCode) = parseInviteString(plainContent)
           if parsedCode.len > 0:
             var invMap = loadInvites(workspace)
-            # Normalize: accept both `A4B-9X2` and `a4b9x2` etc.
+            # Normalize — accept code embedded in a larger message
+            # ("send A4B-9X2", "A4B-9X2 please", etc.). Substring match
+            # mirrors how the SuperAdmin bind-code path already works.
             var matchedKey = ""
-            let wanted = parsedCode.toUpperAscii.replace("-", "").replace(" ", "")
+            let haystack = parsedCode.toUpperAscii.replace("-", "").replace(" ", "")
             for k in invMap.keys:
-              if k.toUpperAscii.replace("-", "").replace(" ", "") == wanted:
+              let needle = k.toUpperAscii.replace("-", "").replace(" ", "")
+              if needle.len > 0 and needle in haystack:
                 matchedKey = k; break
             if matchedKey.len > 0:
               var inv = invMap[matchedKey]
