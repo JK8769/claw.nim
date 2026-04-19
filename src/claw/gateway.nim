@@ -379,21 +379,31 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    Examples:\n" &
              "      `/user invite Alice`          — Atlas, 1 use\n" &
              "      `/user invite Acme Atlas 3`   — Atlas, 3 redemptions\n\n" &
+             "  `/user remove <nc:id>`   🔒 SuperAdmin\n" &
+             "    Deletes an entity from the graph AND from BASE.nims\n" &
+             "    (person block + any reportsTo/serves references\n" &
+             "    cascaded). Prefer this over manual DSL edits for\n" &
+             "    cleaning up stale Unknown auto-registers or dupes.\n" &
+             "    Example: `/user remove nc:7`\n\n" &
              "Read-only subs (list, show, trust) work for any caller.\n" &
-             "`invite` is SuperAdmin only."
+             "`invite` and `remove` are SuperAdmin only."
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
-    # Read-only subcommands work for anyone with enough role.
-    # Wrap output in a fenced code block so monospace column alignment
-    # survives the channel's markdown renderer (Feishu / Telegram /
-    # Discord all need ``` for this). Skip wrapping when the caller
-    # asked for JSON — raw JSON is more useful unwrapped.
+    # Read-only subs work for anyone. Admin subs (remove) need
+    # SuperAdmin. Both go through the same runUserCommand path
+    # so CLI and chat stay in lockstep. Output wrapped in a code
+    # block so column-aligned tables survive Feishu markdown.
     if sub in ["list", "show", "trust"]:
       var cfgCopy = cfg[]
       let body = runUserCommand(cfgCopy, @[sub] & subArgs)
       let wantsJson = "--format=json" in subArgs or "--json" in subArgs
       if wantsJson: return body
       return codeBlock(body)
+    if sub == "remove":
+      if callerPerm != pmSuperAdmin:
+        return "`/user remove` requires SuperAdmin."
+      var cfgCopy = cfg[]
+      return codeBlock(runUserCommand(cfgCopy, @[sub] & subArgs))
     if sub == "invite":
       # SuperAdmin gate.
       if callerPerm != pmSuperAdmin:
@@ -405,7 +415,8 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       fakeMsg.content = cmdRewrite
       return await handleSystemCommand(cfg, fakeMsg, al)
     return "Unknown /user subcommand: `" & sub & "`.\n" &
-           "Try `/user list`, `/user show <nc:id>`, `/user trust`, or `/user invite <name>`."
+           "Try `/user list`, `/user show <nc:id>`, `/user trust`, " &
+           "`/user remove <nc:id>`, or `/user invite <name>`."
 
   elif cmd.startsWith("/invite"):
     # Legacy alias for `/user invite` — same body, thin wrapper around
@@ -767,8 +778,8 @@ Usage:
     examples: @["/channel list",
                 "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas"]))
   register(SystemCommand(
-    name: "/user", summary: "User management (list, show, trust, invite).",
-    usage: "/user <list|show|trust|invite> [<args>...]",
+    name: "/user", summary: "User management (list, show, trust, invite, remove).",
+    usage: "/user <list|show|trust|invite|remove> [<args>...]",
     doc: """User management.
 
 Usage:
@@ -776,6 +787,7 @@ Usage:
   /user show <nc-id>
   /user trust
   /user invite <customer-name> [<agent>] [<uses>]
+  /user remove <nc-id>
 
 Options:
   --kind=<k>        Person | AI | Unknown | Service
@@ -790,7 +802,8 @@ Options:
                 "/user show nc:4",
                 "/user trust",
                 "/user invite Alice",
-                "/user invite Acme Atlas 1"]))
+                "/user invite Acme Atlas 1",
+                "/user remove nc:7"]))
   register(SystemCommand(
     name: "/restart", summary: "Restart the gateway (picks up config changes).",
     usage: "/restart", group: "admin",
