@@ -6,7 +6,13 @@ import ../schema
 
 const
   ExternalUserRoles = ["guest", "customer"]
-  ExternalAllowedTools* = ["reply", "forward", "redeem_invite", "update_contact"]
+  # Hard floor of tools any external caller can invoke. DSL role.grant
+  # still applies — this list is the MINIMUM always-available set,
+  # not the cap. `delegate` is here so customer-tier requests can be
+  # handed off to an internal specialist agent without the caller
+  # needing direct access to that agent's tools.
+  ExternalAllowedTools* = ["reply", "forward", "redeem_invite",
+                           "update_contact", "delegate"]
   MaxToolNameLen* = 64
   MaxResultSize* = 30_000
 
