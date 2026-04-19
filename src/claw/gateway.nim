@@ -455,6 +455,65 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            "before the LLM turn — code match is substring-based, so " &
            "any message containing `" & code & "` works."
 
+  elif cmd.startsWith("/channel"):
+    # `/channel auth feishu <app_id> <app_secret> [<agent>]`
+    # `/channel list`
+    # SuperAdmin-only — same trust check as /invite/restart.
+    let workspace = cfg[].workspacePath()
+    let g = loadWorld(workspace)
+    var permOk = false
+    if g != nil:
+      let channelKey =
+        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+          msg.channel & ":" & msg.metadata["app_id"]
+        else: msg.channel
+      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+      if uint32(entID) > 0 and g.entities.hasKey(entID):
+        let p = g.entities[entID].role.toLowerAscii
+        if p in ["superadmin", "admin"]: permOk = true
+    if not permOk:
+      return "`/channel` requires SuperAdmin."
+    let parts = cmd.splitWhitespace()
+    if parts.len < 2:
+      return "Usage:\n" &
+             "  `/channel list` — show registered apps (grouped by channel type)\n" &
+             "  `/channel auth feishu <app_id> <app_secret> [<agent>]`\n\n" &
+             "Example:\n" &
+             "  `/channel auth feishu cli_a9xxxxxxxxxxxxx ABCSecretABC Atlas`"
+    let sub = parts[1]
+    if sub == "list":
+      var res = "**Registered channels**\n"
+      if cfg[].channels.feishu.apps.len > 0:
+        res.add("\n**Feishu** (" & $cfg[].channels.feishu.apps.len & " apps):\n")
+        for a in cfg[].channels.feishu.apps:
+          let who = if a.agent.len > 0: a.agent else: "(default)"
+          res.add("  - `" & a.app_id & "` → " & who & "\n")
+      if cfg[].channels.telegram.enabled:  res.add("\n**Telegram**: enabled\n")
+      if cfg[].channels.whatsapp.enabled:  res.add("\n**WhatsApp**: enabled\n")
+      if cfg[].channels.discord.enabled:   res.add("\n**Discord**: enabled\n")
+      if cfg[].channels.nmobile.enabled:   res.add("\n**nMobile**: enabled\n")
+      res.add("\nAfter `/channel auth`, run `/restart` to bring the new\n")
+      res.add("channel online.")
+      return res
+    if sub == "auth":
+      if parts.len < 3:
+        return "Usage: `/channel auth <channel_type> <args…>` " &
+               "(only `feishu` supported for now)."
+      let chType = parts[2].toLowerAscii
+      if chType != "feishu" and chType != "lark":
+        return "Error: only `feishu` is supported right now. Got: `" & chType & "`"
+      if parts.len < 5:
+        return "Usage: `/channel auth feishu <app_id> <app_secret> [<agent>]`\n" &
+               "Get credentials from https://open.feishu.cn/app"
+      var authArgs: seq[string] = @[parts[3], parts[4]]
+      if parts.len >= 6: authArgs.add(parts[5])
+      # Reuse the canonical CLI path — same lark-cli auth call,
+      # same BASE.nims upsert. Result string is already markdown-ish.
+      return authFeishuChannel(cfg[], authArgs) & "\n\n" &
+             "Run `/restart` to bring the new app online."
+    return "Unknown /channel subcommand: `" & sub & "`.\n" &
+           "Try `/channel list` or `/channel auth feishu …`."
+
   elif cmd == "/restart":
     # SuperAdmin-only: stop the current gateway and launch a fresh one
     # so config/DSL changes (e.g. a freshly added Feishu app) take

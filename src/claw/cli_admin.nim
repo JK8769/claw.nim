@@ -481,7 +481,7 @@ proc runVendorBuild(script, prettyName: string): string =
            "Common causes: Go not installed, wrong Go version, Python 3 missing."
   return prettyName & " built. Binary is at " & repo & "/channels/bin/."
 
-proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
+proc authFeishuChannel*(cfg: var Config, args: seq[string]): string =
   ## Configure Feishu credentials for THIS company. Mirrors `provider auth`:
   ## no per-company "add" step — the channel type exists in res/channels.json
   ## and this just binds credentials to the active company.
