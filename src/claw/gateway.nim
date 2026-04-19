@@ -2,7 +2,7 @@
 ## gateway — Long-running gateway process: agents, channels, cron.
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
-import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options]
+import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, cli_admin
 import providers/http, providers/types as providers_types, protocol
@@ -205,6 +205,44 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
     al.sessions.clearSession(msg.session_key)
     return "Switched to `" & providerKey & "/" & modelName & "`. Session cleared."
+  elif cmd == "/restart":
+    # SuperAdmin-only: stop the current gateway and launch a fresh one
+    # so config/DSL changes (e.g. a freshly added Feishu app) take
+    # effect without dropping to a terminal.
+    # Permission check uses the declared entity permission, not the
+    # relationship-annotation role.
+    let workspace = cfg[].workspacePath()
+    let g = loadWorld(workspace)
+    var permOk = false
+    if g != nil:
+      let channelKey =
+        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+          msg.channel & ":" & msg.metadata["app_id"]
+        else: msg.channel
+      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+      if uint32(entID) > 0 and g.entities.hasKey(entID):
+        let p = g.entities[entID].role.toLowerAscii
+        if p in ["superadmin", "admin"]: permOk = true
+    if not permOk:
+      return "`/restart` requires SuperAdmin. Ask one to run " &
+             "`claw co stop && claw gateway` at the terminal."
+    let clawBin = getAppFilename()
+    # Detached shell: sleep briefly so this process can reply first,
+    # then bring the new gateway up after the old one exits. nohup +
+    # setsid (via `setsid` or trailing `&` with `disown`) isn't reliable
+    # across shells — fork a plain /bin/sh that survives us via
+    # `setsid` (Linux/macOS) backed by process-group detachment.
+    let script = "sleep 2 && NIMCLAW_DIR='" & getNimClawDir() &
+                 "' '" & clawBin & "' co stop >/dev/null 2>&1 ; " &
+                 "NIMCLAW_DIR='" & getNimClawDir() &
+                 "' '" & clawBin & "' gateway > '" &
+                 getNimClawDir() & "/logs/restart.log' 2>&1"
+    discard startProcess("/bin/sh",
+                         args = @["-c", script],
+                         options = {poDaemon, poUsePath})
+    return "Restarting gateway in ~2s. New app routings (e.g. freshly " &
+           "added Feishu apps) will be picked up. I'll go quiet for a " &
+           "moment — ping again in ~5s."
   return ""
 
 # ── stdio handler (Zen mode) ─────────────────────────────────────────
