@@ -70,8 +70,11 @@ type
   ClawTrustRole* = object
     ## A role's trust band + capability grants. Trust is clamped to
     ## [rangeMin, rangeMax] within this role; crossing requires role change
-    ## via redeem_invite or BASE.nims edit by a SuperAdmin.
-    name*: string         ## lower-case role name (matches cortex UserRole)
+    ## via redeem_invite or BASE.nims edit by a SuperAdmin. Each role
+    ## belongs to exactly one tier — "internal" (the company's own people
+    ## and agents) or "external" (everyone else, customers through guests).
+    name*: string         ## role label; matches `person "X": permission "..."`
+    tier*: string         ## "internal" | "external"
     rangeMin*: int
     rangeMax*: int
     initial*: int         ## default trust when transitioning INTO this role
@@ -345,6 +348,8 @@ template trust*(body: untyped) =
     template role(roleName: string, roleBody: untyped) {.used.} =
       block:
         var r = ClawTrustRole(name: roleName)
+        template tier(t: string) {.used.} =
+          r.tier = t.toLowerAscii
         template band(lo, hi: int) {.used.} =
           r.rangeMin = lo
           r.rangeMax = hi
@@ -355,6 +360,16 @@ template trust*(body: untyped) =
         template prompt(s: string) {.used.} =
           r.prompt = s
         roleBody
+        # Tier inference for back-compat: if the DSL didn't specify,
+        # guess from the role name — the common internal labels default
+        # to internal, everything else defaults to external.
+        if r.tier.len == 0:
+          r.tier =
+            if r.name.toLowerAscii in ["superadmin", "admin", "staff",
+                                        "employee", "member"]:
+              "internal"
+            else:
+              "external"
         spec.trust.roles.add(r)
     body
 
@@ -746,14 +761,39 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
   for pol in spec.security.policies:
     policies[pol.name] = %pol.text
 
-  # Trust roles — bands + grants + prompts. Runtime reads this to gate tool
-  # access and render the right Social/Security section text.
+  # Trust roles — bands + grants + prompts, keyed by tier (internal/
+  # external). Runtime reads this to gate tool access and render the
+  # right Social/Security prompt text. Also used by `user list`'s
+  # tier column and the `role list` CLI.
+  # Bootstrap minimum: every company gets SuperAdmin (internal) +
+  # Guest (external) even if the DSL is silent, so the two-tier model
+  # is always well-formed.
+  var effectiveRoles = spec.trust.roles
+  proc hasRole(ns: seq[ClawTrustRole], n: string): bool =
+    for r in ns:
+      if r.name.toLowerAscii == n.toLowerAscii: return true
+    false
+  if not hasRole(effectiveRoles, "SuperAdmin"):
+    effectiveRoles.add(ClawTrustRole(
+      name: "SuperAdmin", tier: "internal",
+      rangeMin: 90, rangeMax: 100, initial: 100,
+      grant: @["*"],
+      prompt: "🛡️ HIGH TRUST — company owner. Execute without hesitation."
+    ))
+  if not hasRole(effectiveRoles, "Guest"):
+    effectiveRoles.add(ClawTrustRole(
+      name: "Guest", tier: "external",
+      rangeMin: 0, rangeMax: 40, initial: 10,
+      grant: @["reply", "forward", "update_contact", "redeem_invite"],
+      prompt: "⚠️ GUEST — public info only. Route anything sensitive via forward."
+    ))
   var trustRoles = newJArray()
-  for r in spec.trust.roles:
+  for r in effectiveRoles:
     var grantArr = newJArray()
     for g in r.grant: grantArr.add(%g)
     trustRoles.add(%*{
       "name": r.name.toLowerAscii,
+      "tier": r.tier,
       "rangeMin": r.rangeMin,
       "rangeMax": r.rangeMax,
       "initial": r.initial,

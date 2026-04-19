@@ -139,7 +139,11 @@ type
 
   TrustRoleConfig* = object
     ## Role definition: trust band + capability grants + prompt fragment.
-    name*: string            ## lower-case role name (matches cortex.UserRole)
+    ## `tier` classifies the role as internal (company's own people/agents)
+    ## or external (customers through guests). Every role belongs to
+    ## exactly one tier; the tier is part of the role's definition.
+    name*: string            ## lower-case role name
+    tier*: string            ## "internal" | "external"
     rangeMin*: int
     rangeMax*: int
     initial*: int

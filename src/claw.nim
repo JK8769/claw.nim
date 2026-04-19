@@ -40,6 +40,7 @@ Usage:
   claw provider <cmd> [<args>...]
   claw channel <cmd> [<args>...]
   claw user <cmd> [<args>...]
+  claw role <cmd> [<args>...]
   claw agent list
   claw agent caps <name>
   claw agent prompt <name> [--as=<userID>]
@@ -1482,6 +1483,13 @@ when isMainModule:
     var userArgs: seq[string]
     for a in @(args["<args>"]): userArgs.add(a)
     echo runUserCommand(cfg, @[$args["<cmd>"]] & userArgs)
+
+  # Role management — internal vs external permission tiers.
+  elif args["role"]:
+    var cfg = loadConfig(getConfigPath())
+    var roleArgs: seq[string]
+    for a in @(args["<args>"]): roleArgs.add(a)
+    echo runRoleCommand(cfg, @[$args["<cmd>"]] & roleArgs)
 
   # Agent commands
   elif args.isCommand("agent", "list"):

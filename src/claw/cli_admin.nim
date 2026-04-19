@@ -1371,6 +1371,79 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
 
   return "Unknown user command: " & subcmd
 
+# ── role ──────────────────────────────────────────────────────────
+# Permission tiers declared per-company. Minimum is internal:{SuperAdmin}
+# + external:{Guest}; operators add/edit/remove to fit their workflow.
+# Mutations are SuperAdmin-only conceptually (CLI-local execution is
+# trusted as the operator seat until a remote interface exists).
+
+proc runRoleCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
+  if args.len == 0:
+    return "Usage: claw role <list|add|remove|set> [args]\n" &
+           "  list   — show every role this company defines\n" &
+           "  add    — declare a new role (SuperAdmin-only)\n" &
+           "  remove — drop a role; fails if any user holds it\n" &
+           "  set    — edit band/initial/grants/tier on an existing role\n\n" &
+           "Every company has at least SuperAdmin (internal) + Guest\n" &
+           "(external). Customize with `role add` or by editing the\n" &
+           "`trust:` block in BASE.nims directly."
+  let subcmd = args[0]
+
+  if subcmd == "list":
+    if cfg.trust.roles.len == 0:
+      return "No roles declared yet. Minimum defaults (SuperAdmin/Guest)\n" &
+             "are seeded at `co create`/`co update` time — run one of those\n" &
+             "to see them, or add explicit roles with `claw role add`."
+    # Group by tier for readability.
+    var internals, externals, unknowns: seq[TrustRoleConfig]
+    for r in cfg.trust.roles:
+      case r.tier.toLowerAscii
+      of "internal": internals.add(r)
+      of "external": externals.add(r)
+      else: unknowns.add(r)
+    if asJson:
+      var arr = newJArray()
+      for r in cfg.trust.roles:
+        arr.add(%*{"name": r.name, "tier": r.tier,
+                   "rangeMin": r.rangeMin, "rangeMax": r.rangeMax,
+                   "initial": r.initial, "grant": r.grant,
+                   "prompt": r.prompt})
+      return $arr
+    proc renderTier(label: string, rs: seq[TrustRoleConfig]): string =
+      if rs.len == 0: return ""
+      result = "\n" & label & ":\n"
+      result.add("  NAME         BAND     INITIAL  GRANTS\n")
+      for r in rs:
+        var g = r.grant.join(",")
+        if g.len > 30: g = g[0 ..< 28] & "…"
+        result.add("  " & r.name.alignLeft(12) & " " &
+                   ($r.rangeMin & "-" & $r.rangeMax).alignLeft(8) & " " &
+                   ($r.initial).alignLeft(8) & " " &
+                   g & "\n")
+    var res = "Company role definitions:"
+    res.add(renderTier("Internal", internals))
+    res.add(renderTier("External", externals))
+    if unknowns.len > 0:
+      res.add(renderTier("Untiered (edit BASE.nims to set tier)", unknowns))
+    res.add("\nTotal: " & $cfg.trust.roles.len & " role(s) across " &
+            $(if internals.len > 0: 1 else: 0) & " internal + " &
+            $(if externals.len > 0: 1 else: 0) & " external tier(s).")
+    return res
+
+  if subcmd == "add":
+    return "TODO: `role add <name> <internal|external>` — SuperAdmin-only.\n" &
+           "For now, edit the `trust:` block in BASE.nims directly and\n" &
+           "run `claw co update`."
+
+  if subcmd == "remove":
+    return "TODO: `role remove <name>` — SuperAdmin-only, fails if the\n" &
+           "role is currently held by any user. Edit BASE.nims for now."
+
+  if subcmd == "set":
+    return "TODO: `role set <name> [--band=..] [--initial=..] [--grant=..] [--tier=..]`"
+
+  return "Unknown role command: " & subcmd
+
 # ── hardware ──────────────────────────────────────────────────────
 
 proc runHardwareCommand*(args: seq[string]): string =
