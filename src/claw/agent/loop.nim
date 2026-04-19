@@ -585,12 +585,73 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
   return (finalContent, iteration, currentMessages)
 
+proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
+  ## Produce the on-disk session key for this message. Identity-scoped:
+  ## one logical user = one session across all channels. Sanitised so
+  ## the filename has no colons.
+  ##
+  ##   system:heartbeat (gateway-synthetic)  → system_heartbeat
+  ##   resolved graph entity (nc:5)          → nc_5
+  ##   first-time sender                     → add to graph as Guest,
+  ##                                           return their fresh nc:id
+  ##
+  ## Auto-registration means every real sender has a permanent identity
+  ## token from turn one — memory and sessions both land in nc:id-keyed
+  ## files, never in name-keyed fallbacks.
+  if opts.sessionKey.startsWith("system:"):
+    return opts.sessionKey.replace(":", "_")
+  if al.contextBuilder == nil or al.contextBuilder.graph == nil:
+    # No graph at all (shouldn't happen in real runs) — degrade safely.
+    var sid = opts.senderID
+    for c in mitems(sid):
+      if c == ':': c = '_'
+    return "anon_" & opts.channel & "_" & sid
+
+  let graph = al.contextBuilder.graph
+  let recip = if opts.recipientID != "": opts.recipientID else: al.agentName
+  var agentId = WorldEntityID(0)
+  if recip != "" and graph.nameIndex.hasKey(recip):
+    agentId = graph.nameIndex[recip]
+
+  let (resolvedID, _) = graph.resolveUserGraph(
+    opts.channel, opts.senderID, agentId)
+  var entityID = resolvedID
+
+  # Name-based fallback — CLI or any channel where the sender hasn't yet
+  # been registered with a channel identifier. Matches resolveRequesterTrust
+  # so session + trust agree on who's talking.
+  if uint32(entityID) == 0 and graph.nameIndex.hasKey(opts.senderID):
+    entityID = graph.nameIndex[opts.senderID]
+
+  # First-time sender — mint a graph entity so everyone has a stable
+  # nc:id from the first message. Trust 10 (Guest); the runtime's normal
+  # role-transition paths (redeem_invite, SuperAdmin edit) take them up
+  # from there. We avoid creating a fresh entity for each anon because
+  # the senderID string (channel ID) is stable per user per channel —
+  # resolveUserGraph will find them again next turn.
+  if uint32(entityID) == 0:
+    entityID = graph.addUserToGraph(
+      opts.senderID,              # logical name — the raw ID for now
+      opts.senderID,              # nknAddr param used as channel identifier
+      urGuest,
+      agentId,
+      10                          # trust — same as legacy default
+    )
+
+  toAlias(entityID).replace(":", "_")
+
 proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.async.} =
   var opts = optsParam
   # CLI channel = owner's terminal. Trust as Admin unless explicitly set.
   if opts.userRole == "" and opts.channel == "cli": opts.userRole = "Admin"
   if opts.userRole == "": opts.userRole = "Guest"
-  
+
+  # Session persistence is identity-scoped, not channel-scoped. Replace
+  # the transport-level key (channel:chatID:senderID from the channel
+  # layer) with the identity key derived from the graph. All downstream
+  # al.sessions.* calls read/write the identity-keyed session file.
+  opts.sessionKey = identitySessionKey(al, opts)
+
   let epochMs = int(getTime().toUnixFloat() * 1000)
   al.taskCounter += 1
   let taskId = al.agentId & ":" & $epochMs & ":" & align($al.taskCounter, 3, '0')
