@@ -1,4 +1,4 @@
-import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode]
+import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode, sequtils]
 import config, agent/invites, agent/cortex, agent/binding, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
@@ -1011,6 +1011,30 @@ proc rewriteBlockField(lines: var seq[string], blockStart, blockEnd: int,
   lines.insert(newLine, blockStart + 1)
   (true, "")
 
+proc removeRefBlocks*(lines: var seq[string], headerPrefix: string, name: string): int =
+  ## Delete every block whose header (after leading whitespace) equals
+  ## `<headerPrefix> "<name>":`. A block spans from its header through
+  ## any following blank lines plus any lines indented deeper than the
+  ## header itself. Returns the number of blocks removed.
+  let marker = headerPrefix & " \"" & name & "\":"
+  var kept: seq[string]
+  var i = 0
+  while i < lines.len:
+    if lines[i].strip() == marker:
+      let headIndent = leadingSpaces(lines[i])
+      var j = i + 1
+      while j < lines.len:
+        let l = lines[j]
+        if l.strip().len == 0: inc j; continue
+        if leadingSpaces(l) > headIndent: inc j; continue
+        break
+      inc result
+      i = j
+    else:
+      kept.add(lines[i])
+      inc i
+  lines = kept
+
 proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[person, agent, reports, serves: int] =
   ## Rewrite the header `person "<old>":` / `agent "<old>":` and every
   ## name reference inside any agent block's `reportsTo "<old>":` /
@@ -1034,7 +1058,7 @@ proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[pe
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|show|trust|edit|rebind|merge|invite|register> [args]\n" &
+    return "Usage: claw user <list|show|trust|edit|rebind|merge|remove|invite|register> [args]\n" &
            "  list     — table of every user (Person/AI/Service/Unknown).\n" &
            "             flags: --kind=<Person|AI|Unknown|Service>\n" &
            "                    --tier=<int|ext|?>\n" &
@@ -1048,6 +1072,9 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
            "             fields: name, permission, jobTitle, kind\n" &
            "  rebind   — issue a SuperAdmin binding code (for bootstrap or\n" &
            "             lost-device recovery — prints the code)\n" &
+           "  remove   — delete a user from graph + BASE.nims (cascades\n" &
+           "             inbound reportsTo/serves refs). Prefer `merge` if\n" &
+           "             you need to preserve history.\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -1676,6 +1703,81 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     lines.add("\nRegistered " & $count & " user(s). Run `claw co update` to\n" &
               "regenerate BASE.json with the new declarations.")
     return lines.join("\n")
+
+  if subcmd == "remove" or subcmd == "delete":
+    # Delete a user from the graph AND, if declared, from BASE.nims.
+    # Cascades to `reportsTo "<name>":` / `serves "<name>":` sub-blocks
+    # in any agent so `co update` doesn't resurrect the reference.
+    if args.len < 2:
+      return "Usage: claw user remove <nc:id>\n" &
+             "Deletes the entity from BASE.json and strips its `person`\n" &
+             "block plus any inbound reportsTo/serves refs from BASE.nims.\n" &
+             "Use `merge` instead to preserve memory/sessions."
+    let alias = args[1]
+    if not alias.startsWith("nc:"):
+      return "Error: give an nc:id (e.g. nc:5)."
+    let id = parseAlias(alias)
+    if uint32(id) == 0 or not graph.entities.hasKey(id):
+      return "Error: " & alias & " not found in graph."
+    let ent = graph.entities[id]
+    if ent.kind in {ekCorporate, ekInvite}:
+      return "Error: cannot remove " & $ent.kind & " via `user`."
+    if ent.kind == ekAI:
+      for a in cfg.agents.named:
+        if a.name == ent.name:
+          return "Error: " & alias & " is a declared Agent (\"" & ent.name &
+                 "\"). Use `claw agent remove " & ent.name & "` instead."
+    let name = ent.name
+    # 1. Drop from graph: delete entity + strip any other entity's
+    #    outbound edges that point at it.
+    var g = graph
+    g.entities.del(id)
+    if g.nameIndex.hasKey(name) and g.nameIndex[name] == id:
+      g.nameIndex.del(name)
+    for k, v in g.idAliasIndex.pairs:
+      if v == id: g.idAliasIndex.del(k); break
+    for otherID in toSeq(g.entities.keys):
+      var other = g.entities[otherID]
+      var touched = false
+      var kept: seq[RelationshipLink]
+      for lk in other.reportsTo:
+        if lk.targetID != id: kept.add(lk)
+        else: touched = true
+      if touched: other.reportsTo = kept
+      kept = @[]
+      touched = false
+      for lk in other.serves:
+        if lk.targetID != id: kept.add(lk)
+        else: touched = true
+      if touched: other.serves = kept
+      g.entities[otherID] = other
+    g.saveWorld()
+
+    # 2. Strip BASE.nims — the person block + any inbound reportsTo/serves
+    #    sub-blocks in agent declarations.
+    let baseNims = getNimClawDir() / "BASE.nims"
+    var removedPerson = 0
+    var removedReports = 0
+    var removedServes = 0
+    if fileExists(baseNims):
+      var lines = readFile(baseNims).splitLines()
+      removedPerson = removeRefBlocks(lines, "person", name)
+      removedReports = removeRefBlocks(lines, "reportsTo", name)
+      removedServes = removeRefBlocks(lines, "serves", name)
+      if removedPerson + removedReports + removedServes > 0:
+        writeFile(baseNims, lines.join("\n"))
+
+    var res = "Removed " & alias & " (" & name & ") from the graph.\n"
+    if removedPerson + removedReports + removedServes > 0:
+      res.add("BASE.nims cleanup:\n")
+      res.add("  person blocks:     " & $removedPerson & "\n")
+      res.add("  reportsTo blocks:  " & $removedReports & "\n")
+      res.add("  serves blocks:     " & $removedServes & "\n")
+      res.add("Run `claw co update` to regenerate BASE.json from the\n")
+      res.add("cleaned DSL.")
+    else:
+      res.add("(No BASE.nims declaration found — graph-only removal.)")
+    return res
 
   if subcmd == "rebind":
     # Issue a fresh SuperAdmin binding code for a specific nc:id (or
