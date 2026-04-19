@@ -1,4 +1,4 @@
-import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets]
+import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode]
 import config, agent/invites, agent/cortex, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
@@ -881,16 +881,33 @@ proc maxTrustFor(graph: WorldGraph, userID: WorldEntityID): int =
         let t = link.annotation.get.trustLevel
         if t > result: result = t
 
-proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
-  ## Prefer the graph-level `role` field (e.g. "SuperAdmin" for Owner);
-  ## else derive from the highest-trust relationship's UserRole; else
-  ## "Guest" as the safe default for auto-registered newcomers.
-  if ent.role.len > 0: return ent.role
+proc userPermission(ent: WorldEntity): string =
+  ## Permission axis — the role declared on the person block itself
+  ## (e.g. "SuperAdmin", "Boss", "Customer"). Empty when the person has
+  ## no explicit `permission "..."`; callers render "—".
+  if ent.role.len > 0: ent.role else: ""
+
+proc userRelRole(graph: WorldGraph, entId: WorldEntityID): string =
+  ## Relationship axis — how an agent labels this person in its own
+  ## `reportsTo` / `serves` edge annotations (e.g. "boss", "customer").
+  ## Returns the first matching annotation across all AI entities.
   for a in graph.entities.values:
     if a.kind != ekAI: continue
-    for link in a.serves & a.reportsTo:
-      if link.targetID == ent.id and link.annotation.isSome:
+    for link in a.reportsTo:
+      if link.targetID == entId and link.annotation.isSome:
         return $link.annotation.get.role
+    for link in a.serves:
+      if link.targetID == entId and link.annotation.isSome:
+        return $link.annotation.get.role
+  ""
+
+proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
+  ## Back-compat convenience used by `user show` — prefers the permission
+  ## axis, falls back to the relationship axis, then "guest".
+  let p = userPermission(ent)
+  if p.len > 0: return p
+  let r = userRelRole(graph, ent.id)
+  if r.len > 0: return r
   "guest"
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
@@ -911,8 +928,11 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     return "Error: couldn't load the company graph from " & workspace
 
   if subcmd == "list":
-    # Collect Person entities with role/trust/channel identifiers.
-    type Row = tuple[ncId, name, role: string, trust: int, idents: string]
+    # Columns split the four-axis schema: PERMISSION is declared on the
+    # person block; ROLE(rel) comes from whatever the first agent calls
+    # this person in its `reportsTo`/`serves` annotations. Seeing "—"
+    # in either column flags a gap worth fixing.
+    type Row = tuple[ncId, name, perm, relRole: string, trust: int, idents: string]
     var rows: seq[Row]
     for id, ent in graph.entities.pairs:
       if ent.kind != ekPerson: continue
@@ -924,36 +944,46 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       rows.add((
         ncId: toAlias(id),
         name: ent.name,
-        role: userRoleLabel(graph, ent),
+        perm: userPermission(ent),
+        relRole: userRelRole(graph, id),
         trust: maxTrustFor(graph, id),
         idents: (if identParts.len > 0: identParts.join(", ") else: "—")
       ))
-    # Stable order: nc:id numerically ascending for readability.
     rows.sort(proc(a, b: Row): int =
       cmp(parseAlias(a.ncId).uint32, parseAlias(b.ncId).uint32))
     if asJson:
       var arr = newJArray()
       for r in rows:
         arr.add(%*{"nc_id": r.ncId, "name": r.name,
-                   "role": r.role, "trust": r.trust,
+                   "permission": r.perm,
+                   "relationship_role": r.relRole,
+                   "trust": r.trust,
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
       return "No human identities in this company yet. Guests auto-register\n" &
              "on first message; agents are tracked via `claw agent list`."
-    var res = "NC:ID  NAME                  ROLE         TRUST  IDENTIFIERS\n"
+    var res = "NC:ID  NAME                  PERMISSION   ROLE(rel)   TRUST  IDENTIFIERS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
       var idents = r.idents
-      if idents.len > 45: idents = idents[0 ..< 43] & "…"
-      res.add(r.ncId.alignLeft(6) & " " &
-              name.alignLeft(21) & " " &
-              r.role.alignLeft(12) & " " &
-              ($r.trust).alignLeft(6) & " " &
+      if idents.len > 40: idents = idents[0 ..< 38] & "…"
+      let perm = (if r.perm.len > 0: r.perm else: "—")
+      let relRole = (if r.relRole.len > 0: r.relRole else: "—")
+      # Visual-width padding — alignLeft counts bytes, so the em-dash
+      # (3 bytes, 1 column) misaligns placeholder cells.
+      proc pad(s: string, width: int): string =
+        s & spaces(max(0, width - s.runeLen))
+      res.add(pad(r.ncId, 6) & " " &
+              pad(name, 21) & " " &
+              pad(perm, 12) & " " &
+              pad(relRole, 11) & " " &
+              pad($r.trust, 6) & " " &
               idents & "\n")
-    res.add("\n" & $rows.len & " user(s). Guests have trust < 40; see `user invite`\n" &
-            "or `user merge` for the promotion paths.\n")
+    res.add("\n" & $rows.len & " user(s). PERMISSION is declared on the person block;\n" &
+            "ROLE(rel) is how an agent labels this person in its edges.\n" &
+            "Use `user show <nc:id>` for the full four-axis view.\n")
     return res
 
   if subcmd == "show":
@@ -1816,7 +1846,7 @@ proc runDaemonCommand*(cfg: Config, name: string, args: seq[string]): string =
     elif subcmd == "status":
       let (outp, _) = execCmdEx("launchctl list | grep " & plistName)
       if outp.strip() == "": return "Status of nimclaw gateway:\n  PID: stopped\n  Loaded: no"
-      let parts = outp.strip().splitWhitespace()
+      let parts = strutils.splitWhitespace(outp.strip())
       let pid = if parts.len > 0 and parts[0] != "-": parts[0] else: "stopped"
       let exitC = if parts.len > 1: parts[1] else: "unknown"
       return "Status of nimclaw gateway:\n  PID: " & pid & "\n  Last Exit Code: " & exitC & "\n  Loaded: yes"
