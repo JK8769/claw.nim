@@ -708,6 +708,12 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   # CLI channel = owner's terminal. Trust as Admin unless explicitly set.
   if opts.userRole == "" and opts.channel == "cli": opts.userRole = "Admin"
   if opts.userRole == "": opts.userRole = "Guest"
+  # Refresh the cached graph so identifiers stamped by the gateway's
+  # bind check (or any other out-of-loop mutation like invite redeem)
+  # are visible for resolution. Small file, cheap read — protects us
+  # from "bind succeeded but the agent still sees you as guest" races.
+  if al.contextBuilder != nil:
+    al.contextBuilder.graph = loadWorld(al.workspace)
 
   # Session persistence is identity-scoped, not channel-scoped. Replace
   # the transport-level key (channel:chatID:senderID from the channel
