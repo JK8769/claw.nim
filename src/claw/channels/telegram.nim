@@ -165,7 +165,18 @@ proc handleTelegramUpdate(c: TelegramChannel, update: JsonNode) {.async.} =
 
   if content == "": content = "[empty message]"
 
-  c.handleMessage(senderID, chatID, content, mediaPaths)
+  # Chat-kind from Telegram's `chat.type` field.
+  #   private    → DM with the bot
+  #   group/supergroup/channel → multi-party
+  var kind: ChatKind = ckUnknown
+  if msg["chat"].hasKey("type"):
+    case msg["chat"]["type"].getStr()
+    of "private":                             kind = ckDM
+    of "group", "supergroup", "channel":      kind = ckGroup
+    else:                                     kind = ckUnknown
+
+  c.handleMessage(senderID, chatID, content, mediaPaths,
+                   chatKind = kind)
 
 proc poll(c: TelegramChannel) {.async.} =
   while c.running:

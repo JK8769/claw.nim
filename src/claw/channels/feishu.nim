@@ -532,7 +532,20 @@ proc readEvents(p: Process, c: FeishuChannel, appID: string) =
       if threadID.len > 0:
         metadata["thread_id"] = threadID
 
-      c.handleMessage(senderID, chatID, finalContent, mediaPaths, metadata)
+      # Detect DM vs group from Feishu's chat_id namespace.
+      # ou_ = user/open-id (DM); oc_ = open-chat-id (group).
+      # Event payload also carries `chat_type` ("p2p" | "group") — honour
+      # that when present, fall back to prefix heuristic otherwise.
+      var kind: ChatKind = ckUnknown
+      let eventChatType = evt.getOrDefault("chat_type").getStr()
+      case eventChatType
+      of "p2p":   kind = ckDM
+      of "group": kind = ckGroup
+      else:
+        if chatID.startsWith("ou_"):   kind = ckDM
+        elif chatID.startsWith("oc_"): kind = ckGroup
+      c.handleMessage(senderID, chatID, finalContent, mediaPaths, metadata,
+                       chatKind = kind)
     except Exception as e:
       errorCF("feishu", "Event parse error", {"error": e.msg}.toTable)
 

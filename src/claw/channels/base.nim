@@ -37,16 +37,24 @@ method isAllowed*(c: BaseChannel, senderID: string): bool =
     if senderID == allowed: return true
   return false
 
-proc handleMessage*(c: BaseChannel, senderID, chatID, content: string, media: seq[string] = @[], metadata: Table[string, string] = initTable[string, string](), recipientID: string = "") =
+proc handleMessage*(c: BaseChannel, senderID, chatID, content: string,
+                    media: seq[string] = @[],
+                    metadata: Table[string, string] = initTable[string, string](),
+                    recipientID: string = "",
+                    chatKind: ChatKind = ckUnknown) =
   if not c.isAllowed(senderID): return
 
-  # Use channel:chatID:senderID for all sessions to ensure maximum isolation by default.
+  # Transport-level session_key for reply routing. The agent loop
+  # replaces this with an identity-scoped key before persistence; see
+  # identitySessionKey in agent/loop.nim. Channels pass chatKind so the
+  # loop knows whether to key-by-sender (DM) or key-by-chat (group).
   let sessionKey = c.name & ":" & chatID & ":" & senderID
   let msg = InboundMessage(
     channel: c.name,
     sender_id: senderID,
     recipient_id: recipientID,
     chat_id: chatID,
+    chat_kind: chatKind,
     content: content,
     media: media,
     session_key: sessionKey,

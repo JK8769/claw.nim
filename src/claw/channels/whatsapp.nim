@@ -35,7 +35,14 @@ proc listen(c: WhatsAppChannel) {.async.} =
         if msg.hasKey("id"): metadata["message_id"] = msg["id"].getStr()
         if msg.hasKey("from_name"): metadata["user_name"] = msg["from_name"].getStr()
 
-        c.handleMessage(senderID, chatID, content, @[], metadata)
+        # JID suffix tells DM vs group: @s.whatsapp.net (individual),
+        # @g.us (group). Anything else (status broadcasts etc.) stays
+        # unknown and the loop falls back to DM-like behaviour.
+        var kind: ChatKind = ckUnknown
+        if chatID.endsWith("@s.whatsapp.net"): kind = ckDM
+        elif chatID.endsWith("@g.us"):         kind = ckGroup
+        c.handleMessage(senderID, chatID, content, @[], metadata,
+                         chatKind = kind)
     except Exception as e:
       errorCF("whatsapp", "WhatsApp read error", {"error": e.msg}.toTable)
       await sleepAsync(2000)

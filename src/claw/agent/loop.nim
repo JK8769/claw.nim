@@ -36,6 +36,7 @@ type
     recipientID*: string
     channel*: string
     chatID*: string
+    chatKind*: ChatKind
     replyToMessageID*: string
     appID*: string
     userMessage*: string
@@ -586,20 +587,31 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   return (finalContent, iteration, currentMessages)
 
 proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
-  ## Produce the on-disk session key for this message. Identity-scoped:
-  ## one logical user = one session across all channels. Sanitised so
-  ## the filename has no colons.
+  ## Produce the on-disk session key for this message.
   ##
   ##   system:heartbeat (gateway-synthetic)  → system_heartbeat
-  ##   resolved graph entity (nc:5)          → nc_5
-  ##   first-time sender                     → add to graph as Guest,
-  ##                                           return their fresh nc:id
+  ##   group chat                            → grp_<channel>_<chatID>
+  ##                                           (one shared session for
+  ##                                           everyone in the room;
+  ##                                           speakers distinguished
+  ##                                           per-message)
+  ##   DM / unknown                          → key by the sender's nc:id:
+  ##     resolved graph entity               → nc_N
+  ##     first-time sender                   → add to graph as Guest,
+  ##                                           return their fresh nc:N
   ##
-  ## Auto-registration means every real sender has a permanent identity
-  ## token from turn one — memory and sessions both land in nc:id-keyed
-  ## files, never in name-keyed fallbacks.
+  ## Groups don't yet get their own graph entity (ekGroup) — that's a
+  ## follow-up. For now a channel+chat_id key is stable across turns
+  ## and safely isolates group history from any participant's DMs.
   if opts.sessionKey.startsWith("system:"):
     return opts.sessionKey.replace(":", "_")
+
+  # Group chats: single shared session file per room.
+  if opts.chatKind == ckGroup and opts.chatID.len > 0:
+    var chat = opts.chatID
+    for c in mitems(chat):
+      if c in {':', '/', '\\', ' ', '\t'}: c = '_'
+    return "grp_" & opts.channel & "_" & chat
   if al.contextBuilder == nil or al.contextBuilder.graph == nil:
     # No graph at all (shouldn't happen in real runs) — degrade safely.
     var sid = opts.senderID
@@ -914,6 +926,7 @@ proc processMessage*(al: AgentLoop, msg: InboundMessage): Future[string] {.async
     recipientID: msg.recipient_id,
     channel: msg.channel,
     chatID: msg.chat_id,
+    chatKind: msg.chat_kind,
     replyToMessageID: msg.metadata.getOrDefault("message_id", ""),
     appID: msg.metadata.getOrDefault("app_id", ""),
     userMessage: msg.content,
