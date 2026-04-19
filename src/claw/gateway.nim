@@ -2,7 +2,7 @@
 ## gateway — Long-running gateway process: agents, channels, cron.
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
-import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc]
+import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, cli_admin
 import providers/http, providers/types as providers_types, protocol
@@ -40,6 +40,9 @@ type AgentRequest = tuple[
   respChan: ptr system.Channel[string]]
 var gAgentRequestChan: system.Channel[AgentRequest]
 gAgentRequestChan.open()
+
+# Gateway startup time — used by /status to report uptime.
+var gStartTime: float = 0.0
 
 # ── Shutdown ────────────────────────────────────────────────────────
 
@@ -88,13 +91,100 @@ proc cronHandler(job: cron_service.CronJob): Future[void] =
 
 # ── System commands (/status, /model, etc.) ─────────────────────────
 
+proc fmtUptime(secs: float): string =
+  let s = secs.int
+  let days = s div 86400
+  let hours = (s mod 86400) div 3600
+  let mins = (s mod 3600) div 60
+  let sec = s mod 60
+  if days > 0: return $days & "d " & $hours & "h " & $mins & "m"
+  if hours > 0: return $hours & "h " & $mins & "m " & $sec & "s"
+  if mins > 0: return $mins & "m " & $sec & "s"
+  $sec & "s"
+
+proc fmtUnixTime(t: int64): string =
+  if t <= 0: return "—"
+  times.fromUnix(t).local.format("yyyy-MM-dd HH:mm:ss")
+
 proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): Future[string] {.async.} =
   let cmd = msg.content.strip()
   if cmd == "/status":
-    return "**System Status**\n" &
-           "- Session: `" & msg.session_key & "`\n" &
-           "- Model: `" & al.model & "`\n" &
-           "- Intermediary Stream: " & (if cfg.agents.defaults.stream_intermediary: "ON" else: "OFF")
+    let workspace = cfg[].workspacePath()
+    let graph = loadWorld(workspace)
+    let pid = getpid()
+    let upSecs = if gStartTime > 0: epochTime() - gStartTime else: 0.0
+    let baseNims = getNimClawDir() / "BASE.nims"
+    let baseJson = workspace / "BASE.json"
+    var createdAt: int64 = 0
+    if fileExists(baseNims):
+      createdAt = baseNims.getCreationTime().toUnix()
+    elif fileExists(baseJson):
+      createdAt = baseJson.getCreationTime().toUnix()
+    let updatedAt =
+      if fileExists(baseJson): baseJson.getLastModificationTime().toUnix()
+      else: 0'i64
+
+    # User counts by kind — skips corporate/invite, skips declared
+    # agents (those render in the AGENTS section).
+    var ourAgents = initHashSet[string]()
+    for a in cfg.agents.named: ourAgents.incl(a.name)
+    var persons, ais, services, unknowns = 0
+    if graph != nil:
+      for id, ent in graph.entities.pairs:
+        if ent.kind in {ekCorporate, ekInvite}: continue
+        if ent.kind == ekAI and ent.name in ourAgents: continue
+        case ent.kind
+        of ekPerson: inc persons
+        of ekAI: inc ais
+        of ekService: inc services
+        of ekUnknown: inc unknowns
+        else: discard
+
+    # Agents (declared).
+    var agentLines: seq[string]
+    for a in cfg.agents.named:
+      var bits: seq[string] = @["`" & a.name & "`"]
+      if a.model.len > 0: bits.add("model=" & a.model)
+      if a.role.isSome and a.role.get().len > 0: bits.add("role=" & a.role.get())
+      agentLines.add("  - " & bits.join(" · "))
+
+    # Feishu app routing.
+    var appLines: seq[string]
+    for a in cfg.channels.feishu.apps:
+      let who = if a.agent.len > 0: a.agent else: "(default)"
+      appLines.add("  - `" & a.app_id & "` → " & who)
+
+    var res = "**NimClaw System Status**\n"
+    res.add("\n**Gateway**\n")
+    res.add("- PID: `" & $pid & "`\n")
+    res.add("- Uptime: " & fmtUptime(upSecs) & "\n")
+    res.add("- Model: `" & al.model & "`\n")
+    res.add("- Session: `" & msg.session_key & "`\n")
+    res.add("- Stream intermediary: " &
+            (if cfg.agents.defaults.stream_intermediary: "ON" else: "OFF") & "\n")
+
+    res.add("\n**Company**\n")
+    res.add("- Dir: `" & getNimClawDir() & "`\n")
+    if createdAt > 0:
+      res.add("- Created: " & fmtUnixTime(createdAt) & "\n")
+    if updatedAt > 0:
+      res.add("- Last `co update`: " & fmtUnixTime(updatedAt) & "\n")
+
+    res.add("\n**Users** (" & $(persons + ais + services + unknowns) & " total)\n")
+    res.add("- Person: " & $persons & "\n")
+    res.add("- AI: " & $ais & "\n")
+    res.add("- Service: " & $services & "\n")
+    res.add("- Unknown: " & $unknowns & "\n")
+
+    res.add("\n**Agents** (" & $cfg.agents.named.len & ")\n")
+    if agentLines.len > 0: res.add(agentLines.join("\n") & "\n")
+    else: res.add("  (none declared)\n")
+
+    if appLines.len > 0:
+      res.add("\n**Feishu apps** (" & $appLines.len & ")\n")
+      res.add(appLines.join("\n") & "\n")
+
+    return res
   elif cmd in ["/reset", "/new"]:
     al.sessions.clearSession(msg.session_key)
     return "Session history cleared for `" & msg.session_key & "`. Starting fresh!"
@@ -391,6 +481,7 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
     try: createDir(logDir)
     except: discard
   discard enableFileLogging(logDir / "gateway.log")
+  gStartTime = epochTime()
   infoCF("claw", "Starting", {"host": host, "port": $port, "pid": $myPid}.toTable)
 
   # Config & provider
