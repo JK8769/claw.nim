@@ -628,6 +628,13 @@ proc buildGraph(spec: ClawSpec): JsonNode =
       entity["jobTitle"] = %a.jobTitle
     if a.model != "":
       entity["model"] = %a.model
+    # Agent's declared `role "..."` IS their permission axis — same
+    # schema as a Person's `permission "..."`. Without this line the
+    # agent entity carries no role in the graph, and any trust-resolver
+    # lookup against the agent (e.g. peer-to-peer delegation) falls
+    # back to "guest" because ent.role is empty.
+    if a.role != "":
+      entity["permission-group"] = %a.role
     entity["mood"] = %*{"valence": 0.0, "arousal": 0.1, "archetype": "Assistant"}
     if a.identifiers.len > 0:
       entity["identifiers"] = buildIdentifiers(a.identifiers)
