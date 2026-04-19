@@ -201,6 +201,51 @@ Each edge carries:
 | `etiquette`    | optional | Free-form tone/style hint injected into the system prompt. |
 | `jobTitle`     | optional | When relationship is `employs`/`memberOf`/`worksFor`: titling scoped to this employer. |
 
+### Invariant: an agent has relationships with *both* tiers
+
+A single agent holds relationship edges to identities across every
+permission tier, independently and concurrently:
+
+```
+agent "Lexi":
+  permission "Staff"              # internal
+  reportsTo "Jerry":               # internal edge — Jerry is SuperAdmin
+    trustLevel 100
+  colleague "Atlas":               # internal edge — Atlas is another Staff agent
+    trustLevel 70
+  memberOf "SunGrowCN":            # internal edge — the Company entity
+    jobTitle "Solar Ops Analyst"
+  serves "Alice":                  # external edge — Alice is a Customer
+    trustLevel 50
+  serves "unknown_guest_42":       # external edge — Guest, freshly registered
+    trustLevel 10
+  reportsTo "PartnerVP":           # external edge — Boss at a partner org
+    trustLevel 85
+```
+
+Rules that follow from this:
+
+1. **Edges are independent.** Lexi's `trustLevel 100` with Jerry does
+   not imply any trust in her `serves Alice` edge. Each edge is a
+   separate authorization scope.
+2. **The target's permission still governs global defaults.** An
+   external Customer stays Customer in every edge they appear on; the
+   trustLevel on a specific edge is the *extra* seasoning.
+3. **Runtime decisions look at both.** When Lexi receives a message,
+   the gate reads: *who is the sender's permission?* AND *what edge
+   annotation does the agent have with them?* Take the tighter of
+   the two. An external Customer with trustLevel 85 on an edge still
+   gets external-tier treatment on operations the permission doesn't
+   allow.
+4. **Relationships can be unidirectional.** Jerry isn't obligated to
+   have a symmetric edge back to Lexi — the graph stores what's
+   declared, no automatic inverses.
+
+The practical implication for migration: when reifying runtime edges
+into BASE.nims (`user register`), we must correctly preserve each
+edge's target tier. Don't assume "this agent's relationships are all
+internal" — that's wrong.
+
 ---
 
 ## Full DSL example (target)
