@@ -409,6 +409,49 @@ proc ensureChannelInBaseNims(channelType, fullBlock, appendItemLine: string): Ch
   writeFile(baseNimsPath, updated.join("\n"))
   cnuItemAdded
 
+proc findClawRepo(): string =
+  ## Walk up from CWD to find a claw.nim checkout (identified by
+  ## channels/build_lark_cli.sh). Returns empty string if not found.
+  var dir = getCurrentDir().absolutePath
+  for _ in 0..8:
+    if fileExists(dir / "channels" / "build_lark_cli.sh") and
+       fileExists(dir / "claw.nimble"):
+      return dir
+    let up = dir.parentDir()
+    if up == dir: break
+    dir = up
+  return ""
+
+proc runVendorBuild(script, prettyName: string): string =
+  let repo = findClawRepo()
+  if repo.len == 0:
+    return "Error: can't locate your claw.nim checkout.\n" &
+           "Run `claw channel build` from inside the repo directory."
+  let scriptPath = repo / "channels" / script
+  if not fileExists(scriptPath):
+    return "Error: missing " & scriptPath
+  # Ensure the submodule is present. Scripts already do this, but
+  # surfacing the step in our output makes the failure mode clearer.
+  let submoduleDir =
+    if script.contains("lark"): repo / "channels" / "lark-cli"
+    else: repo / "channels" / "nkn-cli"
+  if not fileExists(submoduleDir / "main.go") and
+     not fileExists(submoduleDir / "go.mod"):
+    echo "Initialising git submodule for " & prettyName & "..."
+    let code = execShellCmd("cd " & quoteShell(repo) &
+                            " && git submodule update --init channels/" &
+                            submoduleDir.lastPathPart())
+    if code != 0:
+      return "Error: git submodule init failed. Make sure this is a git\n" &
+             "checkout (not a nimble-installed copy), and that you have\n" &
+             "network access to github.com."
+  echo "Running " & scriptPath & " — requires Go 1.23+ (and Python 3 for lark)."
+  let code = execShellCmd(quoteShell(scriptPath))
+  if code != 0:
+    return "Error: " & prettyName & " build failed. See output above.\n" &
+           "Common causes: Go not installed, wrong Go version, Python 3 missing."
+  return prettyName & " built. Binary is at " & repo & "/channels/bin/."
+
 proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   ## Configure Feishu credentials for THIS company. Mirrors `provider auth`:
   ## no per-company "add" step — the channel type exists in res/channels.json
@@ -417,8 +460,11 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   ## Usage: claw channel auth feishu <APP_ID> <APP_SECRET>
   let bin = feishu_channel.findLarkCli()
   if bin.len == 0:
-    return "Error: lark-cli binary not found.\n" &
-           "Build it with: ./channels/build_lark_cli.sh  (or see channels/build_lark_cli.sh)"
+    return "Error: the official Lark/Feishu CLI (lark-cli) is not built.\n" &
+           "Build it from the channels/lark-cli submodule:\n" &
+           "  claw channel build lark          # or: nimble build_lark\n" &
+           "Requirements: Go 1.23+ and Python 3. The binary drops to\n" &
+           "<repo>/channels/bin/lark-cli and this command finds it from there."
 
   if args.len < 2:
     return "Usage: claw channel auth feishu <APP_ID> <APP_SECRET>\n\n" &
@@ -626,10 +672,11 @@ proc channelInstanceRows(cfg: Config): seq[tuple[name, status, credType, details
 
 proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw channel <list|types|auth|remove> [args]\n" &
+    return "Usage: claw channel <list|types|auth|build|remove> [args]\n" &
            "  list   — channels configured on this company (table)\n" &
            "  types  — channel types the binary supports (res/channels.json)\n" &
            "  auth   — bind credentials for a channel to this company\n" &
+           "  build  — build a vendor CLI (lark, nkn) from the submodule\n" &
            "  remove — disable a channel on this company\n\n" &
            "Mirror of providers: `channel add/remove` the TYPE is done in\n" &
            "res/channels.json (binary-level). Per-company is just `auth`."
@@ -729,6 +776,22 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
     else: return "Auth helper not yet available for '" & args[1] & "'.\n" &
                  "Set the required env vars from `claw channel types` and\n" &
                  "declare the channel block in BASE.nims directly."
+
+  if subcmd == "build":
+    if args.len < 2:
+      return "Usage: claw channel build <lark|nkn>\n" &
+             "Builds the vendor CLI from its git submodule under channels/.\n" &
+             "Requires Go 1.23+ (and Python 3 for lark). No pre-built\n" &
+             "binaries are distributed — claw.nim is pro-tools, not a\n" &
+             "turnkey package."
+    case args[1]
+    of "lark", "feishu", "lark-cli":
+      return runVendorBuild("build_lark_cli.sh", "lark-cli")
+    of "nkn", "nmobile", "nkn-cli":
+      return runVendorBuild("build_nkn_cli.sh", "nkn-cli")
+    else:
+      return "Unknown vendor target: " & args[1] & "\n" &
+             "Supported: lark (Feishu), nkn (nMobile)."
 
   # Back-compat alias: old `channel add <type>` invocations fall through
   # to `auth` with a deprecation note.
