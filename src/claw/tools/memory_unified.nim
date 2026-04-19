@@ -31,15 +31,17 @@ type
     trustLevel*: int          ## refreshed per turn
 
 proc newUnifiedMemoryTool*(ms: MemoryStore): UnifiedMemoryTool =
-  ## Starts with trust=100 + senderNcId="agent" so agent-initiated work
-  ## before any user turn is treated as the agent itself.
-  UnifiedMemoryTool(store: ms, senderNcId: "agent", trustLevel: 100)
+  ## Starts with trust=100 + senderNcId="" (no partner). scope=self still
+  ## works in this state (writes to self.jsonl as the agent); scope=sender
+  ## will refuse until a real partner's nc:id has been set per-turn.
+  UnifiedMemoryTool(store: ms, senderNcId: "", trustLevel: 100)
 
 proc setRequesterContext*(t: UnifiedMemoryTool, senderNcId: string,
                           trustLevel: int) =
-  ## Called by the agent loop each turn so store/recall scope to the
-  ## current conversation partner.
-  t.senderNcId = if senderNcId.len > 0: senderNcId else: "agent"
+  ## Called by the agent loop each turn. Accepts only nc:id form for the
+  ## sender. A raw name string is dropped to empty so scope=sender calls
+  ## refuse explicitly instead of creating a name-keyed file.
+  t.senderNcId = if senderNcId.startsWith("nc:"): senderNcId else: ""
   t.trustLevel = trustLevel
 
 method name*(t: UnifiedMemoryTool): string = "memory"
@@ -136,6 +138,8 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
       except Exception as e:
         return fmt"Failed to store '{key}' to self: {e.msg}"
     else:  # sender scope
+      if t.senderNcId.len == 0:
+        return "Error: scope=sender requires a resolved partner. The current requester has no nc:id yet — try scope=self or route through a channel that registers the user in the graph."
       try:
         t.store.storeAboutSender(t.senderNcId, key, content,
                                   parseCategory(catStr), t.trustLevel)

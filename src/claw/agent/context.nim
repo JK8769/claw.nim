@@ -661,11 +661,16 @@ $1""".format(skillsSummary))
   # Memory — two-tier:
   #   1. conversation memory scoped to THIS partner's nc:id file only
   #   2. agent's own memory from self.jsonl, filtered by requester trust
-  # Neither path can leak another partner's conversation memory; they
-  # live in separate files and only ncId's own file is opened.
+  # nc:id is the single source of truth for memory-file keys — names can
+  # change, nc:ids don't. If we can't resolve the sender to an nc:id, we
+  # pass an empty sender key and the partner-file section is skipped.
+  # The runtime loop auto-adds unknown guests to the graph, so this falls
+  # through only for ephemeral CLI lookups of non-existent users.
   let reqTrust = cb.resolveRequesterTrust(userID, recipientID, channel)
-  var senderNcId = userID
-  if cb.graph != nil and cb.graph.nameIndex.hasKey(userID):
+  var senderNcId = ""
+  if userID.startsWith("nc:"):
+    senderNcId = userID
+  elif cb.graph != nil and cb.graph.nameIndex.hasKey(userID):
     senderNcId = toAlias(cb.graph.nameIndex[userID])
   let memoryContext = cb.memory.getMemoryContext(senderNcId, reqTrust)
   if memoryContext != "":

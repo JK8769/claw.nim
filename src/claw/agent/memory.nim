@@ -136,6 +136,11 @@ proc storeAboutSender*(ms: MemoryStore, ncId, key, content: string,
   ## Record something about/with this conversation partner. Lands in their
   ## isolated file. Visibility is mvPublic by convention — it's meaningless
   ## here because the file is only opened when talking to ncId again.
+  ## nc:id-only: silent no-op if the caller hasn't resolved a graph id.
+  ## (The runtime adds unknown guests to the graph before we get here; if
+  ## that hasn't happened, refusing the write is better than creating a
+  ## name-keyed file that would orphan when the id finally resolves.)
+  if not ncId.startsWith("nc:"): return
   appendEntry(ms.senderFile(ncId),
     MemoryEntry(
       key: key, content: content,
@@ -164,6 +169,9 @@ proc storeSelf*(ms: MemoryStore, authorNcId, key, content: string,
 proc recallSender*(ms: MemoryStore, ncId: string, query: string = "",
                    limit: int = 10): seq[MemoryEntry] =
   ## Only reads ncId's own file. Cross-partner access is impossible.
+  ## nc:id-only: any caller that hasn't resolved their sender to an nc:id
+  ## gets an empty result. Name-keyed files are never created or read.
+  if not ncId.startsWith("nc:"): return
   let entries = readEntries(ms.senderFile(ncId))
   let qLow = query.toLowerAscii
   for e in entries:
@@ -233,6 +241,7 @@ proc forgetEntry(path, requesterID, key: string, trustLevel: int,
 
 proc forgetSender*(ms: MemoryStore, senderNcId, requesterID, key: string,
                    trustLevel: int): bool =
+  if not senderNcId.startsWith("nc:"): return false
   forgetEntry(ms.senderFile(senderNcId), requesterID, key, trustLevel,
               checkSelfAuth = false)
 
