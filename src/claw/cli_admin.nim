@@ -980,72 +980,100 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
               pad(relRole, 11) & " " &
               idents & "\n")
     res.add("\n" & $rows.len & " user(s). Trust is per-edge — use `claw user trust`\n" &
-            "for the full matrix, or `claw user show <nc:id>` for one user.\n")
+            "for the full graph, or `claw user show <nc:id>` for one user.\n")
     return res
 
   if subcmd == "trust":
-    # Trust matrix: rows = Persons, cols = AI entities. Each cell is the
-    # highest trust annotation on any outbound edge (reportsTo ∪ serves)
-    # from that agent to that person. "—" means no edge exists.
-    var agentRows: seq[tuple[id: WorldEntityID, name: string]]
-    for id, ent in graph.entities.pairs:
-      if ent.kind == ekAI: agentRows.add((id, ent.name))
-    agentRows.sort(proc(a, b: auto): int = cmp(uint32(a.id), uint32(b.id)))
-
-    var personRows: seq[tuple[id: WorldEntityID, name: string]]
-    for id, ent in graph.entities.pairs:
-      if ent.kind == ekPerson: personRows.add((id, ent.name))
-    personRows.sort(proc(a, b: auto): int = cmp(uint32(a.id), uint32(b.id)))
-
-    proc trustEdge(graph: WorldGraph, agentID, personID: WorldEntityID): int =
-      result = low(int)  # sentinel: no edge
-      if not graph.entities.hasKey(agentID): return
-      let a = graph.entities[agentID]
-      for link in a.reportsTo:
-        if link.targetID == personID and link.annotation.isSome:
-          let t = link.annotation.get.trustLevel
-          if t > result: result = t
-      for link in a.serves:
-        if link.targetID == personID and link.annotation.isSome:
-          let t = link.annotation.get.trustLevel
-          if t > result: result = t
+    # Edge-list view of the trust graph. Every declared relationship is
+    # one row; no flattening across agents. Sorted by source agent
+    # (nc:id) then by edge-kind (reportsTo before serves) then by trust
+    # descending so the "stronger" edges surface first within an agent.
+    type Edge = tuple[
+      agentID, personID: WorldEntityID,
+      agentName, personName, kind, role, etiquette: string,
+      trust: int
+    ]
+    var edges: seq[Edge]
+    for aID, a in graph.entities.pairs:
+      if a.kind != ekAI: continue
+      for (kind, links) in {
+        "reportsTo": a.reportsTo,
+        "serves": a.serves
+      }.items:
+        for link in links:
+          if not graph.entities.hasKey(link.targetID): continue
+          let p = graph.entities[link.targetID]
+          if p.kind != ekPerson: continue
+          var trust = 0
+          var role = ""
+          var eti = ""
+          if link.annotation.isSome:
+            let ann = link.annotation.get
+            trust = ann.trustLevel
+            role = $ann.role
+            eti = ann.etiquette
+          edges.add((
+            agentID: aID, personID: link.targetID,
+            agentName: a.name, personName: p.name,
+            kind: kind, role: role, etiquette: eti,
+            trust: trust
+          ))
+    # Sort: agent nc:id asc, then reportsTo before serves, then trust desc.
+    edges.sort(proc(x, y: Edge): int =
+      let c1 = cmp(uint32(x.agentID), uint32(y.agentID))
+      if c1 != 0: return c1
+      let rank = proc(k: string): int = (if k == "reportsTo": 0 else: 1)
+      let c2 = cmp(rank(x.kind), rank(y.kind))
+      if c2 != 0: return c2
+      cmp(y.trust, x.trust))
 
     if asJson:
-      # Nested object: { "<user nc:id>": { "<agent nc:id>": trust, ... }, ... }
-      var obj = newJObject()
-      for p in personRows:
-        var row = newJObject()
-        for a in agentRows:
-          let t = trustEdge(graph, a.id, p.id)
-          if t != low(int): row[toAlias(a.id)] = %t
-        obj[toAlias(p.id)] = row
-      return $obj
+      var arr = newJArray()
+      for e in edges:
+        arr.add(%*{
+          "agent_nc_id": toAlias(e.agentID), "agent_name": e.agentName,
+          "edge": e.kind,
+          "person_nc_id": toAlias(e.personID), "person_name": e.personName,
+          "role": e.role, "trust": e.trust, "etiquette": e.etiquette
+        })
+      return $arr
 
-    if personRows.len == 0 or agentRows.len == 0:
-      return "Need at least one agent and one person to draw a trust matrix.\n" &
-             (if agentRows.len == 0: "No AI entities in the graph yet.\n" else: "") &
-             (if personRows.len == 0: "No Person entities in the graph yet.\n" else: "")
+    if edges.len == 0:
+      return "No trust edges declared yet. Agents acquire edges via\n" &
+             "reportsTo/serves annotations in BASE.nims, or runtime invite\n" &
+             "redemption. Use `claw agent list` / `user list` to verify\n" &
+             "you have at least one AI entity and one Person."
 
-    # Column widths — agent names drive the matrix cell width.
-    var colW = 6
-    for a in agentRows:
-      if a.name.runeLen + 2 > colW: colW = a.name.runeLen + 2
+    var maxAgent = "AGENT".runeLen
+    var maxPerson = "PERSON".runeLen
+    var maxRole = "ROLE".runeLen
+    for e in edges:
+      if e.agentName.runeLen > maxAgent: maxAgent = e.agentName.runeLen
+      if e.personName.runeLen > maxPerson: maxPerson = e.personName.runeLen
+      if e.role.runeLen > maxRole: maxRole = e.role.runeLen
 
-    var res = pad("NC:ID", 6) & " " & pad("NAME", 21) & " "
-    for a in agentRows:
-      res.add(pad(a.name, colW))
-    res.add("\n")
-    for p in personRows:
-      var name = p.name
-      if name.runeLen > 20: name = name[0 ..< 18] & "…"
-      res.add(pad(toAlias(p.id), 6) & " " & pad(name, 21) & " ")
-      for a in agentRows:
-        let t = trustEdge(graph, a.id, p.id)
-        let cell = if t == low(int): "—" else: $t
-        res.add(pad(cell, colW))
-      res.add("\n")
-    res.add("\nCells are agent's trust in that user (max across reportsTo+serves).\n" &
-            "`—` means no edge declared. Use `user show <nc:id>` for per-edge detail.\n")
+    var res = pad("AGENT", maxAgent) & "  " &
+              pad("EDGE", 9) & "  " &
+              pad("PERSON", maxPerson) & "  " &
+              pad("ROLE", maxRole) & "  " &
+              pad("TRUST", 5) & "  ETIQUETTE\n"
+    var lastAgent = WorldEntityID(0)
+    for e in edges:
+      if uint32(lastAgent) != 0 and lastAgent != e.agentID:
+        res.add("\n")  # blank line between agents for readability
+      lastAgent = e.agentID
+      var eti = e.etiquette
+      if eti.runeLen > 48: eti = eti[0 ..< 46] & "…"
+      if eti.len == 0: eti = "—"
+      let role = if e.role.len > 0: e.role else: "—"
+      let trust = if e.trust == 0 and e.role.len == 0: "—" else: $e.trust
+      res.add(pad(e.agentName, maxAgent) & "  " &
+              pad(e.kind, 9) & "  " &
+              pad(e.personName, maxPerson) & "  " &
+              pad(role, maxRole) & "  " &
+              pad(trust, 5) & "  " & eti & "\n")
+    res.add("\n" & $edges.len & " edge(s). One row per declared agent→person edge;\n" &
+            "use `claw user show <nc:id>` for a single user's full neighborhood.\n")
     return res
 
   if subcmd == "show":
