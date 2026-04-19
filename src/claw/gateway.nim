@@ -134,6 +134,50 @@ proc fmtUnixTime(t: int64): string =
   if t <= 0: return "—"
   times.fromUnix(t).local.format("yyyy-MM-dd HH:mm:ss")
 
+proc hasNonAscii(s: string): bool =
+  ## Cheap "is this likely non-English?" check — any byte with the high
+  ## bit set means multi-byte UTF-8, which covers Chinese, Japanese,
+  ## Korean, Arabic, Cyrillic, etc. False positives (emoji) are fine —
+  ## translation is idempotent on mostly-ASCII-with-emoji.
+  for c in s:
+    if c.uint8 >= 0x80: return true
+  false
+
+proc maybeTranslate(cfg: ref Config, src, userSample: string): Future[string] {.async.} =
+  ## If the user's last message used non-English characters, run the
+  ## system-generated English reply through the LLM once to translate
+  ## to the user's language. Only fires on the authenticated / one-shot
+  ## paths (bind confirmation, invite redemption) — not the rejection
+  ## path which must stay zero-cost. Silent fallback to English on
+  ## provider error or timeout.
+  if not hasNonAscii(userSample): return src
+  try:
+    let graph = loadWorld(cfg[].workspacePath())
+    if graph == nil: return src
+    let tech = resolveProviderTech(
+      cfg[].agents.defaults.model, cfg[].default_provider,
+      graph.providers, providerOverride = cfg[].default_provider)
+    if tech.apiBase == "" or tech.apiKey == "": return src
+    let provider = createProvider(tech.model, tech.apiKey, tech.apiBase)
+    let sysPrompt = "You are a terse translator. Translate the user's " &
+                    "English text into the same language they spoke in " &
+                    "their previous message. Keep inline code spans, " &
+                    "URLs, and code blocks EXACTLY as-is. Output only " &
+                    "the translation, no preamble."
+    let userPrompt = "Previous user message (detect language):\n" &
+                     userSample & "\n\nEnglish text to translate:\n" & src
+    let messages = @[
+      providers_types.Message(role: "system", content: sysPrompt),
+      providers_types.Message(role: "user", content: userPrompt)]
+    var options = initTable[string, JsonNode]()
+    options["temperature"] = %0.2
+    let response = await provider.chat(messages, @[], tech.model, options)
+    if response.content.len > 0:
+      return src & "\n\n" & response.content
+    return src
+  except:
+    return src
+
 proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
   ## Resolve the caller's declared entity permission. SuperAdmin/Admin
   ## return pmSuperAdmin; everyone else returns pmAny.
@@ -928,8 +972,9 @@ Options:
             let b = bound.get
             stderr.writeLine "claw: bound " & b.targetNcId & " (" & b.targetName &
                              ") via " & channelKey & " ← " & msg.sender_id
-            response = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
-                       ", SuperAdmin). You're now authenticated on this channel."
+            let en = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
+                     ", SuperAdmin). You're now authenticated on this channel."
+            response = await maybeTranslate(cfg, en, plainContent)
             break bindCheck
         # Customer-invite intercept — parses `nc:X/CODE` (or bare code)
         # and, if it matches a pending invite with a pre-allocated target,
@@ -989,9 +1034,10 @@ Options:
                   else:
                     invMap[matchedKey] = inv
                   saveInvites(workspace, invMap)
-                  response = "\u{2713} Welcome, " & ent.name & ". You're " &
-                             "authenticated as a Customer (" & inv.targetNcId &
-                             "). Ask me anything — I'm here to help."
+                  let enReply = "\u{2713} Welcome, " & ent.name & ". You're " &
+                                "authenticated as a Customer (" & inv.targetNcId &
+                                "). Ask me anything — I'm here to help."
+                  response = await maybeTranslate(cfg, enReply, plainContent)
                   stderr.writeLine "claw: customer-invite redeemed " &
                                    inv.targetNcId & " via " & channelKey &
                                    " ← " & msg.sender_id
@@ -1029,12 +1075,19 @@ Options:
           if not recognized:
             stderr.writeLine "claw: refused unknown sender " & channelKey2 &
                              " ← " & msg.sender_id
-            response = "Sorry, I don't recognize you on this channel. " &
-                       "Please send the invitation code you received " &
-                       "from the operator (the `nc:X/ABC-123` string, " &
-                       "or just the `ABC-123` part) to authenticate. " &
-                       "If you don't have a code, ask the operator to " &
-                       "issue one for you."
+            # Bilingual template — no LLM call on the refusal path
+            # (would defeat the whole point of gating strangers). Both
+            # languages shown so the customer gets usable guidance
+            # regardless of which they speak.
+            response =
+              "Sorry, I don't recognize you on this channel. Please " &
+              "send the invitation code you received from the operator " &
+              "(e.g. `ABC-123` or `nc:X/ABC-123`) to authenticate. If " &
+              "you don't have a code, ask the operator to issue one " &
+              "for you.\n\n" &
+              "抱歉，我不认识您在该渠道上的身份。请发送运营人员发给您的" &
+              "邀请码（例如 `ABC-123` 或 `nc:X/ABC-123`）进行身份验证。" &
+              "如果您还没有邀请码，请联系运营人员为您生成一个。"
 
         # Group-chat response policy: reply iff @mention OR the sender
         # has a `reportsTo`/`serves` relationship with this agent (in
