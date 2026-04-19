@@ -456,8 +456,9 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   # declaration handle.
   let fullBlock = """channel "feishu":
   app """" & appID & """"
-  # App secret is stored by lark-cli in ~/.lark-cli — re-auth with
-  #   claw channel auth feishu """" & appID & """" <NEW_SECRET>"""
+  # App Secret is managed by the official Lark/Feishu CLI (lark-cli)
+  # and stored under ~/.lark-cli — re-bind with:
+  #   claw channel auth feishu """" & appID & """" <NEW_APP_SECRET>"""
   let appItemLine = "  app \"" & appID & "\""
   let updated = ensureChannelInBaseNims("feishu", fullBlock, appItemLine)
   var res = (if existing: "Re-authed " else: "Authed ") &
@@ -579,9 +580,13 @@ proc loadChannelTypes(): JsonNode =
   except CatchableError:
     return newJObject()
 
-proc channelInstanceRows(cfg: Config): seq[tuple[name, status, auth, details: string]] =
+proc channelInstanceRows(cfg: Config): seq[tuple[name, status, credType, details: string]] =
   ## Walk the configured-channel slots on this company and project each
-  ## into a display row. Purely read-only.
+  ## into a display row. `credType` names the CREDENTIAL KIND (what the
+  ## platform calls this auth shape), not the tool managing it. For
+  ## example Feishu is an "open-app" (App ID + App Secret pair issued
+  ## by the Feishu Open Platform); the fact that we use the official
+  ## Lark/Feishu CLI (`lark-cli`) to bind them is a transport detail.
   let feishuDetail =
     if cfg.channels.feishu.apps.len > 0:
       var ids: seq[string]
@@ -593,31 +598,31 @@ proc channelInstanceRows(cfg: Config): seq[tuple[name, status, auth, details: st
     else: "—"
   result.add(("feishu",
               if cfg.channels.feishu.enabled: "enabled" else: "disabled",
-              (if cfg.channels.feishu.apps.len > 0: "lark-cli" else: "—"),
+              (if cfg.channels.feishu.apps.len > 0: "open-app" else: "—"),
               feishuDetail))
   result.add(("telegram",
               if cfg.channels.telegram.enabled: "enabled" else: "disabled",
-              (if cfg.channels.telegram.token.len > 0: "token" else: "—"),
+              (if cfg.channels.telegram.token.len > 0: "bot-token" else: "—"),
               "—"))
   result.add(("discord",
               if cfg.channels.discord.enabled: "enabled" else: "disabled",
-              "—", "—"))
+              "bot-token", "—"))
   result.add(("whatsapp",
               if cfg.channels.whatsapp.enabled: "enabled" else: "disabled",
-              (if cfg.channels.whatsapp.bridge_url.len > 0: "bridge" else: "—"),
+              (if cfg.channels.whatsapp.bridge_url.len > 0: "bridge-url" else: "—"),
               (if cfg.channels.whatsapp.bridge_url.len > 0: cfg.channels.whatsapp.bridge_url else: "—")))
   result.add(("qq",
               if cfg.channels.qq.enabled: "enabled" else: "disabled",
-              "—", "—"))
+              "onebot", "—"))
   result.add(("dingtalk",
               if cfg.channels.dingtalk.enabled: "enabled" else: "disabled",
-              "—", "—"))
+              "open-app", "—"))
   result.add(("nmobile",
               if cfg.channels.nmobile.enabled: "enabled" else: "disabled",
-              "—", "—"))
+              "nkn-seed", "—"))
   result.add(("maixcam",
               if cfg.channels.maixcam.enabled: "enabled" else: "disabled",
-              "—", "—"))
+              "none", "—"))
 
 proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
@@ -670,16 +675,16 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
       var arr = newJArray()
       for r in rows:
         arr.add(%*{"name": r.name, "status": r.status,
-                   "auth": r.auth, "details": r.details})
+                   "credential": r.credType, "details": r.details})
       return $arr
     # Fixed-width table header. Details column is truncated if long.
-    var res = "NAME       STATUS     AUTH       DETAILS\n"
+    var res = "NAME       STATUS     CREDENTIAL  DETAILS\n"
     for r in rows:
       var detail = r.details
       if detail.len > 50: detail = detail[0 ..< 48] & "…"
       res.add(r.name.alignLeft(10) & " " &
               r.status.alignLeft(10) & " " &
-              r.auth.alignLeft(10) & " " &
+              r.credType.alignLeft(11) & " " &
               detail & "\n")
     res.add("\n(Run `claw channel auth <type> ...` to bind credentials; " &
             "`channel types` for the available-binary catalog.)\n")

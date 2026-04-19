@@ -17,6 +17,7 @@
 
     "telegram": {
       "description": "Telegram Bot API (longpoll).",
+      "credential_type": "bot-token",
       "auth": [
         {"field": "token", "env": "TELEGRAM_TOKEN", "required": true,
          "hint": "Bot token from @BotFather, e.g. 123456:ABC-DEF..."}
@@ -34,7 +35,8 @@
     },
 
     "feishu": {
-      "description": "Feishu / Lark enterprise messaging. Needs the bundled lark-cli bridge.",
+      "description": "Feishu / Lark enterprise messaging. Credentials are an Open Platform Custom App — an App ID / App Secret pair issued by the Feishu developer console. Bound via the official Lark/Feishu CLI (lark-cli), which we ship bundled.",
+      "credential_type": "open-app",
       "auth": [
         {"field": "app_id",     "env": "FEISHU_APP_ID",     "required": true},
         {"field": "app_secret", "env": "FEISHU_APP_SECRET", "required": true}
@@ -53,6 +55,7 @@
 
     "whatsapp": {
       "description": "WhatsApp Business via an external bridge process.",
+      "credential_type": "bridge-url",
       "auth": [
         {"field": "bridge_url", "required": true,
          "hint": "HTTP endpoint of the whatsmeow/baileys bridge."}
@@ -70,6 +73,7 @@
 
     "discord": {
       "description": "Discord gateway (bot-API).",
+      "credential_type": "bot-token",
       "auth": [
         {"field": "token", "env": "DISCORD_TOKEN", "required": true}
       ],
@@ -87,6 +91,7 @@
 
     "qq": {
       "description": "OneBot-compatible QQ bridge.",
+      "credential_type": "onebot",
       "auth": [
         {"field": "host", "required": true},
         {"field": "port", "required": true},
@@ -104,7 +109,8 @@
     },
 
     "dingtalk": {
-      "description": "DingTalk enterprise messaging.",
+      "description": "DingTalk enterprise messaging. Custom-app credentials — an App Key / App Secret pair issued by the DingTalk developer console.",
+      "credential_type": "open-app",
       "auth": [
         {"field": "app_key",    "env": "DINGTALK_APP_KEY",    "required": true},
         {"field": "app_secret", "env": "DINGTALK_APP_SECRET", "required": true}
@@ -122,6 +128,7 @@
 
     "nmobile": {
       "description": "NKN nMobile peer-to-peer. DM-only; multi-recipient would require explicit multicast addressing.",
+      "credential_type": "nkn-seed",
       "auth": [
         {"field": "seed", "env": "NKN_SEED", "required": true,
          "hint": "Hex-encoded NKN client seed."}
