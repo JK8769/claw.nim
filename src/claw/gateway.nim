@@ -134,8 +134,34 @@ proc fmtUnixTime(t: int64): string =
   if t <= 0: return "—"
   times.fromUnix(t).local.format("yyyy-MM-dd HH:mm:ss")
 
+proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
+  ## Resolve the caller's declared entity permission. SuperAdmin/Admin
+  ## return pmSuperAdmin; everyone else returns pmAny.
+  let workspace = cfg[].workspacePath()
+  let graph = loadWorld(workspace)
+  if graph == nil: return pmAny
+  let channelKey =
+    if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+      msg.channel & ":" & msg.metadata["app_id"]
+    else: msg.channel
+  let (entID, _) = graph.resolveUserGraph(channelKey, msg.sender_id)
+  if uint32(entID) == 0 or not graph.entities.hasKey(entID):
+    return pmAny
+  let p = graph.entities[entID].role.toLowerAscii
+  if p in ["superadmin", "admin"]: return pmSuperAdmin
+  pmAny
+
 proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): Future[string] {.async.} =
   let cmd = msg.content.strip()
+  # Single gate at the entry: system commands are operator tools, not
+  # a customer-facing API. Every `/…` goes through here, so one check
+  # covers the entire slash surface. Non-admin callers get a polite
+  # refusal that doesn't leak which commands exist.
+  let callerPermGate = resolveCallerPermission(cfg, msg)
+  if callerPermGate != pmSuperAdmin:
+    return "System commands (`/status`, `/user …`, `/channel …`, etc.) " &
+           "are restricted to operators. Ask a SuperAdmin if you need " &
+           "something administrative done."
   if cmd == "/status":
     let workspace = cfg[].workspacePath()
     let graph = loadWorld(workspace)
@@ -325,22 +351,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     return "Switched to `" & providerKey & "/" & modelName & "`. Session cleared."
   elif cmd.startsWith("/user"):
     # Namespace for user management: `/user <subcmd> [<args>...]`.
-    # Subcommands dispatch through `runUserCommand` from cli_admin so
-    # the CLI and chat surfaces stay consistent. `/user invite` runs
-    # the same pre-allocated-Customer flow the old top-level `/invite`
-    # did — legacy `/invite` alias is preserved below.
-    let workspace = cfg[].workspacePath()
-    let g = loadWorld(workspace)
-    var callerPerm: Permission = pmAny
-    if g != nil:
-      let channelKey =
-        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-          msg.channel & ":" & msg.metadata["app_id"]
-        else: msg.channel
-      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-      if uint32(entID) > 0 and g.entities.hasKey(entID):
-        let p = g.entities[entID].role.toLowerAscii
-        if p in ["superadmin", "admin"]: callerPerm = pmSuperAdmin
+    # Entry gate already confirmed SuperAdmin — dispatch through
+    # runUserCommand / mintCustomerInvite so CLI and chat share the
+    # same backend. `/user invite` rewrites to the `/invite` alias
+    # below for presentation-layer formatting.
     let rawParts = cmd.splitWhitespace()
     let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
     if argv.len == 0 or argv[0] == "help":
@@ -385,31 +399,24 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    cascaded). Prefer this over manual DSL edits for\n" &
              "    cleaning up stale Unknown auto-registers or dupes.\n" &
              "    Example: `/user remove nc:7`\n\n" &
-             "Read-only subs (list, show, trust) work for any caller.\n" &
-             "`invite` and `remove` are SuperAdmin only."
+             "All `/user` subcommands (and every `/` system command)\n" &
+             "are restricted to SuperAdmin / Admin callers."
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
-    # Read-only subs work for anyone. Admin subs (remove) need
-    # SuperAdmin. Both go through the same runUserCommand path
-    # so CLI and chat stay in lockstep. Output wrapped in a code
-    # block so column-aligned tables survive Feishu markdown.
-    if sub in ["list", "show", "trust"]:
+    # Entry gate has already confirmed SuperAdmin, so all subs are
+    # permitted. Routes through the same runUserCommand / mintCustomer-
+    # Invite paths the CLI uses — single source of truth. Output is
+    # wrapped in a code block so column-aligned tables survive Feishu
+    # markdown; JSON output opts out so machine use stays raw.
+    if sub in ["list", "show", "trust", "remove"]:
       var cfgCopy = cfg[]
       let body = runUserCommand(cfgCopy, @[sub] & subArgs)
       let wantsJson = "--format=json" in subArgs or "--json" in subArgs
       if wantsJson: return body
       return codeBlock(body)
-    if sub == "remove":
-      if callerPerm != pmSuperAdmin:
-        return "`/user remove` requires SuperAdmin."
-      var cfgCopy = cfg[]
-      return codeBlock(runUserCommand(cfgCopy, @[sub] & subArgs))
     if sub == "invite":
-      # SuperAdmin gate.
-      if callerPerm != pmSuperAdmin:
-        return "`/user invite` requires SuperAdmin."
-      # Rewrite and fall through to the shared invite handler below.
-      # We synthesize `cmdRewrite` and let the /invite branch process it.
+      # Rewrite to the legacy /invite alias below — same helper path,
+      # chat-specific paste-template formatting.
       let cmdRewrite = "/invite " & subArgs.join(" ")
       var fakeMsg = msg
       fakeMsg.content = cmdRewrite
@@ -419,13 +426,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            "`/user remove <nc:id>`, or `/user invite <name>`."
 
   elif cmd.startsWith("/invite"):
-    # Legacy alias for `/user invite` — same body, thin wrapper around
-    # the shared `mintCustomerInvite` helper in cli_admin. The CLI
-    # `claw user invite` goes through the same helper so behaviour
-    # and persistence are identical across surfaces.
+    # Legacy alias for `/user invite`. Entry gate already confirmed
+    # SuperAdmin; we only need the caller's nc:id here for invite
+    # provenance (the `issuedBy` field on InviteConstraint).
     let workspace = cfg[].workspacePath()
     let g = loadWorld(workspace)
-    var permOk = false
     var issuer = ""
     if g != nil:
       let channelKey =
@@ -433,12 +438,8 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           msg.channel & ":" & msg.metadata["app_id"]
         else: msg.channel
       let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-      if uint32(entID) > 0 and g.entities.hasKey(entID):
+      if uint32(entID) > 0:
         issuer = toAlias(entID)
-        let p = g.entities[entID].role.toLowerAscii
-        if p in ["superadmin", "admin"]: permOk = true
-    if not permOk:
-      return "`/invite` requires SuperAdmin."
     let parts = cmd.splitWhitespace()
     if parts.len < 2:
       return renderCommandDetail("/user")
@@ -477,42 +478,16 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            "` works."
 
   elif cmd == "/help" or cmd.startsWith("/help "):
-    # Resolve the caller's permission to filter the listing.
-    let workspace = cfg[].workspacePath()
-    let g = loadWorld(workspace)
-    var callerPerm: Permission = pmAny
-    if g != nil:
-      let channelKey =
-        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-          msg.channel & ":" & msg.metadata["app_id"]
-        else: msg.channel
-      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-      if uint32(entID) > 0 and g.entities.hasKey(entID):
-        let p = g.entities[entID].role.toLowerAscii
-        if p in ["superadmin", "admin"]: callerPerm = pmSuperAdmin
+    # Entry gate confirms SuperAdmin, so show everything (no 🔒 filter).
     let parts = cmd.splitWhitespace()
     if parts.len >= 2:
       return renderCommandDetail(parts[1])
-    return renderHelp(callerPerm)
+    return renderHelp(pmSuperAdmin)
 
   elif cmd.startsWith("/channel"):
     # `/channel auth feishu <app_id> <app_secret> [<agent>]`
     # `/channel list`
-    # SuperAdmin-only — same trust check as /invite/restart.
-    let workspace = cfg[].workspacePath()
-    let g = loadWorld(workspace)
-    var permOk = false
-    if g != nil:
-      let channelKey =
-        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-          msg.channel & ":" & msg.metadata["app_id"]
-        else: msg.channel
-      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-      if uint32(entID) > 0 and g.entities.hasKey(entID):
-        let p = g.entities[entID].role.toLowerAscii
-        if p in ["superadmin", "admin"]: permOk = true
-    if not permOk:
-      return "`/channel` requires SuperAdmin."
+    # Entry gate already confirmed SuperAdmin.
     let rawParts = cmd.splitWhitespace()
     # parts[0] = "/channel", pass the rest to docopt.
     let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
@@ -551,24 +526,8 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
   elif cmd == "/restart":
     # SuperAdmin-only: stop the current gateway and launch a fresh one
     # so config/DSL changes (e.g. a freshly added Feishu app) take
-    # effect without dropping to a terminal.
-    # Permission check uses the declared entity permission, not the
-    # relationship-annotation role.
-    let workspace = cfg[].workspacePath()
-    let g = loadWorld(workspace)
-    var permOk = false
-    if g != nil:
-      let channelKey =
-        if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-          msg.channel & ":" & msg.metadata["app_id"]
-        else: msg.channel
-      let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-      if uint32(entID) > 0 and g.entities.hasKey(entID):
-        let p = g.entities[entID].role.toLowerAscii
-        if p in ["superadmin", "admin"]: permOk = true
-    if not permOk:
-      return "`/restart` requires SuperAdmin. Ask one to run " &
-             "`claw co stop && claw gateway` at the terminal."
+    # effect without dropping to a terminal. Entry gate confirmed
+    # SuperAdmin already.
     let clawBin = getAppFilename()
     let myPidHere = getpid()
     # Detached child survives our death (setsid under poDaemon).
