@@ -404,14 +404,28 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         for l in newBlock: merged.add(l)
         for i in insertAt ..< bLines.len: merged.add(bLines[i])
         writeFile(baseNims, merged.join("\n"))
+    # Feishu sometimes flags bare alphanumeric codes as suspicious
+    # (spam/phishing filter). Wrap the code in a natural sentence so
+    # IM gateways let it through — the intercept matches on substring,
+    # so any text containing the code works. Give the SuperAdmin three
+    # paste-ready options at different verbosity levels.
+    let paste1 = "Hi — my access code is " & code &
+                 ", please activate. Thanks!"
+    let paste2 = customerName & " here. My invite code: " & code & "."
+    let paste3 = alias & "/" & code
     return "**Customer invite created**\n\n" &
-           "Share this string:  `" & alias & "/" & code & "`\n\n" &
-           "  Customer: `" & customerName & "` (" & alias & ")\n" &
+           "  Customer: " & customerName & " (" & alias & ")\n" &
            "  Agent:    " & agentName & "\n" &
            "  Max uses: " & $maxUses & "\n\n" &
-           "The customer DMs that string to any channel routing to " &
-           agentName & " and gets authenticated before the LLM turn. " &
-           "Use `/status` to confirm."
+           "**Share one of these with the customer** (Feishu may block\n" &
+           "bare codes — wrapping in a sentence usually passes):\n\n" &
+           "```\n" & paste1 & "\n```\n" &
+           "```\n" & paste2 & "\n```\n" &
+           "```\n" & paste3 & "\n```\n\n" &
+           "The customer DMs their chosen text to any channel routing " &
+           "to " & agentName & ". The gateway authenticates them " &
+           "before the LLM turn — code match is substring-based, so " &
+           "any message containing `" & code & "` works."
 
   elif cmd == "/restart":
     # SuperAdmin-only: stop the current gateway and launch a fresh one
