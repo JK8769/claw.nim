@@ -39,6 +39,7 @@ Usage:
   claw provider remove <name>
   claw provider <cmd> [<args>...]
   claw channel <cmd> [<args>...]
+  claw user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<key>] [--reverse] [--format=<fmt>]
   claw user <cmd> [<args>...]
   claw role <cmd> [<args>...]
   claw agent list
@@ -1482,8 +1483,22 @@ when isMainModule:
   elif args["user"]:
     var cfg = loadConfig(getConfigPath())
     var userArgs: seq[string]
-    for a in @(args["<args>"]): userArgs.add(a)
-    echo runUserCommand(cfg, @[$args["<cmd>"]] & userArgs)
+    # The specific `user list [--kind=...] [--tier=...] ...` rule matches
+    # first; pull the flags out of docopt and re-encode as positional
+    # --flag=value strings so runUserCommand's own parser can consume
+    # them (same parser other subcmds will grow later).
+    if args["list"] and not args["<cmd>"]:
+      userArgs.add("list")
+      if args["--kind"]:       userArgs.add("--kind=" & $args["--kind"])
+      if args["--tier"]:       userArgs.add("--tier=" & $args["--tier"])
+      if args["--permission"]: userArgs.add("--permission=" & $args["--permission"])
+      if args["--sort"]:       userArgs.add("--sort=" & $args["--sort"])
+      if args["--reverse"]:    userArgs.add("--reverse")
+      if args["--format"]:     userArgs.add("--format=" & $args["--format"])
+      echo runUserCommand(cfg, userArgs)
+    else:
+      for a in @(args["<args>"]): userArgs.add(a)
+      echo runUserCommand(cfg, @[$args["<cmd>"]] & userArgs)
 
   # Role management — internal vs external permission tiers.
   elif args["role"]:

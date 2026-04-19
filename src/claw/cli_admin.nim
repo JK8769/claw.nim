@@ -1008,12 +1008,17 @@ proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[pe
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
     return "Usage: claw user <list|show|trust|edit|merge|invite|register> [args]\n" &
-           "  list     — table of every human identity (no trust — see `trust`)\n" &
+           "  list     — table of every user (Person/AI/Service/Unknown).\n" &
+           "             flags: --kind=<Person|AI|Unknown|Service>\n" &
+           "                    --tier=<int|ext|?>\n" &
+           "                    --permission=<role>\n" &
+           "                    --sort=<nc|name|kind|permission|tier|role>\n" &
+           "                    --reverse  --format=<table|json>\n" &
            "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
            "  trust    — edge graph (agent → person) with role + trust per row\n" &
-           "  edit     — set a field on a Person in BASE.nims\n" &
+           "  edit     — set a field on a user in BASE.nims (or graph-only)\n" &
            "             claw user edit <nc:id> <field> <value>\n" &
-           "             fields: name, permission, jobTitle\n" &
+           "             fields: name, permission, jobTitle, kind\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -1032,11 +1037,32 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     s & spaces(max(0, width - s.runeLen))
 
   if subcmd == "list":
-    # "User" is a UX framing — anyone interacting with the system,
-    # whatever their entity kind. Includes Persons, Unknown (guests
-    # we haven't classified yet), Services, and external AIs (ekAI
-    # that isn't one of OUR declared agents — those show in `agent
-    # list` instead). Skips Corporate and Invite entities.
+    # Flags (positional-compatible — docopt passes them through as args):
+    #   --kind=<Person|AI|Unknown|Service>   — filter by entity kind
+    #   --tier=<int|ext|?>                   — filter by internal/external
+    #   --permission=<role>                  — filter by declared permission
+    #   --sort=<nc|name|kind|permission|tier|role>  — sort column
+    #   --reverse                            — reverse sort order
+    #   --format=<table|json>                — output format
+    var filterKind, filterTier, filterPerm = ""
+    var sortKey = "nc"
+    var reverse = false
+    var format = if asJson: "json" else: "table"
+    var unparsed: seq[string]
+    for a in args[1 .. ^1]:
+      if a.startsWith("--kind="):       filterKind = a["--kind=".len .. ^1].toLowerAscii
+      elif a.startsWith("--tier="):     filterTier = a["--tier=".len .. ^1].toLowerAscii
+      elif a.startsWith("--permission="): filterPerm = a["--permission=".len .. ^1].toLowerAscii
+      elif a.startsWith("--perm="):     filterPerm = a["--perm=".len .. ^1].toLowerAscii
+      elif a.startsWith("--sort="):     sortKey = a["--sort=".len .. ^1].toLowerAscii
+      elif a == "--reverse":            reverse = true
+      elif a.startsWith("--format="):   format = a["--format=".len .. ^1].toLowerAscii
+      elif a == "--json":               format = "json"
+      else: unparsed.add(a)
+    if unparsed.len > 0:
+      return "Error: unrecognised argument(s): " & unparsed.join(", ") & "\n" &
+             "Flags: --kind=, --tier=, --permission=, --sort=, --reverse, --format=."
+
     var ourAgents: HashSet[string]
     for a in cfg.agents.named: ourAgents.incl(a.name)
     type Row = tuple[ncId, name, kind, perm, tier, relRole, idents: string]
@@ -1044,6 +1070,12 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     for id, ent in graph.entities.pairs:
       if ent.kind in {ekCorporate, ekInvite}: continue
       if ent.kind == ekAI and ent.name in ourAgents: continue
+      let kindStr = $ent.kind
+      let tierStr = entityTier(cfg, graph, ent)
+      let permStr = userPermission(ent)
+      if filterKind.len > 0 and kindStr.toLowerAscii != filterKind: continue
+      if filterTier.len > 0 and tierStr != filterTier: continue
+      if filterPerm.len > 0 and permStr.toLowerAscii != filterPerm: continue
       var identParts: seq[string]
       for chan, sid in ent.identifiers.pairs:
         var shown = sid
@@ -1052,15 +1084,26 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       rows.add((
         ncId: toAlias(id),
         name: ent.name,
-        kind: $ent.kind,
-        perm: userPermission(ent),
-        tier: entityTier(cfg, graph, ent),
+        kind: kindStr,
+        perm: permStr,
+        tier: tierStr,
         relRole: userRelRole(graph, id),
         idents: (if identParts.len > 0: identParts.join(", ") else: "—")
       ))
+
+    # Sort by the requested column (nc default).
+    let sk = sortKey
     rows.sort(proc(a, b: Row): int =
-      cmp(parseAlias(a.ncId).uint32, parseAlias(b.ncId).uint32))
-    if asJson:
+      case sk:
+      of "name":                 cmp(a.name.toLowerAscii, b.name.toLowerAscii)
+      of "kind":                 cmp(a.kind, b.kind)
+      of "permission", "perm":   cmp(a.perm.toLowerAscii, b.perm.toLowerAscii)
+      of "tier":                 cmp(a.tier, b.tier)
+      of "role", "rel", "relrole": cmp(a.relRole.toLowerAscii, b.relRole.toLowerAscii)
+      else:                      cmp(parseAlias(a.ncId).uint32, parseAlias(b.ncId).uint32))
+    if reverse: rows.reverse()
+
+    if format == "json":
       var arr = newJArray()
       for r in rows:
         arr.add(%*{"nc_id": r.ncId, "name": r.name,
@@ -1070,9 +1113,12 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
-      return "No users in this company yet. First-contact guests auto-\n" &
-             "register on their first message; our own agents are shown\n" &
-             "by `claw agent list`."
+      var hint = "No users match the filter."
+      if filterKind.len == 0 and filterTier.len == 0 and filterPerm.len == 0:
+        hint = "No users in this company yet. First-contact guests auto-\n" &
+               "register on their first message; our own agents are shown\n" &
+               "by `claw agent list`."
+      return hint
     var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   IDENTIFIERS\n"
     for r in rows:
       var name = r.name
@@ -1088,10 +1134,16 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
               pad(r.tier, 5) & " " &
               pad(relRole, 11) & " " &
               idents & "\n")
-    res.add("\n" & $rows.len & " user(s). KIND = Person / AI / Service / Unknown.\n" &
-            "Unknown = auto-registered guest, classify with\n" &
-            "`claw user edit <nc:id> kind <Person|AI|Service>`.\n" &
-            "Use `claw user trust` for edges, `user show <nc:id>` for detail.\n")
+    var summary = "\n" & $rows.len & " user(s)"
+    if filterKind.len + filterTier.len + filterPerm.len > 0:
+      var parts: seq[string]
+      if filterKind.len > 0: parts.add("kind=" & filterKind)
+      if filterTier.len > 0: parts.add("tier=" & filterTier)
+      if filterPerm.len > 0: parts.add("permission=" & filterPerm)
+      summary.add(" (filtered: " & parts.join(", ") & ")")
+    summary.add(". KIND = Person / AI / Service / Unknown.\n")
+    res.add(summary)
+    res.add("Use `claw user trust` for edges, `user show <nc:id>` for detail.\n")
     return res
 
   if subcmd == "trust":
