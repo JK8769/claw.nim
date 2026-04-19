@@ -334,44 +334,88 @@ Examples:
 
 const knownChannels* = ["telegram", "discord", "whatsapp", "dingtalk", "maixcam", "feishu", "qq", "nmobile"]
 
-proc addFeishuChannel(cfg: var Config, args: seq[string]): string =
-  ## Setup a Feishu/Lark channel app.
-  ## Usage: nimclaw channel add feishu <APP_ID> <APP_SECRET>
+proc ensureChannelInBaseNims(channelType, block_content: string): bool =
+  ## Append a `channel "<type>":` declaration to this company's BASE.nims
+  ## if it isn't already declared. Keeps the DSL the source-of-truth so
+  ## `co update` regenerates BASE.json with the channel included. Returns
+  ## true on write, false if the channel was already declared (or BASE.nims
+  ## is missing — caller warns the user).
+  let baseNimsPath = getNimClawDir() / "BASE.nims"
+  if not fileExists(baseNimsPath): return false
+  let existing = readFile(baseNimsPath)
+  # Rough detection — we're matching the opening line of the DSL block.
+  let marker = "channel \"" & channelType & "\""
+  if marker in existing: return false
+  # Insert BEFORE `build(currentSourcePath())` if present, otherwise append.
+  let buildLine = "build(currentSourcePath())"
+  let insertion = "\n# ── Channel (added by `claw channel auth " &
+                  channelType & "`) ───────\n" & block_content & "\n"
+  let updated =
+    if buildLine in existing:
+      existing.replace(buildLine, insertion & "\n" & buildLine)
+    else:
+      existing & insertion
+  writeFile(baseNimsPath, updated)
+  true
+
+proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
+  ## Configure Feishu credentials for THIS company. Mirrors `provider auth`:
+  ## no per-company "add" step — the channel type exists in res/channels.json
+  ## and this just binds credentials to the active company.
+  ##
+  ## Usage: claw channel auth feishu <APP_ID> <APP_SECRET>
   let bin = feishu_channel.findLarkCli()
   if bin.len == 0:
-    return "Error: lark-cli binary not found.\nBuild it with: nimble build_lark\nOr place it on your PATH."
+    return "Error: lark-cli binary not found.\n" &
+           "Build it with: ./channels/build_lark_cli.sh  (or see channels/build_lark_cli.sh)"
 
   if args.len < 2:
-    return "Usage: nimclaw channel add feishu <APP_ID> <APP_SECRET>\n\n" &
+    return "Usage: claw channel auth feishu <APP_ID> <APP_SECRET>\n\n" &
            "Get your credentials from the Feishu Developer Console:\n" &
            "  https://open.feishu.cn/app"
 
   let appID = args[0]
   let appSecret = args[1]
 
-  # Check if this app is already configured
+  # If this app is already bound, re-verify and update — don't refuse.
+  var existing = false
   for app in cfg.channels.feishu.apps:
-    if app.app_id == appID:
-      return "App " & appID & " is already configured."
+    if app.app_id == appID: existing = true; break
 
-  stdout.write "Testing credentials... "
+  stdout.write "Verifying credentials with Feishu... "
   stdout.flushFile()
   let ok = feishu_channel.initLarkCliConfig(bin, appID, appSecret)
   if not ok:
-    return "Failed to configure lark-cli. Check your App ID and App Secret."
+    return "Failed to authenticate. Check your App ID and App Secret."
   echo "OK"
 
-  # Add to config (secret stays only in lark-cli's config dir)
-  cfg.channels.feishu.enabled = true
-  cfg.channels.feishu.apps.add(FeishuAppConfig(
-    enabled: some(true),
-    app_id: appID,
-  ))
+  if not existing:
+    cfg.channels.feishu.enabled = true
+    cfg.channels.feishu.apps.add(FeishuAppConfig(
+      enabled: some(true),
+      app_id: appID,
+    ))
+    let configPath = getNimClawDir() / "config.json"
+    saveConfig(configPath, cfg)
 
-  let configPath = getNimClawDir() / "config.json"
-  saveConfig(configPath, cfg)
-
-  return "Feishu app " & appID & " added and enabled.\nRestart the gateway to connect."
+  # Persist to BASE.nims so `co update` preserves the channel. Feishu's
+  # DSL uses `app "<id>"` (multi-app, appended to apps[]) — NOT `appId`,
+  # which is the flat-field form used by QQ/DingTalk. The secret lives
+  # only in lark-cli's config dir; nims carries the app_id as the
+  # declaration handle.
+  let dslBlock = """channel "feishu":
+  app """" & appID & """"
+  # App secret is stored by lark-cli in ~/.lark-cli — re-auth with
+  #   claw channel auth feishu """" & appID & """" <NEW_SECRET>"""
+  let updated = ensureChannelInBaseNims("feishu", dslBlock)
+  var res = (if existing: "Re-authed " else: "Authed ") &
+            "Feishu app " & appID & "."
+  if updated:
+    res.add("\nAppended channel block to BASE.nims.")
+  else:
+    res.add("\n(BASE.nims already declared this channel.)")
+  res.add("\nRestart the gateway to connect.")
+  return res
 
 proc addNMobileChannel(cfg: var Config, args: seq[string]): string =
   ## Setup an nMobile/NKN channel.
@@ -477,14 +521,55 @@ proc loadChannelTypes(): JsonNode =
   except CatchableError:
     return newJObject()
 
+proc channelInstanceRows(cfg: Config): seq[tuple[name, status, auth, details: string]] =
+  ## Walk the configured-channel slots on this company and project each
+  ## into a display row. Purely read-only.
+  let feishuDetail =
+    if cfg.channels.feishu.apps.len > 0:
+      var ids: seq[string]
+      for a in cfg.channels.feishu.apps:
+        var shown = a.app_id
+        if shown.len > 10: shown = shown[0 ..< 12] & "…"
+        ids.add(shown)
+      $cfg.channels.feishu.apps.len & " app(s): " & ids.join(", ")
+    else: "—"
+  result.add(("feishu",
+              if cfg.channels.feishu.enabled: "enabled" else: "disabled",
+              (if cfg.channels.feishu.apps.len > 0: "lark-cli" else: "—"),
+              feishuDetail))
+  result.add(("telegram",
+              if cfg.channels.telegram.enabled: "enabled" else: "disabled",
+              (if cfg.channels.telegram.token.len > 0: "token" else: "—"),
+              "—"))
+  result.add(("discord",
+              if cfg.channels.discord.enabled: "enabled" else: "disabled",
+              "—", "—"))
+  result.add(("whatsapp",
+              if cfg.channels.whatsapp.enabled: "enabled" else: "disabled",
+              (if cfg.channels.whatsapp.bridge_url.len > 0: "bridge" else: "—"),
+              (if cfg.channels.whatsapp.bridge_url.len > 0: cfg.channels.whatsapp.bridge_url else: "—")))
+  result.add(("qq",
+              if cfg.channels.qq.enabled: "enabled" else: "disabled",
+              "—", "—"))
+  result.add(("dingtalk",
+              if cfg.channels.dingtalk.enabled: "enabled" else: "disabled",
+              "—", "—"))
+  result.add(("nmobile",
+              if cfg.channels.nmobile.enabled: "enabled" else: "disabled",
+              "—", "—"))
+  result.add(("maixcam",
+              if cfg.channels.maixcam.enabled: "enabled" else: "disabled",
+              "—", "—"))
+
 proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw channel <list|types|status|add|remove> [args]\n" &
-           "  list   — channels configured on the active company\n" &
-           "  types  — channel types supported by this binary (from res/channels.json)\n" &
-           "  status — enabled/disabled per-channel\n" &
-           "  add    — add a channel instance (types: feishu, nmobile)\n" &
-           "  remove — drop a channel"
+    return "Usage: claw channel <list|types|auth|remove> [args]\n" &
+           "  list   — channels configured on this company (table)\n" &
+           "  types  — channel types the binary supports (res/channels.json)\n" &
+           "  auth   — bind credentials for a channel to this company\n" &
+           "  remove — disable a channel on this company\n\n" &
+           "Mirror of providers: `channel add/remove` the TYPE is done in\n" &
+           "res/channels.json (binary-level). Per-company is just `auth`."
   let subcmd = args[0]
 
   if subcmd == "types":
@@ -522,17 +607,24 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
     return res.strip
 
   if subcmd == "list":
-    # Show channels CONFIGURED on this company (from BASE.json), with a
-    # one-liner nudge to `channel types` for the available-binary view.
+    let rows = channelInstanceRows(cfg)
     if asJson:
       var arr = newJArray()
-      for ch in knownChannels:
-        arr.add(%*{"name": ch, "available": true})
+      for r in rows:
+        arr.add(%*{"name": r.name, "status": r.status,
+                   "auth": r.auth, "details": r.details})
       return $arr
-    var res = "Configured channels:\n"
-    for ch in knownChannels:
-      res.add("  " & ch & ": available\n")
-    res.add("\n(Run `claw channel types` to see what channel kinds this binary supports.)\n")
+    # Fixed-width table header. Details column is truncated if long.
+    var res = "NAME       STATUS     AUTH       DETAILS\n"
+    for r in rows:
+      var detail = r.details
+      if detail.len > 50: detail = detail[0 ..< 48] & "…"
+      res.add(r.name.alignLeft(10) & " " &
+              r.status.alignLeft(10) & " " &
+              r.auth.alignLeft(10) & " " &
+              detail & "\n")
+    res.add("\n(Run `claw channel auth <type> ...` to bind credentials; " &
+            "`channel types` for the available-binary catalog.)\n")
     return res
   if subcmd == "status":
     type ChSt = tuple[name: string, enabled: bool, detail: string]
@@ -562,15 +654,32 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
       else:
         res.add("  " & ch.name & ": disabled\n")
     return res
-  if subcmd == "add":
-    if args.len < 2: return "Usage: nimclaw channel add <type>\nSupported: feishu, nmobile"
+  if subcmd == "auth":
+    if args.len < 2:
+      return "Usage: claw channel auth <type> [creds...]\n" &
+             "Supported: feishu, nmobile\n" &
+             "Other types: the credentials live in your .env (see " &
+             "`claw channel types`)."
     case args[1]
-    of "feishu", "lark": return addFeishuChannel(cfg, args[2..^1])
+    of "feishu", "lark": return authFeishuChannel(cfg, args[2..^1])
     of "nmobile", "nkn": return addNMobileChannel(cfg, args[2..^1])
-    else: return "Setup not yet available for '" & args[1] & "'.\nEdit your config file directly."
+    else: return "Auth helper not yet available for '" & args[1] & "'.\n" &
+                 "Set the required env vars from `claw channel types` and\n" &
+                 "declare the channel block in BASE.nims directly."
+
+  # Back-compat alias: old `channel add <type>` invocations fall through
+  # to `auth` with a deprecation note.
+  if subcmd == "add":
+    return "`channel add` is deprecated at the company level — use:\n" &
+           "  claw channel auth " &
+           (if args.len > 1: args[1] else: "<type>") & " [creds...]\n" &
+           "(Adding a new channel TYPE is a binary-level change to res/channels.json.)"
+
   if subcmd == "remove":
-    if args.len < 2: return "Usage: nimclaw channel remove <name>"
-    return "To remove the '" & args[1] & "' channel, edit your config file."
+    if args.len < 2: return "Usage: claw channel remove <type>"
+    return "To disable the '" & args[1] & "' channel, edit BASE.nims and\n" &
+           "remove or comment out its `channel \"" & args[1] &
+           "\":` block, then run `claw co update`."
   return "Unknown channel command: " & subcmd
 
 # ── hardware ──────────────────────────────────────────────────────
