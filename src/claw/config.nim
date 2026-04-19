@@ -53,6 +53,12 @@ type
   FeishuAppConfig* = object
     enabled*: Option[bool]
     app_id*: string
+    # Which agent in this company handles messages from this app.
+    # Empty = fall through to the company default (Lexi). Routing
+    # happens at channel-receive time: the feishu channel sets
+    # InboundMessage.recipient_id = this agent before publishing to
+    # the bus, so the gateway dispatches to the right office.
+    agent*: string
 
   FeishuConfig* = object
     enabled*: bool

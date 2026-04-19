@@ -269,6 +269,11 @@ template channel*(chKind: string, body: untyped) =
       ch.fields.add((key: "token", val: t))
     template app(appId: string) {.used.} =
       ch.fields.add((key: "app", val: appId))
+    template app(appId, agentName: string) {.used.} =
+      ## Feishu multi-app form: bind which agent handles inbound from
+      ## this app. Messages on this app_id land in `agentName`'s office.
+      ch.fields.add((key: "app", val: appId))
+      ch.fields.add((key: "app_agent:" & appId, val: agentName))
     template appId(id: string) {.used.} =
       ch.fields.add((key: "appId", val: id))
     template appSecret(s: string) {.used.} =
@@ -664,10 +669,12 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
       case f.key
       of "token": result[k]["token"] = %f.val
       of "app":
-        # Feishu apps array
+        # Feishu apps array. Companion `app_agent:<id>` field (if any)
+        # is handled in the post-loop pass so routing binds correctly
+        # regardless of declaration order.
         if not result[k].hasKey("apps") or result[k]["apps"].kind != JArray:
           result[k]["apps"] = newJArray()
-        result[k]["apps"].add(%*{"enabled": true, "app_id": f.val})
+        result[k]["apps"].add(%*{"enabled": true, "app_id": f.val, "agent": ""})
       of "appId": result[k]["app_id"] = %f.val
       of "appSecret": result[k]["app_secret"] = %f.val
       of "clientId": result[k]["client_id"] = %f.val
@@ -679,7 +686,20 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
       of "notificationOnly": result[k]["notification_only"] = %parseBool(f.val)
       of "streamIntermediary": result[k]["stream_intermediary"] = %parseBool(f.val)
       of "allowFrom": allowFrom.add(f.val)
-      else: result[k][f.key] = %f.val
+      else:
+        # Per-app agent routing key: `app_agent:<app_id>` → agent name.
+        # Handled here rather than inline to keep order-independence —
+        # the `app "<id>"` line might appear before or after the
+        # two-arg form in BASE.nims after CLI appends.
+        if f.key.startsWith("app_agent:"):
+          let targetAppID = f.key["app_agent:".len .. ^1]
+          if result[k].hasKey("apps") and result[k]["apps"].kind == JArray:
+            for i in 0 ..< result[k]["apps"].len:
+              if result[k]["apps"][i]{"app_id"}.getStr() == targetAppID:
+                result[k]["apps"][i]["agent"] = %f.val
+                break
+        else:
+          result[k][f.key] = %f.val
     if allowFrom.len > 0:
       result[k]["allow_from"] = %allowFrom
 

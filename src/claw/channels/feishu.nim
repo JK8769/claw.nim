@@ -17,6 +17,7 @@ type
   FeishuAppInstance = ref object
     appID: string
     enabled: bool
+    agent: string              ## which agent this app routes inbound to
     subscribeProcess: Process
     subscriberThread: Thread[SubscriberArgs]
 
@@ -544,8 +545,18 @@ proc readEvents(p: Process, c: FeishuChannel, appID: string) =
       else:
         if chatID.startsWith("ou_"):   kind = ckDM
         elif chatID.startsWith("oc_"): kind = ckGroup
+
+      # Per-app agent routing. The app_id that received this message
+      # determines which agent handles it. Look up our configured
+      # routing and set it as the recipient so the gateway dispatches
+      # to that office. Empty → gateway uses its default (Lexi).
+      var routeTo = ""
+      for a in c.apps:
+        if a.appID == appID:
+          routeTo = a.agent
+          break
       c.handleMessage(senderID, chatID, finalContent, mediaPaths, metadata,
-                       chatKind = kind)
+                       recipientID = routeTo, chatKind = kind)
     except Exception as e:
       errorCF("feishu", "Event parse error", {"error": e.msg}.toTable)
 
@@ -635,7 +646,8 @@ proc newFeishuChannel*(cfg: FeishuConfig, bus: MessageBus): FeishuChannel =
   for appCfg in cfg.apps:
     result.apps.add(FeishuAppInstance(
       appID: appCfg.app_id,
-      enabled: (if options.isSome(appCfg.enabled): options.get(appCfg.enabled) else: true)
+      enabled: (if options.isSome(appCfg.enabled): options.get(appCfg.enabled) else: true),
+      agent: appCfg.agent
     ))
   initLock(result.cacheLock)
   result.loadCache()

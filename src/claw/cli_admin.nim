@@ -338,7 +338,15 @@ type ChannelNimsUpdate* = enum
   cnuNoFile         # BASE.nims missing
   cnuBlockAdded     # Created a new `channel "<type>":` block
   cnuItemAdded      # Inserted a new indented line into the existing block
+  cnuItemUpdated    # Replaced an existing line (e.g. added agent routing)
   cnuAlreadyPresent # The requested item is already declared
+
+proc appIDInLine(line, appID: string): bool =
+  ## Match lines like `  app "cli_xxx"` or `  app "cli_xxx", "Agent"`.
+  let s = line.strip()
+  if not s.startsWith("app \""): return false
+  let rest = s["app \"".len .. ^1]
+  rest.startsWith(appID & "\"")
 
 proc ensureChannelInBaseNims(channelType, fullBlock, appendItemLine: string): ChannelNimsUpdate =
   ## Mutate BASE.nims so `co update` will regenerate BASE.json with the
@@ -392,9 +400,30 @@ proc ensureChannelInBaseNims(channelType, fullBlock, appendItemLine: string): Ch
     else:
       break
 
-  # Idempotent: skip if the item line already appears inside the block.
+  # Upsert for `app "<id>"` lines: if a line already references this
+  # app_id (parsed from the new line's quoted first arg), replace it.
+  # Lets the two-arg form `app "<id>", "<agent>"` supersede the plain
+  # one-arg form without leaving a stale duplicate behind.
+  let newLineStripped = appendItemLine.strip()
+  var existingAppID = ""
+  if newLineStripped.startsWith("app \""):
+    let rest = newLineStripped["app \"".len .. ^1]
+    let closeQuote = rest.find('"')
+    if closeQuote > 0: existingAppID = rest[0 ..< closeQuote]
+
+  if existingAppID.len > 0:
+    for i in start + 1 ..< endIdx:
+      if appIDInLine(lines[i], existingAppID):
+        if lines[i].strip() == newLineStripped:
+          return cnuAlreadyPresent
+        var updated = lines
+        updated[i] = appendItemLine
+        writeFile(baseNimsPath, updated.join("\n"))
+        return cnuItemUpdated
+
+  # Otherwise: idempotent append.
   for i in start + 1 ..< endIdx:
-    if lines[i].strip() == appendItemLine.strip():
+    if lines[i].strip() == newLineStripped:
       return cnuAlreadyPresent
 
   # Insert before the first trailing blank line (keeps comments grouped)
@@ -467,17 +496,29 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
            "<repo>/channels/bin/lark-cli and this command finds it from there."
 
   if args.len < 2:
-    return "Usage: claw channel auth feishu <APP_ID> <APP_SECRET>\n\n" &
+    return "Usage: claw channel auth feishu <APP_ID> <APP_SECRET> [AGENT]\n\n" &
+           "  AGENT  Optional agent name — messages arriving on this app\n" &
+           "         will route to that agent's office. Omit to route to\n" &
+           "         the company default (Lexi). A company with several\n" &
+           "         Feishu apps typically binds each to a different agent.\n\n" &
            "Get your credentials from the Feishu Developer Console:\n" &
            "  https://open.feishu.cn/app"
 
   let appID = args[0]
   let appSecret = args[1]
+  let targetAgent = if args.len >= 3: args[2] else: ""
 
   # If this app is already bound, re-verify and update — don't refuse.
   var existing = false
-  for app in cfg.channels.feishu.apps:
-    if app.app_id == appID: existing = true; break
+  var agentChanged = false
+  for i in 0 ..< cfg.channels.feishu.apps.len:
+    if cfg.channels.feishu.apps[i].app_id == appID:
+      existing = true
+      if targetAgent.len > 0 and
+         cfg.channels.feishu.apps[i].agent != targetAgent:
+        cfg.channels.feishu.apps[i].agent = targetAgent
+        agentChanged = true
+      break
 
   stdout.write "Verifying credentials with Feishu... "
   stdout.flushFile()
@@ -491,7 +532,9 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
     cfg.channels.feishu.apps.add(FeishuAppConfig(
       enabled: some(true),
       app_id: appID,
+      agent: targetAgent,
     ))
+  if not existing or agentChanged:
     let configPath = getNimClawDir() / "config.json"
     saveConfig(configPath, cfg)
 
@@ -499,13 +542,19 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   # DSL uses `app "<id>"` (multi-app, appended to apps[]) — NOT `appId`,
   # which is the flat-field form used by QQ/DingTalk. The secret lives
   # only in lark-cli's config dir; nims carries the app_id as the
-  # declaration handle.
-  let fullBlock = """channel "feishu":
-  app """" & appID & """"
+  # declaration handle. If an agent is bound, use the two-arg form
+  # `app "<id>", "<agent>"` so `co update` persists the routing.
+  let appLine =
+    if targetAgent.len > 0:
+      "  app \"" & appID & "\", \"" & targetAgent & "\""
+    else:
+      "  app \"" & appID & "\""
+  let fullBlock = "channel \"feishu\":\n" & appLine & """
+
   # App Secret is managed by the official Lark/Feishu CLI (lark-cli)
   # and stored under ~/.lark-cli — re-bind with:
   #   claw channel auth feishu """" & appID & """" <NEW_APP_SECRET>"""
-  let appItemLine = "  app \"" & appID & "\""
+  let appItemLine = appLine
   let updated = ensureChannelInBaseNims("feishu", fullBlock, appItemLine)
   var res = (if existing: "Re-authed " else: "Authed ") &
             "Feishu app " & appID & "."
@@ -515,6 +564,9 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   of cnuItemAdded:
     res.add("\nAppended app to existing BASE.nims block (now " &
             $cfg.channels.feishu.apps.len & " app(s)).")
+  of cnuItemUpdated:
+    res.add("\nUpdated BASE.nims app line" &
+            (if targetAgent.len > 0: " (routes to " & targetAgent & ")." else: "."))
   of cnuAlreadyPresent:
     res.add("\n(BASE.nims already declared this app.)")
   of cnuNoFile:
@@ -635,12 +687,16 @@ proc channelInstanceRows(cfg: Config): seq[tuple[name, status, credType, details
   ## Lark/Feishu CLI (`lark-cli`) to bind them is a transport detail.
   let feishuDetail =
     if cfg.channels.feishu.apps.len > 0:
-      var ids: seq[string]
+      var parts: seq[string]
       for a in cfg.channels.feishu.apps:
         var shown = a.app_id
         if shown.len > 10: shown = shown[0 ..< 12] & "…"
-        ids.add(shown)
-      $cfg.channels.feishu.apps.len & " app(s): " & ids.join(", ")
+        # Show "<id> → <agent>" when a route is declared, else just the id
+        if a.agent.len > 0:
+          parts.add(shown & " → " & a.agent)
+        else:
+          parts.add(shown)
+      $cfg.channels.feishu.apps.len & " app(s): " & parts.join(", ")
     else: "—"
   result.add(("feishu",
               if cfg.channels.feishu.enabled: "enabled" else: "disabled",
@@ -724,11 +780,11 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
         arr.add(%*{"name": r.name, "status": r.status,
                    "credential": r.credType, "details": r.details})
       return $arr
-    # Fixed-width table header. Details column is truncated if long.
+    # Fixed-width header; details truncated only when extremely long.
     var res = "NAME       STATUS     CREDENTIAL  DETAILS\n"
     for r in rows:
       var detail = r.details
-      if detail.len > 50: detail = detail[0 ..< 48] & "…"
+      if detail.len > 100: detail = detail[0 ..< 98] & "…"
       res.add(r.name.alignLeft(10) & " " &
               r.status.alignLeft(10) & " " &
               r.credType.alignLeft(11) & " " &
