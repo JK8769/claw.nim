@@ -910,6 +910,31 @@ proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
   if r.len > 0: return r
   "guest"
 
+proc tierOfRole(cfg: Config, label: string): string =
+  ## Classify a role/permission label into "int"/"ext"/"?".
+  ## Declared roles in the trust: block win; otherwise fall back to a
+  ## name heuristic that mirrors clawdsl.nim's tier inference.
+  let low = label.toLowerAscii.strip
+  if low.len == 0: return "?"
+  for r in cfg.trust.roles:
+    if r.name.toLowerAscii == low:
+      let t = r.tier.toLowerAscii
+      if t == "internal": return "int"
+      if t == "external": return "ext"
+      return "?"
+  case low:
+  of "superadmin", "admin", "staff", "employee", "member": "int"
+  of "boss", "master", "lead", "customer", "student", "guest": "ext"
+  else: "?"
+
+proc entityTier(cfg: Config, graph: WorldGraph, ent: WorldEntity): string =
+  ## Tier of a person — declared permission if present, else inferred
+  ## from whatever relationship role an agent has pinned on them.
+  let p = userPermission(ent)
+  if p.len > 0: return tierOfRole(cfg, p)
+  let r = userRelRole(graph, ent.id)
+  tierOfRole(cfg, r)
+
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
     return "Usage: claw user <list|show|trust|merge|invite|register> [args]\n" &
@@ -937,7 +962,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     # Identity-level view only. Trust is per-edge (agent → person), so a
     # single TRUST cell would collapse an N×M matrix into a lossy max.
     # For trust, use `claw user trust`; for one user's edges, `user show`.
-    type Row = tuple[ncId, name, perm, relRole, idents: string]
+    type Row = tuple[ncId, name, perm, tier, relRole, idents: string]
     var rows: seq[Row]
     for id, ent in graph.entities.pairs:
       if ent.kind != ekPerson: continue
@@ -950,6 +975,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         ncId: toAlias(id),
         name: ent.name,
         perm: userPermission(ent),
+        tier: entityTier(cfg, graph, ent),
         relRole: userRelRole(graph, id),
         idents: (if identParts.len > 0: identParts.join(", ") else: "—")
       ))
@@ -959,28 +985,30 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       var arr = newJArray()
       for r in rows:
         arr.add(%*{"nc_id": r.ncId, "name": r.name,
-                   "permission": r.perm,
+                   "permission": r.perm, "tier": r.tier,
                    "relationship_role": r.relRole,
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
       return "No human identities in this company yet. Guests auto-register\n" &
              "on first message; agents are tracked via `claw agent list`."
-    var res = "NC:ID  NAME                  PERMISSION   ROLE(rel)   IDENTIFIERS\n"
+    var res = "NC:ID  NAME                  PERMISSION   TIER  ROLE(rel)   IDENTIFIERS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
       var idents = r.idents
-      if idents.len > 45: idents = idents[0 ..< 43] & "…"
+      if idents.len > 40: idents = idents[0 ..< 38] & "…"
       let perm = (if r.perm.len > 0: r.perm else: "—")
       let relRole = (if r.relRole.len > 0: r.relRole else: "—")
       res.add(pad(r.ncId, 6) & " " &
               pad(name, 21) & " " &
               pad(perm, 12) & " " &
+              pad(r.tier, 5) & " " &
               pad(relRole, 11) & " " &
               idents & "\n")
-    res.add("\n" & $rows.len & " user(s). Trust is per-edge — use `claw user trust`\n" &
-            "for the full graph, or `claw user show <nc:id>` for one user.\n")
+    res.add("\n" & $rows.len & " user(s). TIER = int(ernal) / ext(ernal) / ? (unknown).\n" &
+            "Use `claw user trust` for the edge graph, or\n" &
+            "`claw user show <nc:id>` for one user.\n")
     return res
 
   if subcmd == "trust":
@@ -990,7 +1018,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     # descending so the "stronger" edges surface first within an agent.
     type Edge = tuple[
       agentID, personID: WorldEntityID,
-      agentName, personName, kind, role, etiquette: string,
+      agentName, personName, kind, role, tier, etiquette: string,
       trust: int
     ]
     var edges: seq[Edge]
@@ -1015,8 +1043,9 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
           edges.add((
             agentID: aID, personID: link.targetID,
             agentName: a.name, personName: p.name,
-            kind: kind, role: role, etiquette: eti,
-            trust: trust
+            kind: kind, role: role,
+            tier: entityTier(cfg, graph, p),
+            etiquette: eti, trust: trust
           ))
     # Sort: agent nc:id asc, then reportsTo before serves, then trust desc.
     edges.sort(proc(x, y: Edge): int =
@@ -1034,6 +1063,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
           "agent_nc_id": toAlias(e.agentID), "agent_name": e.agentName,
           "edge": e.kind,
           "person_nc_id": toAlias(e.personID), "person_name": e.personName,
+          "person_tier": e.tier,
           "role": e.role, "trust": e.trust, "etiquette": e.etiquette
         })
       return $arr
@@ -1055,6 +1085,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     var res = pad("AGENT", maxAgent) & "  " &
               pad("EDGE", 9) & "  " &
               pad("PERSON", maxPerson) & "  " &
+              pad("TIER", 4) & "  " &
               pad("ROLE", maxRole) & "  " &
               pad("TRUST", 5) & "  ETIQUETTE\n"
     var lastAgent = WorldEntityID(0)
@@ -1070,6 +1101,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       res.add(pad(e.agentName, maxAgent) & "  " &
               pad(e.kind, 9) & "  " &
               pad(e.personName, maxPerson) & "  " &
+              pad(e.tier, 4) & "  " &
               pad(role, maxRole) & "  " &
               pad(trust, 5) & "  " & eti & "\n")
     res.add("\n" & $edges.len & " edge(s). One row per declared agent→person edge;\n" &
