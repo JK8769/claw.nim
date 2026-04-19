@@ -1,4 +1,4 @@
-import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random]
+import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets]
 import config, agent/invites, agent/cortex, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
@@ -895,10 +895,13 @@ proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|merge|invite> [args]\n" &
-           "  list   — show every human identity in this company's graph\n" &
-           "  merge  — (SuperAdmin) fold a guest nc:id into an existing user\n" &
-           "  invite — generate a one-time invite code (guest → user promotion)"
+    return "Usage: claw user <list|merge|invite|register> [args]\n" &
+           "  list     — show every human identity in this company's graph\n" &
+           "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
+           "  invite   — generate a one-time invite code (guest → user promotion)\n" &
+           "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
+           "             claw user register                 # everyone qualifying\n" &
+           "             claw user register <nc:id> [name]  # one specific, named"
   let subcmd = args[0]
 
   let workspace = cfg.workspacePath()
@@ -951,6 +954,176 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     res.add("\n" & $rows.len & " user(s). Guests have trust < 40; see `user invite`\n" &
             "or `user merge` for the promotion paths.\n")
     return res
+
+  if subcmd == "register":
+    # Reify runtime-added Person entities into BASE.nims so they survive
+    # `co update`. Two forms:
+    #   claw user register                 — everyone non-guest, not already
+    #                                         declared
+    #   claw user register <nc:id> [name]  — one specific entity, name hint
+    # Guests (trust < 40 / role guest) are intentionally excluded. The
+    # promotion path is redeem_invite; only once someone has earned a role
+    # do they graduate into the DSL as a declared User.
+    let baseNimsPath = getNimClawDir() / "BASE.nims"
+    if not fileExists(baseNimsPath):
+      return "Error: no BASE.nims at " & baseNimsPath
+    let baseText = readFile(baseNimsPath)
+
+    proc declaredPersonNames(src: string): HashSet[string] =
+      ## Person names already in BASE.nims so we don't duplicate blocks.
+      for raw in src.splitLines():
+        let s = raw.strip()
+        if s.startsWith("person \""):
+          let rest = s["person \"".len .. ^1]
+          let close = rest.find('"')
+          if close > 0: result.incl(rest[0 ..< close])
+
+    proc relationLinesForUser(graph: WorldGraph, userID: WorldEntityID):
+        seq[tuple[agent, kind, role, etiquette: string, trust: int]] =
+      ## Walk every agent; collect any serves/reportsTo link that targets
+      ## this user, so we can splice it into the corresponding agent
+      ## block. `kind` is "serves" | "reportsTo" — preserved from runtime.
+      for id, ent in graph.entities.pairs:
+        if ent.kind != ekAI: continue
+        for link in ent.reportsTo:
+          if link.targetID == userID and link.annotation.isSome:
+            let a = link.annotation.get
+            result.add((agent: ent.name, kind: "reportsTo",
+                         role: $a.role, etiquette: a.etiquette,
+                         trust: a.trustLevel))
+        for link in ent.serves:
+          if link.targetID == userID and link.annotation.isSome:
+            let a = link.annotation.get
+            result.add((agent: ent.name, kind: "serves",
+                         role: $a.role, etiquette: a.etiquette,
+                         trust: a.trustLevel))
+
+    proc insertRelationIntoAgentBlock(path, agentName: string,
+                                      relLines: string): bool =
+      ## Splice a relation sub-block into an existing `agent "<Name>":`
+      ## block. Returns true if the agent was found AND the relation
+      ## text wasn't already present.
+      let text = readFile(path)
+      let lines = text.splitLines()
+      let marker = "agent \"" & agentName & "\""
+      var start = -1
+      for i, l in lines:
+        if l.strip().startsWith(marker):
+          start = i
+          break
+      if start < 0: return false
+      var endIdx = start + 1
+      while endIdx < lines.len:
+        let l = lines[endIdx]
+        if l.len == 0 or l.startsWith(" ") or l.startsWith("\t"):
+          inc endIdx
+        else:
+          break
+      # Idempotent: if the relation text is already inside, skip.
+      let body = lines[start + 1 ..< endIdx].join("\n")
+      if relLines.strip() in body: return false
+      # Insert at block end, before the first trailing blank.
+      var insertAt = endIdx
+      while insertAt > start + 1 and lines[insertAt - 1].strip().len == 0:
+        dec insertAt
+      var updated = lines[0 ..< insertAt]
+      for r in relLines.splitLines(): updated.add(r)
+      for i in insertAt ..< lines.len: updated.add(lines[i])
+      writeFile(path, updated.join("\n"))
+      true
+
+    proc appendPersonBlock(path, personName: string,
+                           idents: seq[(string, string)]): bool =
+      ## Append a `person "Name":` block just before `build(...)`. No-op
+      ## if the name is already declared.
+      let text = readFile(path)
+      if "person \"" & personName & "\"" in text: return false
+      var block_content = "person \"" & personName & "\":\n"
+      for (chan, sid) in idents:
+        block_content.add("  identifier \"" & chan & "\", \"" & sid & "\"\n")
+      let buildLine = "build(currentSourcePath())"
+      let insertion = "\n# ── User (registered via `claw user register`) ───────\n" &
+                      block_content & "\n"
+      let updated =
+        if buildLine in text:
+          text.replace(buildLine, insertion & buildLine)
+        else:
+          text & insertion
+      writeFile(path, updated)
+      true
+
+    proc registerOne(ent: WorldEntity, id: WorldEntityID, name: string,
+                     declared: HashSet[string]): string =
+      if name in declared:
+        return "  ~ " & name & " already declared — skipped"
+      # Collect this entity's channel identifiers for the block body.
+      var idents: seq[(string, string)]
+      for chan, sid in ent.identifiers.pairs:
+        idents.add((chan, sid))
+      if not appendPersonBlock(baseNimsPath, name, idents):
+        return "  ~ " & name & " already in BASE.nims"
+      var msgs = @["  + person \"" & name & "\" appended (" & $idents.len &
+                    " identifier(s))"]
+      # Splice any relation this user has into the matching agent block.
+      for rel in relationLinesForUser(graph, id):
+        let relText =
+          "  " & rel.kind & " \"" & name & "\":\n" &
+          "    role \"" & rel.role & "\"\n" &
+          "    trustLevel " & $rel.trust &
+          (if rel.etiquette.len > 0:
+             "\n    etiquette \"" & rel.etiquette.replace("\"", "\\\"") & "\""
+           else: "")
+        if insertRelationIntoAgentBlock(baseNimsPath, rel.agent, relText):
+          msgs.add("    + " & rel.agent & "." & rel.kind & " → " & name &
+                    " (role=" & rel.role & ", trust=" & $rel.trust & ")")
+      msgs.join("\n")
+
+    let declared = declaredPersonNames(baseText)
+
+    if args.len >= 2:
+      # Specific nc:id form.
+      let target = args[1]
+      if not target.startsWith("nc:"):
+        return "Error: target must be an nc:id (e.g. nc:4)."
+      let id = parseAlias(target)
+      if uint32(id) == 0 or not graph.entities.hasKey(id) or
+         graph.entities[id].kind != ekPerson:
+        return "Error: " & target & " is not a Person in the graph."
+      let ent = graph.entities[id]
+      let trust = maxTrustFor(graph, id)
+      if trust < 40 and ent.role.toLowerAscii notin ["boss", "master",
+                                                      "admin", "superadmin"]:
+        return "Error: " & target & " is still a guest (trust " & $trust &
+               "). Have them redeem an invite first to earn a role."
+      let nameHint = if args.len >= 3: args[2] else: ent.name
+      return "Registering " & target & " as \"" & nameHint & "\":\n" &
+             registerOne(ent, id, nameHint, declared)
+
+    # Bulk form — everyone non-guest, not already declared.
+    var lines: seq[string] = @["Bulk-registering all non-guest, undeclared Persons:"]
+    var count = 0
+    for id, ent in graph.entities.pairs:
+      if ent.kind != ekPerson: continue
+      if ent.name in declared: continue
+      # Exclude guests. Master/boss/admin role on the entity itself
+      # (SuperAdmin-style graph-level role) is always kept; otherwise
+      # require some agent relationship with trust >= 40.
+      let trust = maxTrustFor(graph, id)
+      if trust < 40 and ent.role.toLowerAscii notin ["boss", "master",
+                                                      "admin", "superadmin"]:
+        continue
+      inc count
+      lines.add("\n" & toAlias(id) & " (" & ent.name & "):")
+      # Use the raw entity.name; specific form lets operators rename.
+      lines.add(registerOne(ent, id, ent.name,
+                             declaredPersonNames(readFile(baseNimsPath))))
+    if count == 0:
+      return "No non-guest, undeclared Persons to register.\n" &
+             "(Run `claw user list` to see who's eligible; redeem an invite\n" &
+             "to promote a guest first.)"
+    lines.add("\nRegistered " & $count & " user(s). Run `claw co update` to\n" &
+              "regenerate BASE.json with the new declarations.")
+    return lines.join("\n")
 
   if subcmd == "merge":
     if args.len < 3:
