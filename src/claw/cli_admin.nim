@@ -1,4 +1,4 @@
-import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch]
+import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm]
 import config, agent/invites, agent/cortex, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
@@ -863,6 +863,109 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
            "remove or comment out its `channel \"" & args[1] &
            "\":` block, then run `claw co update`."
   return "Unknown channel command: " & subcmd
+
+# ── user ──────────────────────────────────────────────────────────
+# Human identities (graph Persons) that this company knows about.
+# Not the same as `agent list` — those are AIs (ekAI), these are the
+# humans they talk to. Guests are users too; they sit at trust 10 until
+# someone promotes them via redeem_invite or a SuperAdmin edit.
+
+proc maxTrustFor(graph: WorldGraph, userID: WorldEntityID): int =
+  ## Peek across every agent's relationships and take the highest trust
+  ## level anyone has assigned to this user. Reflects "how trusted is
+  ## this person overall" without committing to a specific agent.
+  for ent in graph.entities.values:
+    if ent.kind != ekAI: continue
+    for link in ent.serves & ent.reportsTo:
+      if link.targetID == userID and link.annotation.isSome:
+        let t = link.annotation.get.trustLevel
+        if t > result: result = t
+
+proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
+  ## Prefer the graph-level `role` field (e.g. "SuperAdmin" for Owner);
+  ## else derive from the highest-trust relationship's UserRole; else
+  ## "Guest" as the safe default for auto-registered newcomers.
+  if ent.role.len > 0: return ent.role
+  for a in graph.entities.values:
+    if a.kind != ekAI: continue
+    for link in a.serves & a.reportsTo:
+      if link.targetID == ent.id and link.annotation.isSome:
+        return $link.annotation.get.role
+  "guest"
+
+proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
+  if args.len == 0:
+    return "Usage: claw user <list|merge|invite> [args]\n" &
+           "  list   — show every human identity in this company's graph\n" &
+           "  merge  — (SuperAdmin) fold a guest nc:id into an existing user\n" &
+           "  invite — generate a one-time invite code (guest → user promotion)"
+  let subcmd = args[0]
+
+  let workspace = cfg.workspacePath()
+  let graph = loadWorld(workspace)
+  if graph == nil:
+    return "Error: couldn't load the company graph from " & workspace
+
+  if subcmd == "list":
+    # Collect Person entities with role/trust/channel identifiers.
+    type Row = tuple[ncId, name, role: string, trust: int, idents: string]
+    var rows: seq[Row]
+    for id, ent in graph.entities.pairs:
+      if ent.kind != ekPerson: continue
+      var identParts: seq[string]
+      for chan, sid in ent.identifiers.pairs:
+        var shown = sid
+        if shown.len > 12: shown = shown[0 ..< 10] & "…"
+        identParts.add(chan & ":" & shown)
+      rows.add((
+        ncId: toAlias(id),
+        name: ent.name,
+        role: userRoleLabel(graph, ent),
+        trust: maxTrustFor(graph, id),
+        idents: (if identParts.len > 0: identParts.join(", ") else: "—")
+      ))
+    # Stable order: nc:id numerically ascending for readability.
+    rows.sort(proc(a, b: Row): int =
+      cmp(parseAlias(a.ncId).uint32, parseAlias(b.ncId).uint32))
+    if asJson:
+      var arr = newJArray()
+      for r in rows:
+        arr.add(%*{"nc_id": r.ncId, "name": r.name,
+                   "role": r.role, "trust": r.trust,
+                   "identifiers": r.idents})
+      return $arr
+    if rows.len == 0:
+      return "No human identities in this company yet. Guests auto-register\n" &
+             "on first message; agents are tracked via `claw agent list`."
+    var res = "NC:ID  NAME                  ROLE         TRUST  IDENTIFIERS\n"
+    for r in rows:
+      var name = r.name
+      if name.len > 20: name = name[0 ..< 18] & "…"
+      var idents = r.idents
+      if idents.len > 45: idents = idents[0 ..< 43] & "…"
+      res.add(r.ncId.alignLeft(6) & " " &
+              name.alignLeft(21) & " " &
+              r.role.alignLeft(12) & " " &
+              ($r.trust).alignLeft(6) & " " &
+              idents & "\n")
+    res.add("\n" & $rows.len & " user(s). Guests have trust < 40; see `user invite`\n" &
+            "or `user merge` for the promotion paths.\n")
+    return res
+
+  if subcmd == "merge":
+    return "TODO: `user merge <source-nc> <target-nc>` — SuperAdmin-only\n" &
+           "identity consolidation. Will move channel identifiers, memory,\n" &
+           "and sessions from the source nc:id into the target, then drop\n" &
+           "the source entity. Not yet implemented — use `claw user list`\n" &
+           "to see candidates."
+
+  if subcmd == "invite":
+    return "TODO: `user invite <inviter-nc> [role]` — generate a one-time\n" &
+           "invite code an inviter issues to a guest. Today invites are\n" &
+           "created via the existing `invite` tool at runtime; a CLI\n" &
+           "shortcut and provenance (invited_by) field are pending."
+
+  return "Unknown user command: " & subcmd
 
 # ── hardware ──────────────────────────────────────────────────────
 

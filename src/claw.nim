@@ -39,6 +39,7 @@ Usage:
   claw provider remove <name>
   claw provider <cmd> [<args>...]
   claw channel <cmd> [<args>...]
+  claw user <cmd> [<args>...]
   claw agent list
   claw agent caps <name>
   claw agent prompt <name> [--as=<userID>]
@@ -1474,6 +1475,13 @@ when isMainModule:
     var chanArgs: seq[string]
     for a in @(args["<args>"]): chanArgs.add(a)
     echo runChannelCommand(cfg, @[$args["<cmd>"]] & chanArgs)
+
+  # User management — list/merge/invite human identities (graph Persons).
+  elif args["user"]:
+    var cfg = loadConfig(getConfigPath())
+    var userArgs: seq[string]
+    for a in @(args["<args>"]): userArgs.add(a)
+    echo runUserCommand(cfg, @[$args["<cmd>"]] & userArgs)
 
   # Agent commands
   elif args.isCommand("agent", "list"):
