@@ -910,6 +910,33 @@ proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
   if r.len > 0: return r
   "guest"
 
+proc bindTargets*(cfg: Config): string =
+  ## Describe where a SuperAdmin can send a binding code. Lists every
+  ## declared channel × app → agent routing so the operator knows which
+  ## Feishu account (or other channel identity) to message.
+  var lines: seq[string]
+  if cfg.channels.feishu.apps.len > 0:
+    for a in cfg.channels.feishu.apps:
+      let who = if a.agent.len > 0: a.agent
+                else:
+                  (if cfg.agents.named.len > 0: cfg.agents.named[0].name
+                   else: "default")
+      lines.add("  • Feishu app " & a.app_id & " → DM agent \"" & who & "\"")
+  # NKN / Telegram / WhatsApp / etc. are single-instance channels — one
+  # agent per channel. Only mention channels that are actually enabled
+  # in this company's config.
+  if cfg.channels.telegram.enabled:
+    lines.add("  • Telegram")
+  if cfg.channels.whatsapp.enabled:
+    lines.add("  • WhatsApp")
+  if cfg.channels.discord.enabled:
+    lines.add("  • Discord")
+  if cfg.channels.nmobile.enabled:
+    lines.add("  • nMobile (NKN)")
+  if lines.len == 0:
+    return "  (no channels enabled — configure at least one with `claw channel auth <name>`)"
+  lines.join("\n")
+
 proc tierOfRole(cfg: Config, label: string): string =
   ## Classify a role/permission label into "int"/"ext"/"?".
   ## Declared roles in the trust: block win; otherwise fall back to a
@@ -1674,11 +1701,11 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       return "Rebind code for " & c.targetName & " (" & c.targetNcId & "): " &
              c.code & "\n" &
              (if dropExisting:
-                "Previous identifiers were cleared. Send this code as your\n" &
-                "first message from the channel you want to bind.\n"
+                "Previous identifiers were cleared. "
               else:
-                "Existing identifiers kept. Sending this code from a new\n" &
-                "channel will add a second identifier.\n") &
+                "Existing identifiers kept. ") &
+             "Send this code as your first message to:\n" &
+             bindTargets(cfg) & "\n" &
              "Codes expire after 24 hours."
     # No alias — issue codes for every unbound SuperAdmin.
     let fresh = ensureSuperAdminBindings(graph, cfg.workspacePath())
@@ -1689,8 +1716,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     var res = "Issued " & $fresh.len & " binding code(s):\n"
     for c in fresh:
       res.add("  " & c.targetNcId & " (" & c.targetName & "): " & c.code & "\n")
-    res.add("Codes expire after 24 hours. Send one as a first message to\n")
-    res.add("any agent from the channel you want to bind.")
+    res.add("Codes expire after 24 hours. Send one as a first message to:\n")
+    res.add(bindTargets(cfg))
     return res
 
   if subcmd == "merge":

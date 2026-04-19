@@ -4,7 +4,7 @@
 
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options]
 import curly, webby/httpheaders
-import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding
+import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, cli_admin
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
 import services/[heartbeat, cron as cron_service]
@@ -442,13 +442,16 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
     let workspace = cfg[].workspacePath()
     let g = loadWorld(workspace)
     let newCodes = ensureSuperAdminBindings(g, workspace)
-    for c in newCodes:
-      stderr.writeLine ""
-      stderr.writeLine "  \u{1F511}  SuperAdmin binding code for " & c.targetName &
-                       " (" & c.targetNcId & "):  " & c.code
-      stderr.writeLine "      Send this code as your first message from any"
-      stderr.writeLine "      channel to bind that channel's identity."
-      stderr.writeLine ""
+    if newCodes.len > 0:
+      let targets = bindTargets(cfg[])
+      for c in newCodes:
+        stderr.writeLine ""
+        stderr.writeLine "  \u{1F511}  SuperAdmin binding code for " & c.targetName &
+                         " (" & c.targetNcId & "):  " & c.code
+        stderr.writeLine "      Send this code as your first message to:"
+        for line in targets.splitLines():
+          stderr.writeLine "    " & line
+        stderr.writeLine ""
 
   # Message loop
   asyncCheck (proc() {.async.} =
