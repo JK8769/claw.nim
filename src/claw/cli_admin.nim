@@ -334,29 +334,80 @@ Examples:
 
 const knownChannels* = ["telegram", "discord", "whatsapp", "dingtalk", "maixcam", "feishu", "qq", "nmobile"]
 
-proc ensureChannelInBaseNims(channelType, block_content: string): bool =
-  ## Append a `channel "<type>":` declaration to this company's BASE.nims
-  ## if it isn't already declared. Keeps the DSL the source-of-truth so
-  ## `co update` regenerates BASE.json with the channel included. Returns
-  ## true on write, false if the channel was already declared (or BASE.nims
-  ## is missing — caller warns the user).
+type ChannelNimsUpdate* = enum
+  cnuNoFile         # BASE.nims missing
+  cnuBlockAdded     # Created a new `channel "<type>":` block
+  cnuItemAdded      # Inserted a new indented line into the existing block
+  cnuAlreadyPresent # The requested item is already declared
+
+proc ensureChannelInBaseNims(channelType, fullBlock, appendItemLine: string): ChannelNimsUpdate =
+  ## Mutate BASE.nims so `co update` will regenerate BASE.json with the
+  ## declared channel. Two modes:
+  ##
+  ##   fullBlock   — used when the channel isn't declared yet; injected
+  ##                 as a new `channel "<type>":` block just before
+  ##                 `build(currentSourcePath())`.
+  ##
+  ##   appendItemLine — used when the channel IS declared; inserted as
+  ##                    an indented line at the end of the existing
+  ##                    block (before the first line that leaves the
+  ##                    block's indentation). This is how Feishu
+  ##                    multi-app support keeps every `app "..."` in
+  ##                    the DSL too. No-op if this exact line is
+  ##                    already present in the block.
   let baseNimsPath = getNimClawDir() / "BASE.nims"
-  if not fileExists(baseNimsPath): return false
+  if not fileExists(baseNimsPath): return cnuNoFile
   let existing = readFile(baseNimsPath)
-  # Rough detection — we're matching the opening line of the DSL block.
   let marker = "channel \"" & channelType & "\""
-  if marker in existing: return false
-  # Insert BEFORE `build(currentSourcePath())` if present, otherwise append.
-  let buildLine = "build(currentSourcePath())"
-  let insertion = "\n# ── Channel (added by `claw channel auth " &
-                  channelType & "`) ───────\n" & block_content & "\n"
-  let updated =
-    if buildLine in existing:
-      existing.replace(buildLine, insertion & "\n" & buildLine)
+
+  if marker notin existing:
+    # Fresh declaration.
+    let buildLine = "build(currentSourcePath())"
+    let header = "\n# ── Channel (added by `claw channel auth " &
+                 channelType & "`) ───────\n"
+    let insertion = header & fullBlock & "\n\n"
+    let updated =
+      if buildLine in existing:
+        existing.replace(buildLine, insertion & buildLine)
+      else:
+        existing & insertion
+    writeFile(baseNimsPath, updated)
+    return cnuBlockAdded
+
+  # Block already present — find its end and inject the new item.
+  let lines = existing.splitLines()
+  var start = -1
+  for i, line in lines:
+    if line.strip().startsWith(marker):
+      start = i
+      break
+  if start < 0: return cnuAlreadyPresent  # shouldn't happen; marker matched above
+
+  # Block body = lines immediately after `start` that are indented OR blank.
+  var endIdx = start + 1
+  while endIdx < lines.len:
+    let l = lines[endIdx]
+    if l.len == 0 or l.startsWith(" ") or l.startsWith("\t"):
+      inc endIdx
     else:
-      existing & insertion
-  writeFile(baseNimsPath, updated)
-  true
+      break
+
+  # Idempotent: skip if the item line already appears inside the block.
+  for i in start + 1 ..< endIdx:
+    if lines[i].strip() == appendItemLine.strip():
+      return cnuAlreadyPresent
+
+  # Insert before the first trailing blank line (keeps comments grouped)
+  # or at the block end otherwise.
+  var insertAt = endIdx
+  while insertAt > start + 1 and lines[insertAt - 1].strip().len == 0:
+    dec insertAt
+
+  var updated = lines[0 ..< insertAt]
+  updated.add(appendItemLine)
+  for i in insertAt ..< lines.len: updated.add(lines[i])
+  writeFile(baseNimsPath, updated.join("\n"))
+  cnuItemAdded
 
 proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   ## Configure Feishu credentials for THIS company. Mirrors `provider auth`:
@@ -403,17 +454,24 @@ proc authFeishuChannel(cfg: var Config, args: seq[string]): string =
   # which is the flat-field form used by QQ/DingTalk. The secret lives
   # only in lark-cli's config dir; nims carries the app_id as the
   # declaration handle.
-  let dslBlock = """channel "feishu":
+  let fullBlock = """channel "feishu":
   app """" & appID & """"
   # App secret is stored by lark-cli in ~/.lark-cli — re-auth with
   #   claw channel auth feishu """" & appID & """" <NEW_SECRET>"""
-  let updated = ensureChannelInBaseNims("feishu", dslBlock)
+  let appItemLine = "  app \"" & appID & "\""
+  let updated = ensureChannelInBaseNims("feishu", fullBlock, appItemLine)
   var res = (if existing: "Re-authed " else: "Authed ") &
             "Feishu app " & appID & "."
-  if updated:
-    res.add("\nAppended channel block to BASE.nims.")
-  else:
-    res.add("\n(BASE.nims already declared this channel.)")
+  case updated
+  of cnuBlockAdded:
+    res.add("\nAppended new channel block to BASE.nims.")
+  of cnuItemAdded:
+    res.add("\nAppended app to existing BASE.nims block (now " &
+            $cfg.channels.feishu.apps.len & " app(s)).")
+  of cnuAlreadyPresent:
+    res.add("\n(BASE.nims already declared this app.)")
+  of cnuNoFile:
+    res.add("\n(Warning: no BASE.nims found — `co update` won't preserve this.)")
   res.add("\nRestart the gateway to connect.")
   return res
 
