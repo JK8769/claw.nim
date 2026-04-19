@@ -138,15 +138,15 @@ type
     datasheet_dir*: string
 
   TrustRoleConfig* = object
-    ## Role definition: trust band + capability grants + prompt fragment.
+    ## Role definition: trust range + tier + capability grants + prompt.
     ## `tier` classifies the role as internal (company's own people/agents)
-    ## or external (customers through guests). Every role belongs to
-    ## exactly one tier; the tier is part of the role's definition.
+    ## or external (customers through guests). New members of a role enter
+    ## at `trustMin`; trust drifts within [trustMin, trustMax] thereafter.
+    ## Pinned roles use zero-width range (e.g. SuperAdmin = trust 100,100).
     name*: string            ## lower-case role name
     tier*: string            ## "internal" | "external"
-    rangeMin*: int
-    rangeMax*: int
-    initial*: int
+    trustMin*: int
+    trustMax*: int
     grant*: seq[string]      ## "*" means all tools
     prompt*: string
 

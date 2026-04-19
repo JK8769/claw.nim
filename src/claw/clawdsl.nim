@@ -68,16 +68,19 @@ type
     allowedPaths*: seq[string]
 
   ClawTrustRole* = object
-    ## A role's trust band + capability grants. Trust is clamped to
-    ## [rangeMin, rangeMax] within this role; crossing requires role change
+    ## A role's trust range + capability grants. Trust is clamped to
+    ## [trustMin, trustMax] within this role; crossing requires role change
     ## via redeem_invite or BASE.nims edit by a SuperAdmin. Each role
     ## belongs to exactly one tier — "internal" (the company's own people
     ## and agents) or "external" (everyone else, customers through guests).
+    ##
+    ## A new user entering this role starts at `trustMin` (the lower bound).
+    ## Pinned roles — where entry trust equals the ceiling with no drift —
+    ## use the zero-width form `trust N, N` (e.g. SuperAdmin: trust 100, 100).
     name*: string         ## role label; matches `person "X": permission "..."`
     tier*: string         ## "internal" | "external"
-    rangeMin*: int
-    rangeMax*: int
-    initial*: int         ## default trust when transitioning INTO this role
+    trustMin*: int        ## lower bound; also the entry trust for new members
+    trustMax*: int        ## upper bound within the role's band
     grant*: seq[string]   ## tool names granted; "*" = all
     prompt*: string       ## prose injected into the Social/Security section
 
@@ -350,19 +353,23 @@ template trust*(body: untyped) =
         var r = ClawTrustRole(name: roleName)
         template tier(t: string) {.used.} =
           r.tier = t.toLowerAscii
+        template trust(lo, hi: int) {.used.} =
+          r.trustMin = lo
+          r.trustMax = hi
+        # Back-compat: accept the legacy `band` keyword too. One release,
+        # then remove.
         template band(lo, hi: int) {.used.} =
-          r.rangeMin = lo
-          r.rangeMax = hi
-        template initial(v: int) {.used.} =
-          r.initial = v
+          r.trustMin = lo
+          r.trustMax = hi
         template grant(toolNames: varargs[string]) {.used.} =
           for n in toolNames: r.grant.add(n)
         template prompt(s: string) {.used.} =
           r.prompt = s
+        # `initial` is gone — new members of a role start at `trustMin`.
+        # Accepted as a no-op during the deprecation window so old
+        # BASE.nims files don't fail to parse.
+        template initial(v: int) {.used.} = discard
         roleBody
-        # Tier inference for back-compat: if the DSL didn't specify,
-        # guess from the role name — the common internal labels default
-        # to internal, everything else defaults to external.
         if r.tier.len == 0:
           r.tier =
             if r.name.toLowerAscii in ["superadmin", "admin", "staff",
@@ -776,14 +783,14 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
   if not hasRole(effectiveRoles, "SuperAdmin"):
     effectiveRoles.add(ClawTrustRole(
       name: "SuperAdmin", tier: "internal",
-      rangeMin: 90, rangeMax: 100, initial: 100,
+      trustMin: 100, trustMax: 100,    # pinned: no drift
       grant: @["*"],
       prompt: "🛡️ HIGH TRUST — company owner. Execute without hesitation."
     ))
   if not hasRole(effectiveRoles, "Guest"):
     effectiveRoles.add(ClawTrustRole(
       name: "Guest", tier: "external",
-      rangeMin: 0, rangeMax: 40, initial: 10,
+      trustMin: 0, trustMax: 40,
       grant: @["reply", "forward", "update_contact", "redeem_invite"],
       prompt: "⚠️ GUEST — public info only. Route anything sensitive via forward."
     ))
@@ -794,9 +801,8 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     trustRoles.add(%*{
       "name": r.name.toLowerAscii,
       "tier": r.tier,
-      "rangeMin": r.rangeMin,
-      "rangeMax": r.rangeMax,
-      "initial": r.initial,
+      "trustMin": r.trustMin,
+      "trustMax": r.trustMax,
       "grant": grantArr,
       "prompt": r.prompt
     })

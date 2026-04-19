@@ -56,15 +56,17 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
     let shortCode = if inv.code.len > 3: inv.code[0..2] else: inv.code
     newID = "customer_" & sanitizedName & "_" & shortCode
 
-  # Initial trust when transitioning INTO a role comes from the DSL
-  # `trust:` block (role.initial). Falls back to 50 when the company
-  # hasn't declared a trust block for this role.
+  # Entry trust when transitioning INTO a role is the role's `trustMin`
+  # (the lower bound of its range). Falls back to 50 when the company
+  # hasn't declared a trust block for this role — shouldn't happen
+  # once the bootstrap minimum seeds SuperAdmin/Guest, but kept as a
+  # safety net for legacy configs.
   let cfg = loadConfig(getConfigPath())
   let roleName = ($parseEnum[UserRole](inv.role, urGuest)).toLowerAscii
   var initTrust = 50
   for r in cfg.trust.roles:
     if r.name.toLowerAscii == roleName:
-      initTrust = r.initial
+      initTrust = r.trustMin
       break
 
   var rel = Relationship(

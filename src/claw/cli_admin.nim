@@ -1405,20 +1405,23 @@ proc runRoleCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       var arr = newJArray()
       for r in cfg.trust.roles:
         arr.add(%*{"name": r.name, "tier": r.tier,
-                   "rangeMin": r.rangeMin, "rangeMax": r.rangeMax,
-                   "initial": r.initial, "grant": r.grant,
-                   "prompt": r.prompt})
+                   "trustMin": r.trustMin, "trustMax": r.trustMax,
+                   "grant": r.grant, "prompt": r.prompt})
       return $arr
     proc renderTier(label: string, rs: seq[TrustRoleConfig]): string =
       if rs.len == 0: return ""
       result = "\n" & label & ":\n"
-      result.add("  NAME         BAND     INITIAL  GRANTS\n")
+      result.add("  NAME         TRUST    GRANTS\n")
       for r in rs:
         var g = r.grant.join(",")
-        if g.len > 30: g = g[0 ..< 28] & "…"
+        if g.len > 40: g = g[0 ..< 38] & "…"
+        # Pinned roles (zero-width range) render as a single number;
+        # the user sees at a glance that there's no drift.
+        let trustCol =
+          if r.trustMin == r.trustMax: $r.trustMin & "     "
+          else: $r.trustMin & "-" & $r.trustMax
         result.add("  " & r.name.alignLeft(12) & " " &
-                   ($r.rangeMin & "-" & $r.rangeMax).alignLeft(8) & " " &
-                   ($r.initial).alignLeft(8) & " " &
+                   trustCol.alignLeft(8) & " " &
                    g & "\n")
     var res = "Company role definitions:"
     res.add(renderTier("Internal", internals))

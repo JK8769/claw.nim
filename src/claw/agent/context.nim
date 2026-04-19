@@ -213,7 +213,7 @@ proc findTrustRole*(trust: TrustConfig, roleName: string): Option[TrustRoleConfi
 proc clampTrust*(trust: int, role: TrustRoleConfig): int =
   ## Clamp a raw trust value into a role's declared band. Used at config-
   ## load time and whenever something tries to nudge trust within-band.
-  max(role.rangeMin, min(role.rangeMax, trust))
+  max(role.trustMin, min(role.trustMax, trust))
 
 proc teamsForAgent*(cb: ContextBuilder, agentName: string): seq[TeamInfo] =
   ## Filter cb.teams to those where the agent is a member (case-insensitive).
