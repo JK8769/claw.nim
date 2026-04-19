@@ -2,9 +2,9 @@
 ## gateway — Long-running gateway process: agents, channels, cron.
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
-import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm]
+import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options]
 import curly, webby/httpheaders
-import config, logger, bus, bus_types, session, agent/loop, agent/cortex
+import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
 import services/[heartbeat, cron as cron_service]
@@ -435,6 +435,21 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
 
   stderr.writeLine "claw running on " & host & ":" & $port & " (PID " & $myPid & ")"
 
+  # SuperAdmin auto-bind — for fresh companies where the declared
+  # SuperAdmin has no channel identifier yet. Prints a one-shot code
+  # that the first matching inbound message burns.
+  block:
+    let workspace = cfg[].workspacePath()
+    let g = loadWorld(workspace)
+    let newCodes = ensureSuperAdminBindings(g, workspace)
+    for c in newCodes:
+      stderr.writeLine ""
+      stderr.writeLine "  \u{1F511}  SuperAdmin binding code for " & c.targetName &
+                       " (" & c.targetNcId & "):  " & c.code
+      stderr.writeLine "      Send this code as your first message from any"
+      stderr.writeLine "      channel to bind that channel's identity."
+      stderr.writeLine ""
+
   # Message loop
   asyncCheck (proc() {.async.} =
     while true:
@@ -460,12 +475,34 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
           except: discard
 
         var response = ""
-        if plainContent.startsWith("/"):
-          var sysMsg = msg
-          sysMsg.content = plainContent
-          response = await handleSystemCommand(cfg, sysMsg, gCtx.offices[officeKey])
-        else:
-          response = await gCtx.offices[officeKey].processMessage(msg)
+        # SuperAdmin bind-code check — runs BEFORE the LLM so an
+        # unauthenticated first-contact carrying the printed code can
+        # claim the declared SuperAdmin's identifier without ever
+        # reaching the model. Wrong / absent codes fall through as a
+        # normal guest message.
+        block bindCheck:
+          let workspace = cfg[].workspacePath()
+          let g = loadWorld(workspace)
+          let channelKey =
+            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+              msg.channel & ":" & msg.metadata["app_id"]
+            else: msg.channel
+          let bound = tryBind(g, workspace, channelKey,
+                              msg.sender_id, plainContent)
+          if bound.isSome:
+            let b = bound.get
+            stderr.writeLine "claw: bound " & b.targetNcId & " (" & b.targetName &
+                             ") via " & channelKey & " ← " & msg.sender_id
+            response = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
+                       ", SuperAdmin). You're now authenticated on this channel."
+            break bindCheck
+        if response == "":
+          if plainContent.startsWith("/"):
+            var sysMsg = msg
+            sysMsg.content = plainContent
+            response = await handleSystemCommand(cfg, sysMsg, gCtx.offices[officeKey])
+          else:
+            response = await gCtx.offices[officeKey].processMessage(msg)
 
         if response != "":
           var finalMeta = initTable[string, string]()

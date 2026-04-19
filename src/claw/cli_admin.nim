@@ -1,5 +1,5 @@
 import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode]
-import config, agent/invites, agent/cortex, libnkn/nkn_bridge, QRgen, utils
+import config, agent/invites, agent/cortex, agent/binding, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
 import providers/registry as prov_registry
@@ -1007,7 +1007,7 @@ proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[pe
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|show|trust|edit|merge|invite|register> [args]\n" &
+    return "Usage: claw user <list|show|trust|edit|rebind|merge|invite|register> [args]\n" &
            "  list     — table of every user (Person/AI/Service/Unknown).\n" &
            "             flags: --kind=<Person|AI|Unknown|Service>\n" &
            "                    --tier=<int|ext|?>\n" &
@@ -1019,6 +1019,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
            "  edit     — set a field on a user in BASE.nims (or graph-only)\n" &
            "             claw user edit <nc:id> <field> <value>\n" &
            "             fields: name, permission, jobTitle, kind\n" &
+           "  rebind   — issue a SuperAdmin binding code (for bootstrap or\n" &
+           "             lost-device recovery — prints the code)\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -1647,6 +1649,49 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     lines.add("\nRegistered " & $count & " user(s). Run `claw co update` to\n" &
               "regenerate BASE.json with the new declarations.")
     return lines.join("\n")
+
+  if subcmd == "rebind":
+    # Issue a fresh SuperAdmin binding code for a specific nc:id (or
+    # all unbound SuperAdmins if no argument). Usable when the current
+    # identifier is no longer reachable (lost device, left Telegram,
+    # rotated Feishu open_id, etc.). By default this wipes the existing
+    # identifiers on the target so the new code is the only way in —
+    # pass `--keep` to leave them intact (dual-bind).
+    var dropExisting = true
+    var targetAlias = ""
+    for a in args[1 .. ^1]:
+      if a == "--keep": dropExisting = false
+      elif a.startsWith("nc:"): targetAlias = a
+      else:
+        return "Error: unrecognised argument \"" & a & "\".\n" &
+               "Usage: claw user rebind [<nc:id>] [--keep]"
+    if targetAlias.len > 0:
+      let code = rebind(graph, cfg.workspacePath(), targetAlias, dropExisting)
+      if code.isNone:
+        return "Error: " & targetAlias & " is not a SuperAdmin Person or\n" &
+               "no such entity."
+      let c = code.get
+      return "Rebind code for " & c.targetName & " (" & c.targetNcId & "): " &
+             c.code & "\n" &
+             (if dropExisting:
+                "Previous identifiers were cleared. Send this code as your\n" &
+                "first message from the channel you want to bind.\n"
+              else:
+                "Existing identifiers kept. Sending this code from a new\n" &
+                "channel will add a second identifier.\n") &
+             "Codes expire after 24 hours."
+    # No alias — issue codes for every unbound SuperAdmin.
+    let fresh = ensureSuperAdminBindings(graph, cfg.workspacePath())
+    if fresh.len == 0:
+      return "Every SuperAdmin already has a bound identifier (or an\n" &
+             "active code). Pass an nc:id to force-rebind a specific one:\n" &
+             "  claw user rebind nc:4"
+    var res = "Issued " & $fresh.len & " binding code(s):\n"
+    for c in fresh:
+      res.add("  " & c.targetNcId & " (" & c.targetName & "): " & c.code & "\n")
+    res.add("Codes expire after 24 hours. Send one as a first message to\n")
+    res.add("any agent from the channel you want to bind.")
+    return res
 
   if subcmd == "merge":
     if args.len < 3:
