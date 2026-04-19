@@ -14,6 +14,11 @@ type
     createdAt*: int64    ## Unix timestamp when the code was minted
     usedBy*: string      ## nc:id that redeemed it (last redemption, if multi-use)
     usedAt*: int64       ## Unix timestamp of last redemption
+    # Pre-allocated target (customer-invite flow):
+    targetNcId*: string  ## If set, redemption stamps the sender's identifiers
+                         ## onto THIS entity instead of minting a fresh one.
+                         ## Lets `create_customer_invite` hand out an
+                         ## `nc:X/CODE` string the SuperAdmin can pre-share.
 
 proc loadInvites*(workspace: string): Table[string, InviteConstraint] =
   let path = workspace / "INVITES.json"
@@ -32,7 +37,8 @@ proc loadInvites*(workspace: string): Table[string, InviteConstraint] =
         issuedBy: entry{"issuedBy"}.getStr(""),
         createdAt: entry{"createdAt"}.getBiggestInt(0),
         usedBy: entry{"usedBy"}.getStr(""),
-        usedAt: entry{"usedAt"}.getBiggestInt(0)
+        usedAt: entry{"usedAt"}.getBiggestInt(0),
+        targetNcId: entry{"targetNcId"}.getStr("")
       )
       if inv.code != "":
         result[inv.code] = inv
@@ -54,7 +60,8 @@ proc saveInvites*(workspace: string, invites: Table[string, InviteConstraint]) =
       "issuedBy": inv.issuedBy,
       "createdAt": inv.createdAt,
       "usedBy": inv.usedBy,
-      "usedAt": inv.usedAt
+      "usedAt": inv.usedAt,
+      "targetNcId": inv.targetNcId
     })
   writeFile(path, node.pretty())
 
@@ -76,3 +83,15 @@ proc generateInviteCode*(): string =
 
 proc getPublicCode*(agentName: string): string =
   "PUBLIC_" & agentName.toUpperAscii()
+
+proc parseInviteString*(s: string): tuple[ncId, code: string] =
+  ## Accepts either a bare code (e.g. `A4B-9X2`) or the bundled
+  ## `nc:N/CODE` form. Returns (ncId, code); either may be empty.
+  ## Whitespace-tolerant, case-preserving for the code (matching
+  ## happens uppercase at the redemption site).
+  let trimmed = s.strip()
+  if trimmed.startsWith("nc:"):
+    let slash = trimmed.find('/')
+    if slash > 0:
+      return (trimmed[0 ..< slash], trimmed[slash + 1 ..< trimmed.len].strip())
+  ("", trimmed)

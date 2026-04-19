@@ -4,7 +4,7 @@
 
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets]
 import curly, webby/httpheaders
-import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, cli_admin
+import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
 import services/[heartbeat, cron as cron_service]
@@ -646,6 +646,60 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
             response = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
                        ", SuperAdmin). You're now authenticated on this channel."
             break bindCheck
+        # Customer-invite intercept — parses `nc:X/CODE` (or bare code)
+        # and, if it matches a pending invite with a pre-allocated target,
+        # stamps the sender's identifiers onto that entity and burns the
+        # code. Runs BEFORE the LLM: customer authenticates without their
+        # invite string ever hitting the model. Falls through to normal
+        # LLM handling for non-code content.
+        if response == "":
+          let workspace = cfg[].workspacePath()
+          var g = loadWorld(workspace)
+          let (parsedNcId, parsedCode) = parseInviteString(plainContent)
+          if parsedCode.len > 0:
+            var invMap = loadInvites(workspace)
+            # Normalize: accept both `A4B-9X2` and `a4b9x2` etc.
+            var matchedKey = ""
+            let wanted = parsedCode.toUpperAscii.replace("-", "").replace(" ", "")
+            for k in invMap.keys:
+              if k.toUpperAscii.replace("-", "").replace(" ", "") == wanted:
+                matchedKey = k; break
+            if matchedKey.len > 0:
+              var inv = invMap[matchedKey]
+              if isValid(inv) and inv.targetNcId.len > 0 and
+                 (parsedNcId.len == 0 or parsedNcId == inv.targetNcId):
+                let targetID = parseAlias(inv.targetNcId)
+                if uint32(targetID) > 0 and g.entities.hasKey(targetID):
+                  let channelKey =
+                    if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+                      msg.channel & ":" & msg.metadata["app_id"]
+                    else: msg.channel
+                  var ent = g.entities[targetID]
+                  ent.identifiers[channelKey] = msg.sender_id
+                  if msg.channel == "feishu":
+                    let unionID = msg.metadata.getOrDefault("union_id", "")
+                    if unionID.len > 0: ent.identifiers["feishu:union"] = unionID
+                    let userID = msg.metadata.getOrDefault("user_id", "")
+                    if userID.len > 0: ent.identifiers["feishu:user"] = userID
+                  g.entities[targetID] = ent
+                  g.saveWorld()
+                  # Burn / decrement.
+                  inv.usedBy = channelKey & ":" & msg.sender_id
+                  inv.usedAt = getTime().toUnix()
+                  if inv.maxUses > 0:
+                    inv.maxUses -= 1
+                    if inv.maxUses == 0: invMap.del(matchedKey)
+                    else: invMap[matchedKey] = inv
+                  else:
+                    invMap[matchedKey] = inv
+                  saveInvites(workspace, invMap)
+                  response = "\u{2713} Welcome, " & ent.name & ". You're " &
+                             "authenticated as a Customer (" & inv.targetNcId &
+                             "). Ask me anything — I'm here to help."
+                  stderr.writeLine "claw: customer-invite redeemed " &
+                                   inv.targetNcId & " via " & channelKey &
+                                   " ← " & msg.sender_id
+
         # Group-chat response policy: reply iff @mention OR the sender
         # has a `reportsTo`/`serves` relationship with this agent (in
         # either direction). Otherwise stay silent — avoids the group-
