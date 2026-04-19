@@ -470,7 +470,12 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
         if response != "":
           var finalMeta = initTable[string, string]()
           finalMeta["final"] = "true"
-          msgBus.publishOutbound(newOutbound(msg.channel, recipient, msg.chat_id, response, metadata = finalMeta))
+          # Preserve the app_id so a reply to a Feishu message on App B
+          # goes out on App B's lark-cli (not whichever is first-enabled).
+          let inboundAppID = msg.metadata.getOrDefault("app_id", "")
+          msgBus.publishOutbound(newOutbound(msg.channel, recipient, msg.chat_id, response,
+                                             appID = inboundAppID,
+                                             metadata = finalMeta))
           statusEmitter.emitChannelMsg(msg.channel, "out", recipient)
           discard  # TODO: emit activity event via stdio
       except Exception as e:

@@ -895,8 +895,9 @@ proc userRoleLabel(graph: WorldGraph, ent: WorldEntity): string =
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|merge|invite|register> [args]\n" &
-           "  list     — show every human identity in this company's graph\n" &
+    return "Usage: claw user <list|show|merge|invite|register> [args]\n" &
+           "  list     — table of every human identity\n" &
+           "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -953,6 +954,93 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
               idents & "\n")
     res.add("\n" & $rows.len & " user(s). Guests have trust < 40; see `user invite`\n" &
             "or `user merge` for the promotion paths.\n")
+    return res
+
+  if subcmd == "show":
+    if args.len < 2:
+      return "Usage: claw user show <nc:id>\n" &
+             "Detailed view: entity kind/permission, every declared\n" &
+             "relationship with its trust level + etiquette, and current\n" &
+             "mood (for agents)."
+    let alias = args[1]
+    if not alias.startsWith("nc:"):
+      return "Error: give an nc:id (e.g. nc:4). `claw user list` shows them."
+    let id = parseAlias(alias)
+    if uint32(id) == 0 or not graph.entities.hasKey(id):
+      return "Error: " & alias & " not found in graph."
+    let ent = graph.entities[id]
+
+    var res = alias & "\n"
+    res.add("  name:        " & ent.name & "\n")
+    res.add("  kind:        " & $ent.kind & "\n")
+    if ent.role.len > 0:
+      res.add("  permission:  " & ent.role & "\n")
+    else:
+      res.add("  permission:  " & userRoleLabel(graph, ent) & " (derived)\n")
+    if ent.jobTitle.len > 0:
+      res.add("  jobTitle:    " & ent.jobTitle & "\n")
+    if ent.identifiers.len > 0:
+      res.add("  identifiers:\n")
+      for chan, sid in ent.identifiers.pairs:
+        res.add("    " & chan & " = " & sid & "\n")
+
+    # Outbound edges (this entity's own reportsTo/serves, for agents).
+    var outbound: seq[string]
+    if ent.kind == ekAI:
+      for link in ent.reportsTo:
+        if graph.entities.hasKey(link.targetID):
+          let t = graph.entities[link.targetID]
+          let a = link.annotation
+          let trust = if a.isSome: $a.get.trustLevel else: "—"
+          let eti = if a.isSome and a.get.etiquette.len > 0:
+                      "    etiquette: " & a.get.etiquette else: ""
+          outbound.add("  reportsTo → " & toAlias(link.targetID) &
+                        " (" & t.name & "), trust " & trust &
+                        (if eti.len > 0: "\n" & eti else: ""))
+      for link in ent.serves:
+        if graph.entities.hasKey(link.targetID):
+          let t = graph.entities[link.targetID]
+          let a = link.annotation
+          let trust = if a.isSome: $a.get.trustLevel else: "—"
+          let eti = if a.isSome and a.get.etiquette.len > 0:
+                      "    etiquette: " & a.get.etiquette else: ""
+          outbound.add("  serves → " & toAlias(link.targetID) &
+                        " (" & t.name & "), trust " & trust &
+                        (if eti.len > 0: "\n" & eti else: ""))
+
+    # Inbound edges (who points at this entity).
+    var inbound: seq[string]
+    for otherID, other in graph.entities.pairs:
+      if other.kind != ekAI: continue
+      for link in other.reportsTo:
+        if link.targetID == id and link.annotation.isSome:
+          let a = link.annotation.get
+          inbound.add("  ← " & other.name & ".reportsTo, trust " & $a.trustLevel &
+                      (if a.etiquette.len > 0:
+                         "\n    etiquette: " & a.etiquette else: ""))
+      for link in other.serves:
+        if link.targetID == id and link.annotation.isSome:
+          let a = link.annotation.get
+          inbound.add("  ← " & other.name & ".serves, trust " & $a.trustLevel &
+                      (if a.etiquette.len > 0:
+                         "\n    etiquette: " & a.etiquette else: ""))
+
+    if outbound.len > 0:
+      res.add("\nRelationships (outbound):\n" & outbound.join("\n") & "\n")
+    if inbound.len > 0:
+      res.add("\nRelationships (inbound):\n" & inbound.join("\n") & "\n")
+    if outbound.len == 0 and inbound.len == 0:
+      res.add("\nRelationships: none declared yet.\n")
+
+    # Mood (agents carry it; persons don't).
+    if ent.kind == ekAI:
+      res.add("\nMood (current affective state):\n")
+      res.add("  valence:   " & ent.valence.formatFloat(ffDecimal, 2) &
+              "  (−1 = negative, +1 = positive)\n")
+      res.add("  arousal:   " & ent.arousal.formatFloat(ffDecimal, 2) &
+              "  (0 = calm, 1 = activated)\n")
+      if ent.archetype.len > 0:
+        res.add("  archetype: " & ent.archetype & "\n")
     return res
 
   if subcmd == "register":
@@ -1433,17 +1521,177 @@ proc runRoleCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
             $(if externals.len > 0: 1 else: 0) & " external tier(s).")
     return res
 
+  # Helper: splice a `role "<name>":` sub-block into the `trust:` block in
+  # BASE.nims. Creates the `trust:` block if missing. Idempotent on name.
+  proc upsertRoleInBaseNims(roleBody: string, roleName: string): string =
+    let baseNims = getNimClawDir() / "BASE.nims"
+    if not fileExists(baseNims):
+      return "Error: no BASE.nims at " & baseNims
+    let existing = readFile(baseNims)
+    # Skip if already declared.
+    if ("role \"" & roleName & "\":") in existing or
+       ("role \"" & roleName.toLowerAscii & "\":") in existing:
+      return "Role \"" & roleName & "\" already declared in BASE.nims."
+    # Inject inside an existing `trust:` block, or create one.
+    let block_text = roleBody
+    if "\ntrust:\n" in existing or existing.startsWith("trust:\n"):
+      # Append role sub-block at end of trust: block.
+      let lines = existing.splitLines()
+      var start = -1
+      for i, l in lines:
+        if l.strip() == "trust:":
+          start = i
+          break
+      var endIdx = start + 1
+      while endIdx < lines.len:
+        let l = lines[endIdx]
+        if l.len == 0 or l.startsWith(" ") or l.startsWith("\t"):
+          inc endIdx
+        else: break
+      # Insert before first trailing blank.
+      var insertAt = endIdx
+      while insertAt > start + 1 and lines[insertAt - 1].strip().len == 0:
+        dec insertAt
+      var updated = lines[0 ..< insertAt]
+      for r in block_text.splitLines(): updated.add(r)
+      for i in insertAt ..< lines.len: updated.add(lines[i])
+      writeFile(baseNims, updated.join("\n"))
+      return ""
+    # No trust: block — inject a fresh one before build(...).
+    let buildLine = "build(currentSourcePath())"
+    let header = "\n# ── Trust (added by `claw role add`) ───────\ntrust:\n"
+    let insertion = header & block_text & "\n\n"
+    let updated =
+      if buildLine in existing: existing.replace(buildLine, insertion & buildLine)
+      else: existing & insertion
+    writeFile(baseNims, updated)
+    return ""
+
   if subcmd == "add":
-    return "TODO: `role add <name> <internal|external>` — SuperAdmin-only.\n" &
-           "For now, edit the `trust:` block in BASE.nims directly and\n" &
-           "run `claw co update`."
+    if args.len < 3:
+      return "Usage: claw role add <name> <internal|external> [trustMin] [trustMax] [grants...]\n" &
+             "Examples:\n" &
+             "  claw role add Consultant external 40 80\n" &
+             "  claw role add Owner internal 100 100              # pinned\n" &
+             "  claw role add Advisor external 50 80 reply forward edit"
+    let rname = args[1]
+    let tier = args[2].toLowerAscii
+    if tier notin ["internal", "external"]:
+      return "Error: tier must be 'internal' or 'external' (got '" & tier & "')."
+    var tmin = 0
+    var tmax = 40
+    if args.len >= 4:
+      try: tmin = parseInt(args[3])
+      except: return "Error: trustMin must be an integer."
+    if args.len >= 5:
+      try: tmax = parseInt(args[4])
+      except: return "Error: trustMax must be an integer."
+    if tmin < 0 or tmax > 100 or tmin > tmax:
+      return "Error: need 0 <= trustMin <= trustMax <= 100."
+    var grants: seq[string]
+    if args.len >= 6:
+      for i in 5 ..< args.len: grants.add(args[i])
+    var body = "  role \"" & rname & "\":\n" &
+               "    tier \"" & tier & "\"\n" &
+               "    trust " & $tmin & ", " & $tmax & "\n"
+    if grants.len > 0:
+      var quoted: seq[string]
+      for g in grants: quoted.add("\"" & g & "\"")
+      body.add("    grant " & quoted.join(", ") & "\n")
+    let err = upsertRoleInBaseNims(body, rname)
+    if err.len > 0: return err
+    return "Added role \"" & rname & "\" (" & tier &
+           ", trust " & $tmin & "-" & $tmax & ").\n" &
+           "Run `claw co update` to regenerate BASE.json."
 
   if subcmd == "remove":
-    return "TODO: `role remove <name>` — SuperAdmin-only, fails if the\n" &
-           "role is currently held by any user. Edit BASE.nims for now."
+    if args.len < 2:
+      return "Usage: claw role remove <name>"
+    let rname = args[1]
+    # Safety — refuse if any user currently holds this role.
+    let workspace = cfg.workspacePath()
+    let graph = loadWorld(workspace)
+    var holders: seq[string]
+    if graph != nil:
+      for id, ent in graph.entities.pairs:
+        if ent.kind != ekPerson: continue
+        if ent.role.toLowerAscii == rname.toLowerAscii:
+          holders.add(toAlias(id) & " (" & ent.name & ")")
+    if holders.len > 0:
+      return "Error: role \"" & rname & "\" is held by " & $holders.len &
+             " user(s): " & holders.join(", ") & "\n" &
+             "Reassign them to a different role first, then retry."
+    let baseNims = getNimClawDir() / "BASE.nims"
+    if not fileExists(baseNims):
+      return "Error: no BASE.nims at " & baseNims
+    let existing = readFile(baseNims)
+    let marker = "role \"" & rname & "\":"
+    if marker notin existing:
+      return "Role \"" & rname & "\" is not declared in BASE.nims — nothing to remove."
+    # Cut the role sub-block: from its header line through the last indented
+    # line that follows.
+    let lines = existing.splitLines()
+    var start = -1
+    for i, l in lines:
+      if l.strip() == marker:
+        start = i
+        break
+    if start < 0:
+      return "Role \"" & rname & "\" header not found cleanly; edit BASE.nims by hand."
+    var endIdx = start + 1
+    while endIdx < lines.len:
+      let l = lines[endIdx]
+      # Stops at next non-indented OR differently-indented line (e.g. the
+      # next sibling `role "..."` at the same indent).
+      if l.strip().startsWith("role \""): break
+      if l.strip().len > 0 and not l.startsWith("    "): break
+      inc endIdx
+    # Locate the enclosing `trust:` block — so we can also cut the empty
+    # container (and its auto-generated comment) when this is the last role.
+    var trustStart = -1
+    for i in countdown(start - 1, 0):
+      if lines[i].strip() == "trust:":
+        trustStart = i; break
+    # Count roles that will survive the cut.
+    var survivingRoles = 0
+    if trustStart >= 0:
+      var j = trustStart + 1
+      while j < lines.len:
+        let l = lines[j]
+        if l.strip().len == 0:
+          inc j; continue
+        if not (l.startsWith(" ") or l.startsWith("\t")): break
+        if l.strip().startsWith("role \"") and (j < start or j >= endIdx):
+          inc survivingRoles
+        inc j
+    var cutFrom = start
+    var cutTo = endIdx
+    if trustStart >= 0 and survivingRoles == 0:
+      cutFrom = trustStart
+      # Also swallow any preceding `# ── Trust …` comment block + the blank
+      # line in front of it, so BASE.nims doesn't carry a dangling header.
+      while cutFrom > 0:
+        let prev = lines[cutFrom - 1].strip()
+        if prev.startsWith("#") and "trust" in prev.toLowerAscii:
+          dec cutFrom
+        else: break
+      if cutFrom > 0 and lines[cutFrom - 1].strip().len == 0:
+        dec cutFrom
+      # Extend cutTo past the trust: block's trailing blanks.
+      while cutTo < lines.len:
+        let l = lines[cutTo]
+        if l.strip().len == 0:
+          inc cutTo
+        else: break
+    var remaining = lines[0 ..< cutFrom]
+    for i in cutTo ..< lines.len: remaining.add(lines[i])
+    writeFile(baseNims, remaining.join("\n"))
+    return "Removed role \"" & rname & "\". Run `claw co update` to regenerate BASE.json."
 
   if subcmd == "set":
-    return "TODO: `role set <name> [--band=..] [--initial=..] [--grant=..] [--tier=..]`"
+    return "TODO: `role set <name> [--trust=..] [--grant=..] [--tier=..]`\n" &
+           "Edit the `trust:` block in BASE.nims directly for now, then\n" &
+           "run `claw co update`."
 
   return "Unknown role command: " & subcmd
 
