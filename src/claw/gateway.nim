@@ -227,22 +227,28 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       return "`/restart` requires SuperAdmin. Ask one to run " &
              "`claw co stop && claw gateway` at the terminal."
     let clawBin = getAppFilename()
-    # Detached shell: sleep briefly so this process can reply first,
-    # then bring the new gateway up after the old one exits. nohup +
-    # setsid (via `setsid` or trailing `&` with `disown`) isn't reliable
-    # across shells — fork a plain /bin/sh that survives us via
-    # `setsid` (Linux/macOS) backed by process-group detachment.
-    let script = "sleep 2 && NIMCLAW_DIR='" & getNimClawDir() &
-                 "' '" & clawBin & "' co stop >/dev/null 2>&1 ; " &
+    let myPidHere = getpid()
+    # Detached child survives our death (setsid under poDaemon).
+    # Signal us directly with the known PID — avoids `co stop`'s
+    # service-dir lookup which can miss when NIMCLAW env isn't
+    # picked up cleanly in the forked shell. Wait for the process
+    # to actually exit (up to ~5s) before starting the new gateway
+    # so we don't hit the "already running" guard.
+    let logPath = getNimClawDir() / "logs" / "restart.log"
+    let script = "sleep 2 && kill -TERM " & $myPidHere & " 2>/dev/null ; " &
+                 "for i in $(seq 1 25); do kill -0 " & $myPidHere &
+                 " 2>/dev/null || break; sleep 0.2; done ; " &
+                 "rm -f '" & getNimClawDir() & "/logs/gateway.pid' ; " &
                  "NIMCLAW_DIR='" & getNimClawDir() &
-                 "' '" & clawBin & "' gateway > '" &
-                 getNimClawDir() & "/logs/restart.log' 2>&1"
+                 "' '" & clawBin & "' gateway > '" & logPath & "' 2>&1"
     discard startProcess("/bin/sh",
                          args = @["-c", script],
                          options = {poDaemon, poUsePath})
-    return "Restarting gateway in ~2s. New app routings (e.g. freshly " &
-           "added Feishu apps) will be picked up. I'll go quiet for a " &
-           "moment — ping again in ~5s."
+    return "Restarting gateway in ~2s. I'll be unreachable for a few " &
+           "seconds — **please send a message yourself** when you want " &
+           "to check I'm back (the gateway doesn't push-notify). New " &
+           "app routings (e.g. freshly added Feishu apps) will be live " &
+           "on the next message."
   return ""
 
 # ── stdio handler (Zen mode) ─────────────────────────────────────────
