@@ -996,6 +996,46 @@ Options:
                                    inv.targetNcId & " via " & channelKey &
                                    " ← " & msg.sender_id
 
+        # Invite-only first-contact gate. A sender whose (channelKey,
+        # senderID) doesn't match any entity in the graph (nor any
+        # Feishu tenant-wide identifier fallback) gets a polite refusal
+        # and is NOT passed to the agent loop. Without this, the loop
+        # silently auto-registers every stranger as `ekUnknown`, which
+        # means `user remove <nc:id>` is ineffective — the same person
+        # comes right back as a fresh guest on their next message.
+        # Bind-code and invite-code paths above already had their shot;
+        # if we're here, the stranger sent neither.
+        if response == "":
+          let workspace2 = cfg[].workspacePath()
+          let g2 = loadWorld(workspace2)
+          let channelKey2 =
+            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+              msg.channel & ":" & msg.metadata["app_id"]
+            else: msg.channel
+          var recognized = false
+          if g2 != nil:
+            let (entID, _) = g2.resolveUserGraph(channelKey2, msg.sender_id)
+            if uint32(entID) > 0: recognized = true
+            if not recognized and msg.channel == "feishu":
+              let uid = msg.metadata.getOrDefault("union_id", "")
+              if uid.len > 0:
+                let (x, _) = g2.resolveUserGraph("feishu:union", uid)
+                if uint32(x) > 0: recognized = true
+              if not recognized:
+                let usid = msg.metadata.getOrDefault("user_id", "")
+                if usid.len > 0:
+                  let (x, _) = g2.resolveUserGraph("feishu:user", usid)
+                  if uint32(x) > 0: recognized = true
+          if not recognized:
+            stderr.writeLine "claw: refused unknown sender " & channelKey2 &
+                             " ← " & msg.sender_id
+            response = "Sorry, I don't recognize you on this channel. " &
+                       "Please send the invitation code you received " &
+                       "from the operator (the `nc:X/ABC-123` string, " &
+                       "or just the `ABC-123` part) to authenticate. " &
+                       "If you don't have a code, ask the operator to " &
+                       "issue one for you."
+
         # Group-chat response policy: reply iff @mention OR the sender
         # has a `reportsTo`/`serves` relationship with this agent (in
         # either direction). Otherwise stay silent — avoids the group-
