@@ -935,13 +935,85 @@ proc entityTier(cfg: Config, graph: WorldGraph, ent: WorldEntity): string =
   let r = userRelRole(graph, ent.id)
   tierOfRole(cfg, r)
 
+# ── Shared BASE.nims block-editing primitives ─────────────────────
+#
+# Both `user edit` (person entities) and `agent edit` (AI entities)
+# operate on a `<kind> "<name>":` header with 2-space-indented child
+# fields. These helpers isolate the text surgery so both commands
+# share one rename-with-cascade path.
+
+proc leadingSpaces(s: string): int =
+  var i = 0
+  while i < s.len and s[i] == ' ': inc i
+  i
+
+proc findBlock(lines: seq[string], kind: string, name: string): (int, int) =
+  ## Returns (start, endIdx) where start is the header line index and
+  ## endIdx is one past the last line belonging to the block body.
+  ## (-1, -1) if the block is missing.
+  var start = -1
+  for i, l in lines:
+    if l.strip() == kind & " \"" & name & "\":":
+      start = i; break
+  if start < 0: return (-1, -1)
+  var endIdx = start + 1
+  while endIdx < lines.len:
+    let l = lines[endIdx]
+    if l.strip().len > 0 and not l.startsWith(" ") and not l.startsWith("\t"):
+      break
+    inc endIdx
+  (start, endIdx)
+
+proc rewriteBlockField(lines: var seq[string], blockStart, blockEnd: int,
+                       field: string, value: string): tuple[changed: bool, old: string] =
+  ## Rewrite an in-block 2-space-indented `<field> "<value>"` line.
+  ## Inserts after the header if the field is absent. Returns the old
+  ## value (or "" if inserted). Does not touch 4+-space nested blocks
+  ## (so nested `role "boss"` inside reportsTo stays put).
+  let newLine = "  " & field & " \"" & value & "\""
+  for i in blockStart + 1 ..< blockEnd:
+    if leadingSpaces(lines[i]) != 2: continue
+    let body = lines[i][2 ..< lines[i].len]
+    if body.startsWith(field & " \""):
+      let open = lines[i].find("\"")
+      let close = lines[i].rfind("\"")
+      let old = if open >= 0 and close > open: lines[i][open + 1 ..< close] else: ""
+      if old == value: return (false, old)
+      lines[i] = newLine
+      return (true, old)
+  lines.insert(newLine, blockStart + 1)
+  (true, "")
+
+proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[person, agent, reports, serves: int] =
+  ## Rewrite the header `person "<old>":` / `agent "<old>":` and every
+  ## name reference inside any agent block's `reportsTo "<old>":` /
+  ## `serves "<old>":` line. Returns per-kind counts so callers can
+  ## report what they touched.
+  let quotedOld = "\"" & oldName & "\""
+  let quotedNew = "\"" & newName & "\""
+  var p, a, r, s = 0
+  for i in 0 ..< lines.len:
+    let stripped = lines[i].strip(leading = true, trailing = false)
+    var matched = false
+    if stripped.startsWith("person " & quotedOld):       matched = true; inc p
+    elif stripped.startsWith("agent " & quotedOld):      matched = true; inc a
+    elif stripped.startsWith("reportsTo " & quotedOld):  matched = true; inc r
+    elif stripped.startsWith("serves " & quotedOld):     matched = true; inc s
+    if matched:
+      let idx = lines[i].find(quotedOld)
+      lines[i] = lines[i][0 ..< idx] & quotedNew &
+                 lines[i][idx + quotedOld.len ..< lines[i].len]
+  (p, a, r, s)
+
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
     return "Usage: claw user <list|show|trust|edit|merge|invite|register> [args]\n" &
            "  list     — table of every human identity (no trust — see `trust`)\n" &
            "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
            "  trust    — edge graph (agent → person) with role + trust per row\n" &
-           "  edit     — rename a person in BASE.nims (person + reportsTo/serves refs)\n" &
+           "  edit     — set a field on a Person in BASE.nims\n" &
+           "             claw user edit <nc:id> <field> <value>\n" &
+           "             fields: name, permission, jobTitle\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
@@ -1197,15 +1269,17 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     return res
 
   if subcmd == "edit":
-    # Rename a Person in BASE.nims. Catches the source-of-truth block
-    # (`person "X":`) and every agent-side reference (`reportsTo "X":`,
-    # `serves "X":`) so the graph stays consistent after `co update`.
-    if args.len < 3:
-      return "Usage: claw user edit <nc:id> <new-name>\n" &
-             "Renames a person in BASE.nims. Updates the person block and\n" &
-             "any `reportsTo \"X\":` / `serves \"X\":` references in agent\n" &
-             "blocks. Etiquette text is left alone. Run `claw co update`\n" &
-             "afterwards to regenerate BASE.json."
+    # Unified syntax: `claw user edit <nc:id> <field> <value>`.
+    # For `name`, also cascades to `reportsTo`/`serves` references in
+    # agent blocks so the graph stays consistent after `co update`.
+    if args.len < 4:
+      return "Usage: claw user edit <nc:id> <field> <value>\n" &
+             "Fields: name, permission, jobTitle.\n" &
+             "Examples:\n" &
+             "  claw user edit nc:4 name Jerry\n" &
+             "  claw user edit nc:5 permission Customer\n" &
+             "  claw user edit nc:5 jobTitle \"Fleet Owner\"\n" &
+             "Run `claw co update` afterwards to regenerate BASE.json."
     let alias = args[1]
     if not alias.startsWith("nc:"):
       return "Error: give an nc:id (e.g. nc:4). `claw user list` shows them."
@@ -1214,66 +1288,65 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       return "Error: " & alias & " not found in graph."
     let ent = graph.entities[id]
     if ent.kind != ekPerson:
-      return "Error: " & alias & " is not a Person (kind=" & $ent.kind & ")."
-    let newName = args[2].strip()
-    if newName.len == 0:
-      return "Error: new name must not be empty."
-    if '"' in newName:
-      return "Error: new name cannot contain a double-quote."
-    if newName == ent.name:
-      return "No change: name is already \"" & newName & "\"."
-    # Reject collisions with another existing entity of the same kind.
-    for otherID, other in graph.entities.pairs:
-      if otherID == id: continue
-      if other.name == newName:
-        return "Error: another " & $other.kind & " (" & toAlias(otherID) &
-               ") is already named \"" & newName & "\". Use `user merge` if\n" &
-               "you want to fold " & alias & " into " & toAlias(otherID) & "."
+      return "Error: " & alias & " is not a Person (kind=" & $ent.kind &
+             "). Use `claw agent edit` for AI entities."
+    let fieldRaw = args[2]
+    let value = args[3].strip()
+    let fieldMap = {
+      "name": "name",
+      "permission": "permission",
+      "perm": "permission",
+      "jobtitle": "jobTitle",
+      "title": "jobTitle"
+    }.toTable
+    let fl = fieldRaw.toLowerAscii
+    if not fieldMap.hasKey(fl):
+      return "Error: unsupported field \"" & fieldRaw & "\" for a Person.\n" &
+             "Supported: name, permission, jobTitle."
+    let field = fieldMap[fl]
+    if value.len == 0:
+      return "Error: value must not be empty."
+    if '"' in value:
+      return "Error: value cannot contain a double-quote."
 
     let baseNims = getNimClawDir() / "BASE.nims"
     if not fileExists(baseNims):
       return "Error: no BASE.nims at " & baseNims
-    let existing = readFile(baseNims)
-    let oldName = ent.name
-    let quotedOld = "\"" & oldName & "\""
-    let quotedNew = "\"" & newName & "\""
-    let lines = existing.splitLines()
-    var updated: seq[string]
-    var changes = 0
-    var perPerson = 0
-    var perReports = 0
-    var perServes = 0
-    for line in lines:
-      let stripped = line.strip(leading = true, trailing = false)
-      # Only replace the first `"oldName"` on lines whose DSL prefix
-      # references the person by name — skip etiquette / comments.
-      var prefix = ""
-      if stripped.startsWith("person " & quotedOld):
-        prefix = "person "
-        inc perPerson
-      elif stripped.startsWith("reportsTo " & quotedOld):
-        prefix = "reportsTo "
-        inc perReports
-      elif stripped.startsWith("serves " & quotedOld):
-        prefix = "serves "
-        inc perServes
-      if prefix.len > 0:
-        let idx = line.find(quotedOld)
-        updated.add(line[0 ..< idx] & quotedNew &
-                    line[idx + quotedOld.len ..< line.len])
-        inc changes
-      else:
-        updated.add(line)
-    if changes == 0:
-      return "Error: no `person \"" & oldName & "\":`, `reportsTo \"" & oldName &
-             "\":`, or `serves \"" & oldName & "\":` lines found in BASE.nims.\n" &
-             "The graph knows " & alias & " as \"" & oldName & "\" but the\n" &
-             "DSL source doesn't — was it edited by hand?"
-    writeFile(baseNims, updated.join("\n"))
-    return "Renamed " & alias & ": \"" & oldName & "\" → \"" & newName & "\"\n" &
-           "  person block:     " & $perPerson & "\n" &
-           "  reportsTo refs:   " & $perReports & "\n" &
-           "  serves refs:      " & $perServes & "\n" &
+    var lines = readFile(baseNims).splitLines()
+
+    if field == "name":
+      if value == ent.name:
+        return "No change: name is already \"" & value & "\"."
+      for otherID, other in graph.entities.pairs:
+        if otherID == id: continue
+        if other.name == value:
+          return "Error: another " & $other.kind & " (" & toAlias(otherID) &
+                 ") is already named \"" & value & "\". Use `user merge` to\n" &
+                 "fold " & alias & " into " & toAlias(otherID) & "."
+      let counts = cascadeNameRefs(lines, ent.name, value)
+      if counts.person + counts.agent + counts.reports + counts.serves == 0:
+        return "Error: no references to \"" & ent.name & "\" in BASE.nims. The\n" &
+               "graph knows " & alias & " by that name but the DSL source doesn't."
+      writeFile(baseNims, lines.join("\n"))
+      return "Renamed " & alias & ": \"" & ent.name & "\" → \"" & value & "\"\n" &
+             "  person block:    " & $counts.person & "\n" &
+             "  reportsTo refs:  " & $counts.reports & "\n" &
+             "  serves refs:     " & $counts.serves & "\n" &
+             "Run `claw co update` to regenerate BASE.json."
+
+    # Any other field — rewrite a line inside `person "<name>":`.
+    let (bStart, bEnd) = findBlock(lines, "person", ent.name)
+    if bStart < 0:
+      return "Error: no `person \"" & ent.name & "\":` block in BASE.nims.\n" &
+             "Use `claw user register` to reify " & alias & " first."
+    let (changed, old) = rewriteBlockField(lines, bStart, bEnd, field, value)
+    if not changed:
+      return "No change: " & alias & "." & field & " is already \"" & value & "\"."
+    writeFile(baseNims, lines.join("\n"))
+    let verb = if old.len == 0: "Added" else: "Set"
+    let rhs = if old.len == 0: " = \"" & value & "\""
+              else: ": \"" & old & "\" → \"" & value & "\""
+    return verb & " " & alias & "." & field & rhs & "\n" &
            "Run `claw co update` to regenerate BASE.json."
 
   if subcmd == "register":
@@ -2414,22 +2487,25 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
       return "Error: Invalid mode. Use 'public' or 'private'."
 
   if subcmd == "edit":
-    # Set a string-valued field in the agent's declaration block in
-    # BASE.nims. Only touches direct children of `agent "<name>":` (2-
-    # space indent), so nested `role` inside a reportsTo annotation is
-    # safe from accidental rewrites.
+    # `claw agent edit <name> <field> <value>` — parallels `user edit`.
+    # Mutates direct children of `agent "<name>":` (2-space indent) so
+    # the nested `role "boss"` inside a reportsTo annotation is safe.
+    # For `name`, cascades to any `reportsTo "X":`/`serves "X":` in
+    # other agent blocks that reference this agent.
     let needName = (targetAgent == "" and finalArgs.len < 4) or
                    (targetAgent != "" and finalArgs.len < 3)
     if needName:
       return "Usage: claw agent edit <name> <field> <value>\n" &
-             "Fields: jobTitle, model, role, identity, profile, provider.\n" &
-             "Example: claw agent edit Lexi jobTitle Secretary\n" &
+             "Fields: name, jobTitle, model, role, identity, profile, provider.\n" &
+             "Examples:\n" &
+             "  claw agent edit Lexi jobTitle Secretary\n" &
+             "  claw agent edit Lexi name Luna         # rename + cascade refs\n" &
              "Run `claw co update` afterwards to regenerate BASE.json."
     let name = if targetAgent != "": targetAgent else: finalArgs[1]
     let fieldRaw = if targetAgent != "": finalArgs[1] else: finalArgs[2]
     let value = if targetAgent != "": finalArgs[2] else: finalArgs[3]
-    # DSL uses camelCase; accept any case from the user.
     let fieldMap = {
+      "name": "name",
       "jobtitle": "jobTitle",
       "title": "jobTitle",
       "model": "model",
@@ -2440,8 +2516,8 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
     }.toTable
     let fl = fieldRaw.toLowerAscii
     if not fieldMap.hasKey(fl):
-      return "Error: unsupported field \"" & fieldRaw & "\".\n" &
-             "Supported: jobTitle, model, role, identity, profile, provider."
+      return "Error: unsupported field \"" & fieldRaw & "\" for an agent.\n" &
+             "Supported: name, jobTitle, model, role, identity, profile, provider."
     let field = fieldMap[fl]
     if value.len == 0:
       return "Error: value must not be empty."
@@ -2451,103 +2527,52 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
     let baseNims = getNimClawDir() / "BASE.nims"
     if not fileExists(baseNims):
       return "Error: no BASE.nims at " & baseNims
-    let existing = readFile(baseNims)
-    let lines = existing.splitLines()
-    var start = -1
-    for i, l in lines:
-      if l.strip() == "agent \"" & name & "\":":
-        start = i; break
-    if start < 0:
-      return "Error: no `agent \"" & name & "\":` block in BASE.nims."
-    var endIdx = start + 1
-    while endIdx < lines.len:
-      let l = lines[endIdx]
-      if l.strip().len > 0 and not l.startsWith(" ") and not l.startsWith("\t"):
-        break
-      inc endIdx
+    var lines = readFile(baseNims).splitLines()
 
-    proc leadIndent(s: string): int =
-      var i = 0
-      while i < s.len and s[i] == ' ': inc i
-      i
-
-    var fieldLine = -1
-    var oldValue = ""
-    for i in start + 1 ..< endIdx:
-      let line = lines[i]
-      # Direct children of the agent block live at 2-space indent — this
-      # skips `role "boss"` inside a 4-space-indented reportsTo block.
-      if leadIndent(line) != 2: continue
-      let s = line[2 ..< line.len]
-      if s.startsWith(field & " \""):
-        fieldLine = i
-        let open = line.find("\"")
-        let close = line.rfind("\"")
-        if open >= 0 and close > open: oldValue = line[open + 1 ..< close]
-        break
-    var updated = lines
-    let newLine = "  " & field & " \"" & value & "\""
-    if fieldLine < 0:
-      # Field absent — insert directly after the agent header.
-      updated.insert(newLine, start + 1)
-      writeFile(baseNims, updated.join("\n"))
-      return "Added " & name & "." & field & " = \"" & value & "\" in BASE.nims.\n" &
+    if field == "name":
+      if value == name:
+        return "No change: name is already \"" & value & "\"."
+      let workspace = cfg.workspacePath()
+      let graph = loadWorld(workspace)
+      if graph != nil:
+        for id, ent in graph.entities.pairs:
+          if ent.name == value:
+            return "Error: another " & $ent.kind & " (" & toAlias(id) &
+                   ") is already named \"" & value & "\"."
+      let counts = cascadeNameRefs(lines, name, value)
+      if counts.person + counts.agent + counts.reports + counts.serves == 0:
+        return "Error: no references to \"" & name & "\" in BASE.nims."
+      writeFile(baseNims, lines.join("\n"))
+      return "Renamed agent \"" & name & "\" → \"" & value & "\"\n" &
+             "  agent block:     " & $counts.agent & "\n" &
+             "  reportsTo refs:  " & $counts.reports & "\n" &
+             "  serves refs:     " & $counts.serves & "\n" &
              "Run `claw co update` to regenerate BASE.json."
-    if oldValue == value:
+
+    let (bStart, bEnd) = findBlock(lines, "agent", name)
+    if bStart < 0:
+      return "Error: no `agent \"" & name & "\":` block in BASE.nims."
+    let (changed, old) = rewriteBlockField(lines, bStart, bEnd, field, value)
+    if not changed:
       return "No change: " & name & "." & field & " is already \"" & value & "\"."
-    updated[fieldLine] = newLine
-    writeFile(baseNims, updated.join("\n"))
-    return "Set " & name & "." & field & ": \"" & oldValue & "\" → \"" & value & "\"\n" &
+    writeFile(baseNims, lines.join("\n"))
+    let verb = if old.len == 0: "Added" else: "Set"
+    let rhs = if old.len == 0: " = \"" & value & "\""
+              else: ": \"" & old & "\" → \"" & value & "\""
+    return verb & " " & name & "." & field & rhs & "\n" &
            "Run `claw co update` to regenerate BASE.json."
 
   if subcmd == "rename":
+    # Deprecated alias — routes through `agent edit <old> name <new>`
+    # so BASE.nims stays the single source of truth. The old path wrote
+    # config + BASE.json only; the rename would be silently reverted on
+    # the next `co update`.
     if finalArgs.len < 2 and targetAgent == "":
-      return "Usage: nimclaw agents rename <old_name> <new_name>"
-
+      return "Usage: claw agent rename <old_name> <new_name>\n" &
+             "(deprecated — prefer `claw agent edit <name> name <new-name>`)"
     let oldName = if targetAgent != "": targetAgent else: finalArgs[1]
     let newName = if targetAgent != "": finalArgs[1] else: finalArgs[2]
-    
-    if oldName == newName: return "Old name and new name are the same."
-
-    # 1. Update Config
-    var foundConfig = false
-    for i in 0..<cfg.agents.named.len:
-      if cfg.agents.named[i].name == oldName:
-        cfg.agents.named[i].name = newName
-        foundConfig = true
-        break
-    
-    if not foundConfig:
-      return "Error: Agent '{oldName}' not found in config.".fmt
-      
-    saveConfig(getConfigPath(), cfg)
-
-    # 2. Update Graph
-    let workspace = cfg.workspacePath()
-    let graphPath = workspace / "BASE.json"
-    var graphUpdated = false
-    if fileExists(graphPath):
-      try:
-        var node = parseFile(graphPath)
-        if node.hasKey("@graph"):
-          for ent in node["@graph"]:
-            if ent{"kind"}.getStr() == "Agent" and ent{"name"}.getStr() == oldName:
-              ent["name"] = %newName
-              graphUpdated = true
-              break
-        
-        if graphUpdated:
-          writeFile(graphPath, node.pretty())
-      except:
-        return "Error updating BASE.json: " & getCurrentExceptionMsg()
-
-    var status = "Renamed agent '{oldName}' to '{newName}' in config.".fmt
-    if graphUpdated:
-      status &= " Also updated BASE.json."
-    else:
-      status &= " (Note: No matching Agent found in BASE.json to update)"
-    
-    return status
+    return runAgentsCommand(cfg, @["edit", oldName, "name", newName], asJson)
 
   if subcmd == "bizcard":
     if finalArgs.len < 2 and targetAgent == "":
