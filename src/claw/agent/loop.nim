@@ -710,7 +710,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     # Perform sentiment analysis and update mood
     let (vDelta, aDelta) = cortex.analyzeSentiment(opts.userMessage)
     cortex.updateMood(al.contextBuilder.mood, vDelta, aDelta)
-    cortex.saveMood(al.workspace, al.contextBuilder.mood)
+    cortex.saveMood(al.officeDir, al.contextBuilder.mood)
 
     # Resolve raw senderID to logical userID
     var logicalUserID = opts.senderID

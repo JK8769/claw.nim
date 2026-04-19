@@ -131,19 +131,31 @@ proc loadRelations*(workspace: string): Table[string, Relationship] =
     # Use standard echo for simplicity in this proto
     echo "Warning: Failed to load RELATIONS.json: ", getCurrentExceptionMsg()
 
-proc loadMood*(workspace: string): MoodState =
-  let path = workspace / "MOOD.json"
-  if not fileExists(path): 
+proc loadMood*(officeDir: string): MoodState =
+  # Per-agent mood lives at `<office>/mood.json`. We also honour
+  # `<office>/MOOD.json` (legacy capitalisation) and a single
+  # `<workspace>/MOOD.json` one level up (pre-office-era layout) so
+  # existing installations don't reset on first load after upgrade.
+  let candidates = [
+    officeDir / "mood.json",
+    officeDir / "MOOD.json",
+    officeDir.parentDir.parentDir / "MOOD.json"
+  ]
+  var active = ""
+  for c in candidates:
+    if fileExists(c):
+      active = c; break
+  if active == "":
     return MoodState(valence: 0.0, arousal: 0.1, archetype: "Assistant")
   try:
-    let node = parseFile(path)
+    let node = parseFile(active)
     return MoodState(
       valence: node["valence"].getFloat(),
       arousal: node["arousal"].getFloat(),
       archetype: node["archetype"].getStr()
     )
   except:
-    echo "Warning: Failed to load MOOD.json: ", getCurrentExceptionMsg()
+    echo "Warning: Failed to load mood from ", active, ": ", getCurrentExceptionMsg()
     return MoodState(valence: 0.0, arousal: 0.1, archetype: "Assistant")
 
 proc resolveUser*(relations: Table[string, Relationship], channel: string, senderID: string): (string, bool) =
@@ -395,6 +407,20 @@ proc loadWorld*(workspace: string): WorldGraph =
         identifiers: initTable[string, string](),
         custom: newJObject() # Initialize custom node
       )
+      # For AI entities, the authoritative mood lives in the per-agent
+      # office sidecar (written every turn); BASE.json's embedded mood
+      # is only refreshed when saveWorld runs, so prefer the sidecar
+      # whenever it exists. loadMood's fallback list also covers the
+      # pre-office-era shared `<workspace>/MOOD.json`.
+      if ent.kind == ekAI and ent.name.len > 0:
+        let officeDir = result.workspace / "offices" / ent.name.toLowerAscii()
+        if fileExists(officeDir / "mood.json") or
+           fileExists(officeDir / "MOOD.json") or
+           fileExists(result.workspace / "MOOD.json"):
+          let m = loadMood(officeDir)
+          ent.valence = m.valence
+          ent.arousal = m.arousal
+          ent.archetype = m.archetype
 
       # Reconstruct custom fields that were serialized to the root
       if node.hasKey("personas"): ent.custom["personas"] = node["personas"]
@@ -490,8 +516,10 @@ proc migrateToGraph*(workspace: string, agents: seq[string] = @["secretary"]): W
     if fileExists(idPath): ent.profile = readFile(idPath).strip()
     if fileExists(agentPath): ent.description = readFile(agentPath).strip()
     
-    # Load mood
-    let m = loadMood(workspace)
+    # Load mood — per-agent office dir (pre-office workspaces fall back
+    # to a shared `MOOD.json` via loadMood's legacy candidate list).
+    let officeDir = workspace / "offices" / name.toLowerAscii()
+    let m = loadMood(officeDir)
     ent.valence = m.valence
     ent.arousal = m.arousal
     ent.archetype = m.archetype
@@ -583,8 +611,11 @@ proc saveRelations*(workspace: string, relations: Table[string, Relationship]) =
     node.add(jRel)
   writeFile(path, node.pretty())
 
-proc saveMood*(workspace: string, mood: MoodState) =
-  let path = workspace / "MOOD.json"
+proc saveMood*(officeDir: string, mood: MoodState) =
+  # Scoped per-agent so multi-agent companies (e.g. Lexi + Atlas) don't
+  # stomp each other's affective state on a shared file.
+  createDir(officeDir)
+  let path = officeDir / "mood.json"
   let node = %* {
     "valence": mood.valence,
     "arousal": mood.arousal,
