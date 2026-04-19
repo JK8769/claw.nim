@@ -106,12 +106,19 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
 
   # Full delegation: route through the peer's AgentLoop so she has
   # her own tool registry (MCP servers, graph access, trust gate,
-  # sessions). This is the honest "ask another agent" path — the
-  # legacy LLM-only fallback below is a toy persona-swap that can't
-  # actually call tools.
+  # sessions). The senderAlias passed to the peer is THIS agent's
+  # nc:id (e.g. Atlas's nc:3), NOT the original customer's —
+  # otherwise the peer evaluates the request at the customer's trust
+  # tier and refuses her own tools. Relaying Atlas's identity lets
+  # Lexi run as if a peer staff member asked, which is the semantic
+  # match (agent-to-agent trust). The peer answers with real data;
+  # Atlas then relays it to the customer under customer-tier policy.
   if t.askPeer != nil:
     try:
-      return await t.askPeer(agentName, fullPrompt, t.logicalUserID, t.sessionKey)
+      let delegatorAlias =
+        if t.agentID.len > 0: t.agentID
+        else: "agent:" & t.agentName
+      return await t.askPeer(agentName, fullPrompt, delegatorAlias, t.sessionKey)
     except Exception as e:
       return "Error: delegation to '" & agentName & "' failed: " & e.msg
 
