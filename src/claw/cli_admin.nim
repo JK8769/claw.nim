@@ -2,6 +2,7 @@ import std/[os, strutils, strformat, osproc, json, options, times, tables, async
 import config, agent/invites, agent/cortex, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
+import providers/registry as prov_registry
 
 ## All administrative CLI subcommands ported from nullclaw.
 
@@ -464,11 +465,65 @@ proc addNMobileChannel(cfg: var Config, args: seq[string]): string =
          "  Wallet: " & walletPath & "\n" &
          "Restart the gateway to connect."
 
+proc loadChannelTypes(): JsonNode =
+  ## Read res/channels.json — the catalog of channel TYPES the binary
+  ## supports (auth fields, capability flags, group-detection rules).
+  ## Per-company instance config still lives in BASE.json.channels.
+  let path = prov_registry.findDistributionResource("res" / "channels.json")
+  if path.len == 0 or not fileExists(path):
+    return newJObject()
+  try:
+    return parseJson(readFile(path))
+  except CatchableError:
+    return newJObject()
+
 proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: nimclaw channel <list|status|add|remove> [args]"
+    return "Usage: claw channel <list|types|status|add|remove> [args]\n" &
+           "  list   — channels configured on the active company\n" &
+           "  types  — channel types supported by this binary (from res/channels.json)\n" &
+           "  status — enabled/disabled per-channel\n" &
+           "  add    — add a channel instance (types: feishu, nmobile)\n" &
+           "  remove — drop a channel"
   let subcmd = args[0]
+
+  if subcmd == "types":
+    let catalog = loadChannelTypes()
+    let types = catalog{"types"}
+    if types == nil or types.kind != JObject:
+      return if asJson: "[]" else: "No channel catalog found (res/channels.json missing)."
+    if asJson: return $types
+    var res = "Channel types supported by this binary:\n\n"
+    for name, spec in types.pairs:
+      res.add("  " & name.alignLeft(10) & " ")
+      res.add(spec{"description"}.getStr("—") & "\n")
+      let caps = spec{"capabilities"}
+      if caps != nil and caps.kind == JObject:
+        var capList: seq[string]
+        for k, v in caps.pairs:
+          if v.kind == JBool and v.getBool: capList.add(k)
+        if capList.len > 0:
+          res.add("             capabilities: " & capList.join(", ") & "\n")
+      let auth = spec{"auth"}
+      if auth != nil and auth.kind == JArray and auth.len > 0:
+        var fields: seq[string]
+        for a in auth:
+          let field = a{"field"}.getStr()
+          let required = a{"required"}.getBool(false)
+          fields.add(if required: field & "*" else: field)
+        res.add("             auth: " & fields.join(", ") &
+                (if fields.len > 0: "   (* = required)\n" else: "\n"))
+      let req = spec{"requires"}
+      if req != nil and req.kind == JArray and req.len > 0:
+        var items: seq[string]
+        for r in req: items.add(r.getStr())
+        res.add("             requires: " & items.join(", ") & "\n")
+      res.add("\n")
+    return res.strip
+
   if subcmd == "list":
+    # Show channels CONFIGURED on this company (from BASE.json), with a
+    # one-liner nudge to `channel types` for the available-binary view.
     if asJson:
       var arr = newJArray()
       for ch in knownChannels:
@@ -477,6 +532,7 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
     var res = "Configured channels:\n"
     for ch in knownChannels:
       res.add("  " & ch & ": available\n")
+    res.add("\n(Run `claw channel types` to see what channel kinds this binary supports.)\n")
     return res
   if subcmd == "status":
     type ChSt = tuple[name: string, enabled: bool, detail: string]

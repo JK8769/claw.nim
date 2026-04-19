@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "description": "Channel-type catalog. Each entry describes a channel the binary knows how to run: what auth it needs, what media it handles, and how it distinguishes DM from group chats. Per-company instance config (tokens, app IDs) lives in BASE.json; this file is the shape of the menu, not the values.",
+
+  "types": {
+    "cli": {
+      "description": "Terminal-line channel for CLI testing and scripted invocations.",
+      "auth": [],
+      "capabilities": {
+        "text": true, "image": false, "voice": false, "video": false,
+        "file": false, "group": false, "threads": false
+      },
+      "chat_kind_detection": {
+        "note": "Always DM — the CLI is 1:1 with the invoking shell."
+      }
+    },
+
+    "telegram": {
+      "description": "Telegram Bot API (longpoll).",
+      "auth": [
+        {"field": "token", "env": "TELEGRAM_TOKEN", "required": true,
+         "hint": "Bot token from @BotFather, e.g. 123456:ABC-DEF..."}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": true, "video": true,
+        "file": true, "group": true, "threads": false
+      },
+      "chat_kind_detection": {
+        "signal": "msg.chat.type",
+        "dm_when": "type == 'private'",
+        "group_when": "type in {'group','supergroup','channel'}",
+        "fallback": "chat.id sign — positive DM, negative group"
+      }
+    },
+
+    "feishu": {
+      "description": "Feishu / Lark enterprise messaging. Needs the bundled lark-cli bridge.",
+      "auth": [
+        {"field": "app_id",     "env": "FEISHU_APP_ID",     "required": true},
+        {"field": "app_secret", "env": "FEISHU_APP_SECRET", "required": true}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": false, "video": false,
+        "file": true, "group": true, "threads": true, "card": true
+      },
+      "chat_kind_detection": {
+        "signal": "chat_id prefix",
+        "dm_when": "starts with ou_",
+        "group_when": "starts with oc_"
+      },
+      "requires": ["lark-cli"]
+    },
+
+    "whatsapp": {
+      "description": "WhatsApp Business via an external bridge process.",
+      "auth": [
+        {"field": "bridge_url", "required": true,
+         "hint": "HTTP endpoint of the whatsmeow/baileys bridge."}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": true, "video": true,
+        "file": true, "group": true, "threads": false
+      },
+      "chat_kind_detection": {
+        "signal": "chat_id JID suffix",
+        "dm_when": "ends with @s.whatsapp.net",
+        "group_when": "ends with @g.us"
+      }
+    },
+
+    "discord": {
+      "description": "Discord gateway (bot-API).",
+      "auth": [
+        {"field": "token", "env": "DISCORD_TOKEN", "required": true}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": false, "video": true,
+        "file": true, "group": true, "threads": true
+      },
+      "chat_kind_detection": {
+        "signal": "channel.type from gateway event",
+        "dm_when": "type == 1 (DM) or 3 (group DM)",
+        "group_when": "type in {0 (guild text), 5 (announcement), 10-12 (threads)}",
+        "status": "not yet surfaced in our parsing — all Discord msgs currently land as DM"
+      }
+    },
+
+    "qq": {
+      "description": "OneBot-compatible QQ bridge.",
+      "auth": [
+        {"field": "host", "required": true},
+        {"field": "port", "required": true},
+        {"field": "access_token", "env": "QQ_ACCESS_TOKEN", "required": false}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": true, "video": false,
+        "file": false, "group": true, "threads": false
+      },
+      "chat_kind_detection": {
+        "signal": "message_type from OneBot event",
+        "dm_when": "message_type == 'private'",
+        "group_when": "message_type == 'group'"
+      }
+    },
+
+    "dingtalk": {
+      "description": "DingTalk enterprise messaging.",
+      "auth": [
+        {"field": "app_key",    "env": "DINGTALK_APP_KEY",    "required": true},
+        {"field": "app_secret", "env": "DINGTALK_APP_SECRET", "required": true}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": false, "video": false,
+        "file": true, "group": true, "threads": false
+      },
+      "chat_kind_detection": {
+        "signal": "conversationType from event",
+        "dm_when": "conversationType == '1'",
+        "group_when": "conversationType == '2'"
+      }
+    },
+
+    "nmobile": {
+      "description": "NKN nMobile peer-to-peer. DM-only; multi-recipient would require explicit multicast addressing.",
+      "auth": [
+        {"field": "seed", "env": "NKN_SEED", "required": true,
+         "hint": "Hex-encoded NKN client seed."}
+      ],
+      "capabilities": {
+        "text": true, "image": true, "voice": false, "video": false,
+        "file": true, "group": false, "threads": false
+      },
+      "chat_kind_detection": {
+        "note": "Always DM. Group sessions would need a separate multicast mechanism."
+      }
+    },
+
+    "maixcam": {
+      "description": "MaixCam IoT device — camera + speaker peer for local agent interactions.",
+      "auth": [],
+      "capabilities": {
+        "text": true, "image": true, "voice": true, "video": false,
+        "file": false, "group": false, "threads": false
+      },
+      "chat_kind_detection": {"note": "DM-only."}
+    },
+
+    "zen": {
+      "description": "Zen dashboard — the built-in web UI for operators.",
+      "auth": [],
+      "capabilities": {
+        "text": true, "image": true, "voice": false, "video": false,
+        "file": true, "group": false, "threads": false
+      },
+      "chat_kind_detection": {"note": "DM-only."}
+    }
+  }
+}
