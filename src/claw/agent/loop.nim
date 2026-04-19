@@ -924,9 +924,16 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     # tool by name). Now we resolve the requester's role every turn and
     # hold its grant list; the tool loop refuses any call outside it.
     al.turnAllowedTools = @[]
+    let reqRole = al.contextBuilder.resolveRequesterRole(
+      logicalUserID, targetRecipient, opts.channel)
+    # Propagate the resolved role onto ProcessOptions so the tool
+    # context (buildToolContext → ToolContext.role) reflects it —
+    # tools like feishu_add_app use this for their own permission
+    # checks. Falls back to the declared entity-level permission
+    # (ent.role) when no relationship annotation exists.
+    if reqRole.len > 0:
+      opts.userRole = reqRole
     if al.contextBuilder.trust.roles.len > 0:
-      let reqRole = al.contextBuilder.resolveRequesterRole(
-        logicalUserID, targetRecipient, opts.channel)
       let roleCfg = findTrustRole(al.contextBuilder.trust, reqRole)
       if roleCfg.isSome:
         let g = roleCfg.get.grant

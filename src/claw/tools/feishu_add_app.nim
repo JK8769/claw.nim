@@ -53,10 +53,19 @@ method parameters*(t: FeishuAddAppTool): Table[string, JsonNode] =
 method execute*(t: FeishuAddAppTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   # SuperAdmin gate — modifying BASE.nims + storing channel credentials
   # is not something a guest/customer should be able to do mid-chat.
-  let role = t.role.toLowerAscii
-  if role notin ["superadmin", "admin"]:
+  # `t.role` carries the *relationship* role (e.g. "boss"); we want the
+  # declared *permission* from the requester's entity. Look it up.
+  var perm = ""
+  if t.graph != nil and t.logicalUserID.startsWith("nc:"):
+    let id = parseAlias(t.logicalUserID)
+    if uint32(id) > 0 and t.graph.entities.hasKey(id):
+      perm = t.graph.entities[id].role.toLowerAscii
+  if perm notin ["superadmin", "admin"]:
+    let shown = if perm.len > 0: perm
+                else: (if t.role.len > 0: t.role & " (relationship role; no declared permission)"
+                       else: "unknown")
     return "Error: adding a Feishu app requires SuperAdmin privileges. " &
-           "Current requester role: " & t.role & "."
+           "Current requester permission: " & shown & "."
 
   if not args.hasKey("app_id") or not args.hasKey("app_secret") or
      not args.hasKey("agent"):
