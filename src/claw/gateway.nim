@@ -5,6 +5,7 @@
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin
+import tools/delegate as delegate_tool
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
 import services/[heartbeat, cron as cron_service]
@@ -44,6 +45,33 @@ gAgentRequestChan.open()
 # Gateway startup time — used by /status to report uptime.
 var gStartTime: float = 0.0
 
+# Forward declaration so askPeer closure can reference the office-lookup
+# helper before it's defined.
+proc ensureOffice(agentName: string): AgentLoop
+
+# Shared askPeer implementation — gets or creates the target peer's
+# AgentLoop, runs her full processDirect (her own tools, trust gate,
+# sessions), returns her reply text. Wired into every AgentLoop's
+# delegate tool so "agent-to-agent" is a real capability transfer.
+proc askPeerImpl(agentName, prompt, senderAlias, callerSessionKey: string): Future[string] {.async.} =
+  let peer = ensureOffice(agentName)
+  if peer == nil:
+    return "Error: peer agent '" & agentName & "' not configured."
+  let sessionKey = "delegate:" & senderAlias & ":" & agentName.toLowerAscii
+  let sender = if senderAlias.len > 0: senderAlias else: "agent:unknown"
+  return await peer.processDirect(prompt, sessionKey, sender, "internal")
+
+proc makeAgentLoop(agentName: string): AgentLoop =
+  newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider, agentName,
+               gCtx.cronService, askPeer = askPeerImpl)
+
+proc ensureOffice(agentName: string): AgentLoop =
+  let key = agentName.toLowerAscii
+  {.cast(gcsafe).}:
+    if not gCtx.offices.hasKey(key):
+      gCtx.offices[key] = makeAgentLoop(agentName.capitalizeAscii())
+    return gCtx.offices[key]
+
 # ── Shutdown ────────────────────────────────────────────────────────
 
 proc gracefulShutdown() =
@@ -80,7 +108,7 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     gCtx.msgBus.publishOutbound(newOutbound(job.payload.channel, agentName, job.payload.to, job.payload.message))
   else:
     if not gCtx.offices.hasKey(officeKey):
-      gCtx.offices[officeKey] = newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider, agentName, gCtx.cronService)
+      gCtx.offices[officeKey] = makeAgentLoop(agentName)
     let sender = if job.payload.senderID != "": job.payload.senderID else: "system:scheduler"
     let agentResponse = await gCtx.offices[officeKey].processDirect(job.payload.message, sender, sender, channel = job.payload.channel)
     if agentResponse != "":
@@ -650,7 +678,7 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
 
   # Default agent
   if not gCtx.offices.hasKey("lexi"):
-    gCtx.offices["lexi"] = newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider, "Lexi", gCtx.cronService)
+    gCtx.offices["lexi"] = makeAgentLoop("Lexi")
   let lexiWorkspace = cfg[].workspacePath() / "offices" / "lexi"
   let hbService = newHeartbeatService(lexiWorkspace, proc(p: string): Future[void] {.async.} =
     discard await gCtx.offices["lexi"].processDirect(p, "system:heartbeat")
@@ -733,7 +761,7 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
 
         if not gCtx.offices.hasKey(officeKey):
           infoCF("claw", "Opening office", {"agent": recipient}.toTable)
-          gCtx.offices[officeKey] = newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider, recipient, gCtx.cronService)
+          gCtx.offices[officeKey] = makeAgentLoop(recipient)
 
         # Extract plain text from JSON content (e.g. Feishu)
         var plainContent = msg.content.strip()
@@ -926,8 +954,7 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
         let (officeKey, message, senderOverride, channelOverride, respChan) = req
         try:
           if not gCtx.offices.hasKey(officeKey):
-            gCtx.offices[officeKey] = newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider,
-              officeKey.capitalizeAscii(), gCtx.cronService)
+            gCtx.offices[officeKey] = makeAgentLoop(officeKey.capitalizeAscii())
           # Sender resolution:
           #   --from=<id> explicit override → use that verbatim (lets CLI
           #                spoof a guest/customer for testing gating)

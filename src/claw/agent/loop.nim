@@ -1046,7 +1046,7 @@ proc run*(al: AgentLoop) {.async.} =
         msg.metadata.getOrDefault("message_id", ""), msg.metadata.getOrDefault("app_id", "")
       ))
 
-proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agentName: string = "Lexi", cronService: CronService = nil, model: string = ""): AgentLoop =
+proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agentName: string = "Lexi", cronService: CronService = nil, model: string = "", askPeer: delegate.AskPeer = nil): AgentLoop =
   debugCF("agentLoop", "Initializing", {"agent": agentName}.toTable)
   let workspace = cfg.workspacePath()
   let officeDir = workspace / "offices" / agentName.toLowerAscii()
@@ -1166,7 +1166,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
   # --- Hardware (unified) ---
   regTagged(newUnifiedHardwareTool(cfg.peripherals.boards), ["hardware", "sensors", "i2c", "spi"], "I2C SPI board info memory read write hardware peripherals")
-  regTagged(newDelegateTool(workspace, cfg.agents.named), ["agent", "delegation"], "delegate tasks to other named agents")
+  regTagged(newDelegateTool(workspace, cfg.agents.named, askPeer = askPeer), ["agent", "delegation"], "delegate tasks to other named agents")
   regTagged(newRedeemInviteTool(), ["admin", "core"])
 
   # --- Tasks & orchestration (unified) ---

@@ -6,14 +6,23 @@ import ../providers/http as providers_http
 import ../providers/types as providers_types
 
 type
+  ## Callback wired in by the gateway at AgentLoop construction time —
+  ## runs the target agent's full `processDirect` path (graph reload,
+  ## her own tool registry, trust gate, sessions). Returns the peer's
+  ## reply text. Delegation goes through this when present so the peer
+  ## actually has access to her tools (e.g. Lexi's sungrow MCP) rather
+  ## than being a tool-less persona-swap LLM call.
+  AskPeer* = proc(agentName, prompt, senderAlias, callerSessionKey: string): Future[string] {.async.}
+
   DelegateTool* = ref object of ContextualTool
     workspace*: string
     agents*: seq[NamedAgentConfig]
     fallbackApiKey*: Option[string]
     depth*: int
+    askPeer*: AskPeer
 
-proc newDelegateTool*(workspace: string, agents: seq[NamedAgentConfig] = @[], fallbackApiKey: Option[string] = none(string), depth: int = 0): DelegateTool =
-  return DelegateTool(workspace: workspace, agents: agents, fallbackApiKey: fallbackApiKey, depth: depth)
+proc newDelegateTool*(workspace: string, agents: seq[NamedAgentConfig] = @[], fallbackApiKey: Option[string] = none(string), depth: int = 0, askPeer: AskPeer = nil): DelegateTool =
+  return DelegateTool(workspace: workspace, agents: agents, fallbackApiKey: fallbackApiKey, depth: depth, askPeer: askPeer)
 
 method name*(t: DelegateTool): string = "delegate"
 method description*(t: DelegateTool): string =
@@ -94,6 +103,17 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
     fmt"Context: {contextText.get()}{'\n'}{'\n'}{promptText}"
   else:
     promptText
+
+  # Full delegation: route through the peer's AgentLoop so she has
+  # her own tool registry (MCP servers, graph access, trust gate,
+  # sessions). This is the honest "ask another agent" path — the
+  # legacy LLM-only fallback below is a toy persona-swap that can't
+  # actually call tools.
+  if t.askPeer != nil:
+    try:
+      return await t.askPeer(agentName, fullPrompt, t.logicalUserID, t.sessionKey)
+    except Exception as e:
+      return "Error: delegation to '" & agentName & "' failed: " & e.msg
 
   let graph = loadWorld(t.workspace)
   var cfg = loadConfig(getConfigPath())
