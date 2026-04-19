@@ -1,4 +1,4 @@
-import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm]
+import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random]
 import config, agent/invites, agent/cortex, libnkn/nkn_bridge, QRgen, utils
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
@@ -1086,10 +1086,115 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     return res
 
   if subcmd == "invite":
-    return "TODO: `user invite <inviter-nc> [role]` — generate a one-time\n" &
-           "invite code an inviter issues to a guest. Today invites are\n" &
-           "created via the existing `invite` tool at runtime; a CLI\n" &
-           "shortcut and provenance (invited_by) field are pending."
+    if args.len < 2:
+      return "Usage:\n" &
+             "  claw user invite list\n" &
+             "  claw user invite <issuer-nc:id> [<role>] [<uses>] [<agent>] [<customer>]\n\n" &
+             "Positional defaults: role=customer, uses=1, agent=<company default>.\n" &
+             "Roles follow the trust DSL: guest, customer, staff, boss, master.\n" &
+             "Issuer is stamped on the invite so `user invite list` shows who minted it.\n\n" &
+             "Examples:\n" &
+             "  claw user invite nc:3                    # customer, 1 use\n" &
+             "  claw user invite nc:3 boss               # boss role, 1 use\n" &
+             "  claw user invite nc:3 staff 5            # staff role, 5 uses\n" &
+             "  claw user invite nc:3 customer 1 Lexi Alice"
+
+    # Sub-sub-command: `user invite list`
+    if args[1] == "list":
+      let workspace = cfg.workspacePath()
+      let invites = loadInvites(workspace)
+      if invites.len == 0:
+        return "No invitation codes on file."
+      type Row = tuple[code, role, issuedBy, agent, remaining, created, used: string]
+      var rows: seq[Row]
+      for inv in invites.values:
+        let remaining =
+          if inv.maxUses < 0: "∞"
+          else: $inv.maxUses
+        let created =
+          if inv.createdAt > 0:
+            fromUnix(inv.createdAt).utc.format("yyyy-MM-dd HH:mm")
+          else: "—"
+        let used =
+          if inv.usedAt > 0:
+            fromUnix(inv.usedAt).utc.format("MM-dd HH:mm") &
+            (if inv.usedBy.len > 0: " by " & inv.usedBy else: "")
+          else: "—"
+        rows.add((
+          code: inv.code,
+          role: inv.role,
+          issuedBy: (if inv.issuedBy.len > 0: inv.issuedBy else: "—"),
+          agent: (if inv.agentName.len > 0: inv.agentName else: "—"),
+          remaining: remaining,
+          created: created,
+          used: used
+        ))
+      if asJson:
+        var arr = newJArray()
+        for r in rows:
+          arr.add(%*{"code": r.code, "role": r.role, "issued_by": r.issuedBy,
+                     "agent": r.agent, "remaining_uses": r.remaining,
+                     "created": r.created, "used": r.used})
+        return $arr
+      var res = "CODE        ROLE       ISSUER  AGENT        USES  CREATED            USED\n"
+      for r in rows:
+        res.add(r.code.alignLeft(11) & " " &
+                r.role.alignLeft(10) & " " &
+                r.issuedBy.alignLeft(7) & " " &
+                r.agent.alignLeft(12) & " " &
+                r.remaining.alignLeft(5) & " " &
+                r.created.alignLeft(18) & " " &
+                r.used & "\n")
+      return res.strip
+
+    # Generate a new invite.
+    let issuerAlias = args[1]
+    if not issuerAlias.startsWith("nc:"):
+      return "Error: issuer must be an nc:id (e.g. nc:3). Use `user list` to find one."
+    let issuerID = parseAlias(issuerAlias)
+    if uint32(issuerID) == 0 or not graph.entities.hasKey(issuerID):
+      return "Error: issuer " & issuerAlias & " not found in graph."
+
+    # Positional args: [role] [uses] [agent] [customer]
+    var role = if args.len >= 3: args[2] else: "customer"
+    var uses = 1
+    if args.len >= 4:
+      try: uses = parseInt(args[3])
+      except: discard
+    var agentName = if args.len >= 5: args[4] else: cfg.agents.named[0].name
+    var customer = if args.len >= 6: args[5] else: ""
+
+    # Mint the code and persist.
+    randomize()
+    let workspace = cfg.workspacePath()
+    var invites = loadInvites(workspace)
+    var code = generateInviteCode()
+    while invites.hasKey(code): code = generateInviteCode()
+    let now = getTime().toUnix()
+    invites[code] = InviteConstraint(
+      code: code,
+      agentName: agentName,
+      customerName: customer,
+      role: role,
+      maxUses: uses,
+      expiry: 0,
+      pinless: false,
+      issuedBy: issuerAlias,
+      createdAt: now,
+      usedBy: "",
+      usedAt: 0
+    )
+    saveInvites(workspace, invites)
+    result = "Invite code: " & code & "\n"
+    result.add("  role:     " & role & "\n")
+    result.add("  agent:    " & agentName & "\n")
+    result.add("  uses:     " & $uses & "\n")
+    result.add("  issuer:   " & issuerAlias & "\n")
+    if customer.len > 0:
+      result.add("  customer: " & customer & "\n")
+    result.add("\nA guest redeems this by sending the code (e.g. '" & code &
+               "') to agent '" & agentName & "' via any channel.")
+    return
 
   return "Unknown user command: " & subcmd
 

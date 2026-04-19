@@ -1,4 +1,4 @@
-import std/[os, json, strutils, tables, asyncdispatch]
+import std/[os, json, strutils, tables, asyncdispatch, times]
 import types
 import ../config
 import ../agent/[invites, cortex]
@@ -89,7 +89,14 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
     
   relations[newID] = rel
   saveRelations(workspace, relations)
-  
+
+  # Stamp provenance (who actually redeemed this, and when). t.senderID
+  # is the channel-level ID of the speaker. For full nc:id provenance
+  # we'd need the graph resolver wired here too — logging the channel
+  # ID for now gives operators enough to trace.
+  inv.usedBy = t.channel & ":" & t.senderID
+  inv.usedAt = getTime().toUnix()
+
   # Update constraints
   if inv.maxUses > 0:
     inv.maxUses -= 1
@@ -97,8 +104,11 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
       allInvites.del(code) # Exhausted
     else:
       allInvites[code] = inv
+  elif inv.maxUses < 0:
+    # Unlimited — keep the updated usedBy/usedAt.
+    allInvites[code] = inv
   saveInvites(workspace, allInvites)
-  
+
   return "Successfully redeemed Pin Code! The user '" & inv.customerName & "' is now authenticated as a Customer for this Agent. You may now assist them normally."
 
 proc newRedeemInviteTool*(): RedeemInviteTool =

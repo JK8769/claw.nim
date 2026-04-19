@@ -9,6 +9,11 @@ type
     maxUses*: int # -1 means unlimited
     expiry*: int64 # Unix timestamp, 0 means no expiry
     pinless*: bool # If true, any user messaging the agent gets this invite auto-applied
+    # Provenance (who invited who):
+    issuedBy*: string    ## nc:id of the user that created this code
+    createdAt*: int64    ## Unix timestamp when the code was minted
+    usedBy*: string      ## nc:id that redeemed it (last redemption, if multi-use)
+    usedAt*: int64       ## Unix timestamp of last redemption
 
 proc loadInvites*(workspace: string): Table[string, InviteConstraint] =
   let path = workspace / "INVITES.json"
@@ -23,7 +28,11 @@ proc loadInvites*(workspace: string): Table[string, InviteConstraint] =
         role: entry{"role"}.getStr("guest"),
         maxUses: entry{"maxUses"}.getInt(-1),
         expiry: entry{"expiry"}.getBiggestInt(0),
-        pinless: entry{"pinless"}.getBool(false)
+        pinless: entry{"pinless"}.getBool(false),
+        issuedBy: entry{"issuedBy"}.getStr(""),
+        createdAt: entry{"createdAt"}.getBiggestInt(0),
+        usedBy: entry{"usedBy"}.getStr(""),
+        usedAt: entry{"usedAt"}.getBiggestInt(0)
       )
       if inv.code != "":
         result[inv.code] = inv
@@ -41,7 +50,11 @@ proc saveInvites*(workspace: string, invites: Table[string, InviteConstraint]) =
       "role": inv.role,
       "maxUses": inv.maxUses,
       "expiry": inv.expiry,
-      "pinless": inv.pinless
+      "pinless": inv.pinless,
+      "issuedBy": inv.issuedBy,
+      "createdAt": inv.createdAt,
+      "usedBy": inv.usedBy,
+      "usedAt": inv.usedAt
     })
   writeFile(path, node.pretty())
 
