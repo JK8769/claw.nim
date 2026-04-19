@@ -13,7 +13,7 @@
 ##
 ## The agent itself (trust 100) can always store and recall anything.
 
-import std/[json, tables, asyncdispatch, strformat, strutils]
+import std/[json, os, tables, asyncdispatch, strformat, strutils]
 import types
 import ../agent/memory
 
@@ -116,7 +116,8 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
                     else: mvPrivate
     let actual = downgradeForTrust(requested, t.trustLevel)
     try:
-      t.store.store(t.senderID, key, content, parseCategory(catStr), actual)
+      t.store.store(t.senderID, key, content, parseCategory(catStr),
+                    actual, t.trustLevel)
       let note = if actual != requested:
         fmt" (visibility downgraded {requested} → {actual} for trust {t.trustLevel})"
       else: ""
@@ -158,8 +159,19 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
     if not args.hasKey("key") or args["key"].getStr() == "":
       return "Error: 'key' is required for forget"
     let key = args["key"].getStr()
-    if t.store.forget(t.senderID, key, t.trustLevel):
-      return fmt"Forgot '{key}'"
+    # Tombstone rather than hard delete — the JSONL keeps the entry but
+    # marks it deleted so future audits can answer "who forgot what, when".
+    # Search across all sender files since the forget request may target
+    # memory authored by someone else (if requester has sufficient trust).
+    var anyFound = false
+    if dirExists(t.store.sendersDir):
+      for kind, path in walkDir(t.store.sendersDir):
+        if kind != pcFile or not path.endsWith(".jsonl"): continue
+        let senderID = path.lastPathPart()[0 ..< path.lastPathPart().len - ".jsonl".len]
+        if t.store.forget(t.senderID, senderID, key, t.trustLevel):
+          anyFound = true
+    if anyFound:
+      return fmt"Forgot '{key}' (tombstoned)"
     return fmt"No matching memory (or insufficient trust): {key}"
 
   else:

@@ -45,6 +45,15 @@ type
     visibility*: MemoryVisibility
     senderID*: string          ## Who was talking when this was stored
     timestamp*: float64
+    # Provenance — the trust level of the storer at write time. Lets the
+    # agent judge how seriously to take a fact ("this came from a trust-10
+    # guest; verify before acting"). Zero means legacy/unknown.
+    storedAtTrust*: int
+    # Tombstone — forget doesn't erase, it marks. Preserves audit trail
+    # ("who deleted what and when"). Recall skips tombstoned entries.
+    deleted*: bool
+    deletedBy*: string         ## requester ID that issued the forget
+    deletedAt*: float64
 
   MemoryStore* = ref object
     workspace*: string         ## Per-agent office dir
@@ -106,10 +115,12 @@ proc senderFile(ms: MemoryStore, senderID: string): string =
 
 proc store*(ms: MemoryStore, senderID, key, content: string,
             category: MemoryCategory = mcCore,
-            visibility: MemoryVisibility = mvPrivate) =
+            visibility: MemoryVisibility = mvPrivate,
+            storedAtTrust: int = 0) =
   ## Appends an entry to the sender's JSONL. Visibility is NOT downgraded
   ## here — caller (the tool) is responsible for applying trust-based
-  ## downgrade so the agent's own writes stay un-clamped.
+  ## downgrade so the agent's own writes stay un-clamped. `storedAtTrust`
+  ## is recorded for provenance; pass the current requester's trust level.
   let path = ms.senderFile(senderID)
   let entry = MemoryEntry(
     key: key,
@@ -117,7 +128,8 @@ proc store*(ms: MemoryStore, senderID, key, content: string,
     category: category,
     visibility: visibility,
     senderID: senderID,
-    timestamp: epochTime()
+    timestamp: epochTime(),
+    storedAtTrust: storedAtTrust
   )
   let f = open(path, fmAppend)
   f.writeLine($(%entry))
@@ -144,10 +156,12 @@ proc recall*(ms: MemoryStore, requesterID: string, trustLevel: int,
   ## Ordering: newest first. Query (if given) is a case-insensitive substring
   ## match against key + content. Requester sees entries stored by themselves
   ## regardless of visibility (you can always read what you wrote), plus
-  ## entries of sufficient visibility stored by others.
+  ## entries of sufficient visibility stored by others. Tombstoned entries
+  ## are always skipped.
   let entries = ms.readAllEntries()
   let qLow = query.toLowerAscii
   for e in entries:
+    if e.deleted: continue
     let authorised = (e.senderID == requesterID) or canView(e.visibility, trustLevel)
     if not authorised: continue
     if qLow.len > 0 and qLow notin e.content.toLowerAscii and qLow notin e.key.toLowerAscii:
@@ -156,27 +170,40 @@ proc recall*(ms: MemoryStore, requesterID: string, trustLevel: int,
   result.sort(proc(a, b: MemoryEntry): int = cmp(b.timestamp, a.timestamp))
   if result.len > limit: result = result[0 ..< limit]
 
-proc forget*(ms: MemoryStore, senderID, key: string, trustLevel: int): bool =
-  ## Remove one entry by key. Only the entry's own sender OR a sufficiently
-  ## trusted requester (>= 70) may delete. Rewrites the JSONL without that line.
+proc forget*(ms: MemoryStore, requesterID, senderID, key: string,
+             trustLevel: int): bool =
+  ## Tombstone — marks the entry deleted instead of removing the line.
+  ## Preserves audit trail ("who deleted what and when") and lets a future
+  ## operator reason about what an agent was asked to forget. Requires
+  ## trust >= 70 (Staff+) OR that the entry has visibility <= shared AND
+  ## was authored by the requester (you can retract your own public/shared
+  ## musings, but not your own private/secret entries — those need a
+  ## trusted operator to clear). Returns true if a live entry was found.
   let path = ms.senderFile(senderID)
   if not fileExists(path): return false
-  var kept: seq[string]
+  var rewritten: seq[string]
   var found = false
+  let now = epochTime()
   for line in lines(path):
     let trimmed = line.strip()
     if trimmed.len == 0: continue
     try:
-      let e = parseJson(trimmed).to(MemoryEntry)
-      let authorised = e.senderID == senderID or trustLevel >= 70
-      if e.key == key and authorised:
+      var e = parseJson(trimmed).to(MemoryEntry)
+      let selfRetract = e.senderID == requesterID and
+                        e.visibility in {mvPublic, mvShared}
+      let authorised = trustLevel >= 70 or selfRetract
+      if e.key == key and authorised and not e.deleted:
+        e.deleted = true
+        e.deletedBy = requesterID
+        e.deletedAt = now
+        rewritten.add($(%e))
         found = true
-        continue
-      kept.add(line)
+      else:
+        rewritten.add(line)
     except CatchableError:
-      kept.add(line)  # preserve unparsable lines rather than losing data
+      rewritten.add(line)  # preserve unparsable lines rather than losing data
   if found:
-    writeFile(path, kept.join("\n") & (if kept.len > 0: "\n" else: ""))
+    writeFile(path, rewritten.join("\n") & "\n")
   found
 
 # ── Legacy MEMORY.md (read-only backward compat) ──────────────────
@@ -209,8 +236,13 @@ proc getMemoryContext*(ms: MemoryStore, requesterID: string,
   if entries.len > 0:
     var lines = @["## Recent Memory"]
     for e in entries:
-      lines.add("- [" & e.key & "] (" & $e.category & "/" & $e.visibility &
-                "): " & e.content)
+      var meta = $e.category & "/" & $e.visibility
+      # Surface provenance when it's materially useful — a fact stored by
+      # a low-trust source deserves skepticism. Skip the annotation for
+      # legacy entries (trust 0) and for agent-authored high-trust writes.
+      if e.storedAtTrust > 0 and e.storedAtTrust < 70:
+        meta.add(", from trust " & $e.storedAtTrust)
+      lines.add("- [" & e.key & "] (" & meta & "): " & e.content)
     parts.add(lines.join("\n"))
 
   # Legacy MEMORY.md — only surfaced if caller has shared-level access.
