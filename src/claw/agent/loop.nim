@@ -41,6 +41,9 @@ type
     appID*: string
     unionID*: string  ## Feishu tenant-stable ID (cross-app). Resolver
                       ## uses it when the per-app key misses.
+    userID*: string   ## Feishu tenant-internal employee ID. Only present
+                      ## for tenant members (not external invitees); used
+                      ## as a third resolver fallback.
     userMessage*: string
     defaultResponse*: string
     enableSummary*: bool
@@ -653,16 +656,20 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
     channelKey, opts.senderID, agentId)
   var entityID = resolvedID
 
-  # Feishu cross-app fallback: tenant-stable `union_id` matches the same
-  # human across every app the bind never touched directly.
-  if uint32(entityID) == 0 and opts.channel == "feishu" and
-     opts.unionID.len > 0:
-    let (uID, _) = graph.resolveUserGraph(
-      "feishu:union", opts.unionID, agentId)
-    if uint32(uID) > 0:
-      # Found via union — stamp this app's per-app (channelKey, senderID)
-      # onto the entity so subsequent messages hit the fast path.
-      entityID = uID
+  # Feishu cross-app fallback chain: union_id (per-tenant) → user_id
+  # (tenant-internal employee ID) → auto-register. Fast-path caches
+  # the per-app open_id on any hit.
+  if uint32(entityID) == 0 and opts.channel == "feishu":
+    if opts.unionID.len > 0:
+      let (uID, _) = graph.resolveUserGraph(
+        "feishu:union", opts.unionID, agentId)
+      if uint32(uID) > 0: entityID = uID
+    if uint32(entityID) == 0 and opts.userID.len > 0:
+      let (uID, _) = graph.resolveUserGraph(
+        "feishu:user", opts.userID, agentId)
+      if uint32(uID) > 0: entityID = uID
+    if uint32(entityID) > 0:
+      # Stamp the per-app key for future fast-path lookups.
       var ent = graph.entities[entityID]
       ent.identifiers[channelKey] = opts.senderID
       graph.entities[entityID] = ent
@@ -747,14 +754,18 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       let chKey = channelIdentifierKey(opts.channel, opts.appID)
       let (resolvedID, annotOpt) = al.contextBuilder.graph.resolveUserGraph(chKey, opts.senderID, agentId)
       var entityID = resolvedID
-      # Feishu cross-app fallback: try union_id when the per-app key
-      # misses, then stamp the per-app key for future fast-path lookups.
-      if uint32(entityID) == 0 and opts.channel == "feishu" and
-         opts.unionID.len > 0:
-        let (uID, _) = al.contextBuilder.graph.resolveUserGraph(
-          "feishu:union", opts.unionID, agentId)
-        if uint32(uID) > 0:
-          entityID = uID
+      # Feishu cross-app fallback chain: union_id → user_id → register.
+      # Stamps the per-app key on any hit for fast-path future lookups.
+      if uint32(entityID) == 0 and opts.channel == "feishu":
+        if opts.unionID.len > 0:
+          let (uID, _) = al.contextBuilder.graph.resolveUserGraph(
+            "feishu:union", opts.unionID, agentId)
+          if uint32(uID) > 0: entityID = uID
+        if uint32(entityID) == 0 and opts.userID.len > 0:
+          let (uID, _) = al.contextBuilder.graph.resolveUserGraph(
+            "feishu:user", opts.userID, agentId)
+          if uint32(uID) > 0: entityID = uID
+        if uint32(entityID) > 0:
           var ent = al.contextBuilder.graph.entities[entityID]
           ent.identifiers[chKey] = opts.senderID
           al.contextBuilder.graph.entities[entityID] = ent
@@ -995,6 +1006,7 @@ proc processMessage*(al: AgentLoop, msg: InboundMessage): Future[string] {.async
     replyToMessageID: msg.metadata.getOrDefault("message_id", ""),
     appID: msg.metadata.getOrDefault("app_id", ""),
     unionID: msg.metadata.getOrDefault("union_id", ""),
+    userID: msg.metadata.getOrDefault("user_id", ""),
     userMessage: msg.content,
     defaultResponse: "I've completed processing but have no response to give.",
     enableSummary: true,

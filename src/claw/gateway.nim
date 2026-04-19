@@ -490,12 +490,18 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
             if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
               msg.channel & ":" & msg.metadata["app_id"]
             else: msg.channel
-          # Tenant-scoped identifiers — let Feishu's union_id cover every
-          # app in the same tenant with a single bind.
+          # Stamp every Feishu identifier the event carries, so the
+          # resolver recognizes this user across any app, DM, or group
+          # chat in the same tenant without a follow-up bind:
+          #   feishu:<app_id> = open_id   (per-app)
+          #   feishu:union    = union_id  (per-tenant, cross-app)
+          #   feishu:user     = user_id   (tenant-internal employee ID)
           var extras: seq[(string, string)]
           if msg.channel == "feishu":
             let unionID = msg.metadata.getOrDefault("union_id", "")
             if unionID.len > 0: extras.add(("feishu:union", unionID))
+            let userID = msg.metadata.getOrDefault("user_id", "")
+            if userID.len > 0: extras.add(("feishu:user", userID))
           let bound = tryBind(g, workspace, channelKey,
                               msg.sender_id, plainContent, extras)
           if bound.isSome:
@@ -522,12 +528,18 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
               else: msg.channel
             var senderID = WorldEntityID(0)
             let (rid, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-            if uint32(rid) > 0: senderID = rid
-            elif msg.channel == "feishu" and
-                 msg.metadata.getOrDefault("union_id", "").len > 0:
-              let (uid, _) = g.resolveUserGraph(
-                "feishu:union", msg.metadata["union_id"])
-              if uint32(uid) > 0: senderID = uid
+            if uint32(rid) > 0:
+              senderID = rid
+            elif msg.channel == "feishu":
+              let unionID = msg.metadata.getOrDefault("union_id", "")
+              if unionID.len > 0:
+                let (uid, _) = g.resolveUserGraph("feishu:union", unionID)
+                if uint32(uid) > 0: senderID = uid
+              if uint32(senderID) == 0:
+                let userID = msg.metadata.getOrDefault("user_id", "")
+                if userID.len > 0:
+                  let (uid, _) = g.resolveUserGraph("feishu:user", userID)
+                  if uint32(uid) > 0: senderID = uid
             var hasRel = false
             if uint32(senderID) > 0 and g.nameIndex.hasKey(agentName):
               let aID = g.nameIndex[agentName]
