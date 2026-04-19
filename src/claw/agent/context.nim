@@ -419,7 +419,7 @@ proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string
     let rel = if cb.relations.hasKey(userID):
         cb.relations[userID]
       else:
-        Relationship(name: userID, identity: $urGuest, trustLevel: 10, etiquette: "Be formal and protective.", kind: ekPerson)
+        Relationship(name: userID, identity: $urGuest, trustLevel: 10, etiquette: "Be formal and protective.", kind: ekUnknown)
 
     sb.add("## User Relationship (Legacy)\n")
     sb.add("- Identity: " & rel.identity & "\n")

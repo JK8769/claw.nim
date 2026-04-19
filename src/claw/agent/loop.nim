@@ -787,17 +787,20 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
                 agentId = id
                 break
             
+            # Invite carries the customer's human name → ekPerson.
             let newEntityID = al.contextBuilder.graph.addUserToGraph(
-              newID, 
-              opts.senderID, 
-              parseEnum[UserRole](inv.role, urGuest), 
-              agentId, 
-              50
+              newID,
+              opts.senderID,
+              parseEnum[UserRole](inv.role, urGuest),
+              agentId,
+              50,
+              ekPerson
             )
             logicalUserID = toAlias(newEntityID)
           else:
-            # Legacy Onboarding
-            var kind = ekPerson
+            # Legacy Onboarding — kind defaults to unknown; only NKN
+            # subname pattern is strong evidence (service/AI agent).
+            var kind = ekUnknown
             if opts.channel == "nkn" and opts.senderID.contains("."):
               kind = ekAI
 
@@ -833,10 +836,11 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       
       # Ensure Lexi keeps a record of who she's talking to
       if not isKnown:
-        # Determine kind based on heuristics
-        var kind = ekPerson
+        # Default: unknown. Only classify as AI on strong evidence
+        # (NKN subname means a service/agent address).
+        var kind = ekUnknown
         if opts.channel == "nkn" and opts.senderID.contains("."):
-          kind = ekAI # Has subname, likely an agent
+          kind = ekAI
         
         let newRel = Relationship(
           name: logicalUserID,

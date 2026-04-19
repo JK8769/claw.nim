@@ -1032,13 +1032,18 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     s & spaces(max(0, width - s.runeLen))
 
   if subcmd == "list":
-    # Identity-level view only. Trust is per-edge (agent → person), so a
-    # single TRUST cell would collapse an N×M matrix into a lossy max.
-    # For trust, use `claw user trust`; for one user's edges, `user show`.
-    type Row = tuple[ncId, name, perm, tier, relRole, idents: string]
+    # "User" is a UX framing — anyone interacting with the system,
+    # whatever their entity kind. Includes Persons, Unknown (guests
+    # we haven't classified yet), Services, and external AIs (ekAI
+    # that isn't one of OUR declared agents — those show in `agent
+    # list` instead). Skips Corporate and Invite entities.
+    var ourAgents: HashSet[string]
+    for a in cfg.agents.named: ourAgents.incl(a.name)
+    type Row = tuple[ncId, name, kind, perm, tier, relRole, idents: string]
     var rows: seq[Row]
     for id, ent in graph.entities.pairs:
-      if ent.kind != ekPerson: continue
+      if ent.kind in {ekCorporate, ekInvite}: continue
+      if ent.kind == ekAI and ent.name in ourAgents: continue
       var identParts: seq[string]
       for chan, sid in ent.identifiers.pairs:
         var shown = sid
@@ -1047,6 +1052,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       rows.add((
         ncId: toAlias(id),
         name: ent.name,
+        kind: $ent.kind,
         perm: userPermission(ent),
         tier: entityTier(cfg, graph, ent),
         relRole: userRelRole(graph, id),
@@ -1058,30 +1064,34 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       var arr = newJArray()
       for r in rows:
         arr.add(%*{"nc_id": r.ncId, "name": r.name,
+                   "kind": r.kind,
                    "permission": r.perm, "tier": r.tier,
                    "relationship_role": r.relRole,
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
-      return "No human identities in this company yet. Guests auto-register\n" &
-             "on first message; agents are tracked via `claw agent list`."
-    var res = "NC:ID  NAME                  PERMISSION   TIER  ROLE(rel)   IDENTIFIERS\n"
+      return "No users in this company yet. First-contact guests auto-\n" &
+             "register on their first message; our own agents are shown\n" &
+             "by `claw agent list`."
+    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   IDENTIFIERS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
       var idents = r.idents
-      if idents.len > 40: idents = idents[0 ..< 38] & "…"
+      if idents.len > 35: idents = idents[0 ..< 33] & "…"
       let perm = (if r.perm.len > 0: r.perm else: "—")
       let relRole = (if r.relRole.len > 0: r.relRole else: "—")
       res.add(pad(r.ncId, 6) & " " &
               pad(name, 21) & " " &
+              pad(r.kind, 8) & " " &
               pad(perm, 12) & " " &
               pad(r.tier, 5) & " " &
               pad(relRole, 11) & " " &
               idents & "\n")
-    res.add("\n" & $rows.len & " user(s). TIER = int(ernal) / ext(ernal) / ? (unknown).\n" &
-            "Use `claw user trust` for the edge graph, or\n" &
-            "`claw user show <nc:id>` for one user.\n")
+    res.add("\n" & $rows.len & " user(s). KIND = Person / AI / Service / Unknown.\n" &
+            "Unknown = auto-registered guest, classify with\n" &
+            "`claw user edit <nc:id> kind <Person|AI|Service>`.\n" &
+            "Use `claw user trust` for edges, `user show <nc:id>` for detail.\n")
     return res
 
   if subcmd == "trust":
@@ -1104,7 +1114,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         for link in links:
           if not graph.entities.hasKey(link.targetID): continue
           let p = graph.entities[link.targetID]
-          if p.kind != ekPerson: continue
+          # Edges to corporate/invite entities aren't "users" — skip.
+          if p.kind in {ekCorporate, ekInvite}: continue
           var trust = 0
           var role = ""
           var eti = ""
@@ -1197,7 +1208,12 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
 
     var res = alias & "\n"
     res.add("  name:        " & ent.name & "\n")
-    res.add("  kind:        " & $ent.kind & "\n")
+    res.add("  kind:        " & $ent.kind &
+            (if ent.kind == ekUnknown:
+               "  (first-contact guest — classify with `user edit " & alias &
+               " kind Person|AI|Service`)"
+             else: "") & "\n")
+    res.add("  tier:        " & entityTier(cfg, graph, ent) & "\n")
     if ent.role.len > 0:
       res.add("  permission:  " & ent.role & "\n")
     else:
@@ -1270,15 +1286,17 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
 
   if subcmd == "edit":
     # Unified syntax: `claw user edit <nc:id> <field> <value>`.
-    # For `name`, also cascades to `reportsTo`/`serves` references in
-    # agent blocks so the graph stays consistent after `co update`.
+    # Works on any interactive entity (Person, AI, Unknown) — not just
+    # humans. First-contact guests arrive with kind=Unknown; `kind` is
+    # a field so operators can promote them once identified.
     if args.len < 4:
       return "Usage: claw user edit <nc:id> <field> <value>\n" &
-             "Fields: name, permission, jobTitle.\n" &
+             "Fields: name, permission, jobTitle, kind.\n" &
              "Examples:\n" &
              "  claw user edit nc:4 name Jerry\n" &
              "  claw user edit nc:5 permission Customer\n" &
-             "  claw user edit nc:5 jobTitle \"Fleet Owner\"\n" &
+             "  claw user edit nc:7 kind Person          # classify a guest\n" &
+             "  claw user edit nc:7 kind AI              # it's a bot\n" &
              "Run `claw co update` afterwards to regenerate BASE.json."
     let alias = args[1]
     if not alias.startsWith("nc:"):
@@ -1287,9 +1305,9 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     if uint32(id) == 0 or not graph.entities.hasKey(id):
       return "Error: " & alias & " not found in graph."
     let ent = graph.entities[id]
-    if ent.kind != ekPerson:
-      return "Error: " & alias & " is not a Person (kind=" & $ent.kind &
-             "). Use `claw agent edit` for AI entities."
+    if ent.kind in {ekCorporate, ekInvite}:
+      return "Error: " & alias & " is a " & $ent.kind & " entity — not a user.\n" &
+             "Users are people, agents, services, or still-unknown guests."
     let fieldRaw = args[2]
     let value = args[3].strip()
     let fieldMap = {
@@ -1297,12 +1315,13 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       "permission": "permission",
       "perm": "permission",
       "jobtitle": "jobTitle",
-      "title": "jobTitle"
+      "title": "jobTitle",
+      "kind": "kind"
     }.toTable
     let fl = fieldRaw.toLowerAscii
     if not fieldMap.hasKey(fl):
-      return "Error: unsupported field \"" & fieldRaw & "\" for a Person.\n" &
-             "Supported: name, permission, jobTitle."
+      return "Error: unsupported field \"" & fieldRaw & "\" for a user.\n" &
+             "Supported: name, permission, jobTitle, kind."
     let field = fieldMap[fl]
     if value.len == 0:
       return "Error: value must not be empty."
@@ -1314,6 +1333,31 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       return "Error: no BASE.nims at " & baseNims
     var lines = readFile(baseNims).splitLines()
 
+    if field == "kind":
+      # Graph-only mutation — the DSL has no `kind` line (kind is
+      # inferred from `person "X":` vs `agent "X":` block header).
+      # So we update the graph directly, then let operators optionally
+      # promote the entity from ekUnknown to a declared DSL block via
+      # `claw user register` if they want to persist the classification.
+      var k: EntityKind
+      try:
+        k = parseEnum[EntityKind](value.capitalizeAscii)
+      except:
+        return "Error: invalid kind \"" & value & "\".\n" &
+               "Valid: Person, AI, Service, Unknown."
+      if k in {ekCorporate, ekInvite}:
+        return "Error: " & $k & " is not a user kind. Use Person/AI/Service/Unknown."
+      if k == ent.kind:
+        return "No change: " & alias & ".kind is already " & $k & "."
+      var g = graph
+      var e = g.entities[id]
+      e.kind = k
+      g.entities[id] = e
+      g.saveWorld()
+      return "Classified " & alias & ": kind " & $ent.kind & " → " & $k & "\n" &
+             "Note: kind lives in BASE.json only — `co update` won't touch it.\n" &
+             "Use `claw user register` to materialise the entity in BASE.nims."
+
     if field == "name":
       if value == ent.name:
         return "No change: name is already \"" & value & "\"."
@@ -1324,30 +1368,63 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                  ") is already named \"" & value & "\". Use `user merge` to\n" &
                  "fold " & alias & " into " & toAlias(otherID) & "."
       let counts = cascadeNameRefs(lines, ent.name, value)
-      if counts.person + counts.agent + counts.reports + counts.serves == 0:
-        return "Error: no references to \"" & ent.name & "\" in BASE.nims. The\n" &
-               "graph knows " & alias & " by that name but the DSL source doesn't."
+      if counts.person + counts.agent + counts.reports + counts.serves > 0:
+        writeFile(baseNims, lines.join("\n"))
+        return "Renamed " & alias & ": \"" & ent.name & "\" → \"" & value & "\"\n" &
+               "  person block:    " & $counts.person & "\n" &
+               "  agent block:     " & $counts.agent & "\n" &
+               "  reportsTo refs:  " & $counts.reports & "\n" &
+               "  serves refs:     " & $counts.serves & "\n" &
+               "Run `claw co update` to regenerate BASE.json."
+      # Entity isn't in BASE.nims — must be a runtime-added guest.
+      # Rename directly in the graph so follow-up CLI lookups work.
+      var g = graph
+      var e = g.entities[id]
+      e.name = value
+      g.entities[id] = e
+      if g.nameIndex.hasKey(ent.name): g.nameIndex.del(ent.name)
+      g.nameIndex[value] = id
+      g.saveWorld()
+      return "Renamed " & alias & " (runtime-only): \"" & ent.name & "\" → \"" & value & "\"\n" &
+             "Entity is not declared in BASE.nims — graph updated directly.\n" &
+             "Use `claw user register " & alias & "` if you want the rename\n" &
+             "persisted across `co update`."
+
+    # Try a BASE.nims edit first — only works if the entity has a
+    # `person "<name>":` block. Runtime-only entities (ekUnknown,
+    # auto-registered ekAI) fall through to a graph-direct update.
+    let (bStart, bEnd) = findBlock(lines, "person", ent.name)
+    if bStart >= 0:
+      let (changed, old) = rewriteBlockField(lines, bStart, bEnd, field, value)
+      if not changed:
+        return "No change: " & alias & "." & field & " is already \"" & value & "\"."
       writeFile(baseNims, lines.join("\n"))
-      return "Renamed " & alias & ": \"" & ent.name & "\" → \"" & value & "\"\n" &
-             "  person block:    " & $counts.person & "\n" &
-             "  reportsTo refs:  " & $counts.reports & "\n" &
-             "  serves refs:     " & $counts.serves & "\n" &
+      let verb = if old.len == 0: "Added" else: "Set"
+      let rhs = if old.len == 0: " = \"" & value & "\""
+                else: ": \"" & old & "\" → \"" & value & "\""
+      return verb & " " & alias & "." & field & rhs & "\n" &
              "Run `claw co update` to regenerate BASE.json."
 
-    # Any other field — rewrite a line inside `person "<name>":`.
-    let (bStart, bEnd) = findBlock(lines, "person", ent.name)
-    if bStart < 0:
-      return "Error: no `person \"" & ent.name & "\":` block in BASE.nims.\n" &
-             "Use `claw user register` to reify " & alias & " first."
-    let (changed, old) = rewriteBlockField(lines, bStart, bEnd, field, value)
-    if not changed:
+    # Graph-only path (entity not in BASE.nims).
+    var g = graph
+    var e = g.entities[id]
+    var oldVal = ""
+    case field:
+    of "permission":
+      oldVal = e.role; e.role = value
+    of "jobTitle":
+      oldVal = e.jobTitle; e.jobTitle = value
+    else:
+      return "Error: graph-only edit doesn't support field \"" & field & "\" yet."
+    if oldVal == value:
       return "No change: " & alias & "." & field & " is already \"" & value & "\"."
-    writeFile(baseNims, lines.join("\n"))
-    let verb = if old.len == 0: "Added" else: "Set"
-    let rhs = if old.len == 0: " = \"" & value & "\""
-              else: ": \"" & old & "\" → \"" & value & "\""
-    return verb & " " & alias & "." & field & rhs & "\n" &
-           "Run `claw co update` to regenerate BASE.json."
+    g.entities[id] = e
+    g.saveWorld()
+    return "Set " & alias & "." & field & " (graph-only): " &
+           (if oldVal.len == 0: "→ \"" & value & "\""
+            else: "\"" & oldVal & "\" → \"" & value & "\"") & "\n" &
+           "Entity is not declared in BASE.nims — `co update` won't touch it.\n" &
+           "Use `claw user register " & alias & "` to persist it."
 
   if subcmd == "register":
     # Reify runtime-added Person entities into BASE.nims so they survive

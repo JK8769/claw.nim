@@ -18,6 +18,10 @@ type
     ekCorporate = "Corporate"
     ekInvite = "Invite"
     ekService = "Service"
+    ekUnknown = "Unknown"   ## First-contact default until evidence
+                            ## (invite redemption, channel metadata,
+                            ## or CLI) promotes the entity to Person,
+                            ## AI, or Service.
 
   RelationshipAnnotation* = object
     role*: UserRole
@@ -652,14 +656,20 @@ proc analyzeSentiment*(input: string): (float, float) =
   return (v, a)
 
 
-proc addUserToGraph*(graph: WorldGraph, name, nknAddr: string, role: UserRole, targetAgentID: WorldEntityID, trustLevel: int = 50): WorldEntityID =
-  ## Adds a new person to the graph and links them to an agent.
+proc addUserToGraph*(graph: WorldGraph, name, nknAddr: string,
+                     role: UserRole, targetAgentID: WorldEntityID,
+                     trustLevel: int = 50,
+                     kind: EntityKind = ekUnknown): WorldEntityID =
+  ## Adds a new user-entity to the graph and links them to an agent.
+  ## Kind defaults to `ekUnknown` — callers should pass `ekPerson` /
+  ## `ekAI` / `ekService` only when they have evidence (invite
+  ## redemption declares a person; NKN subname suffix suggests AI; etc.)
   result = WorldEntityID(graph.nextID)
   graph.nextID += 1
-  
+
   var ent = WorldEntity(
     id: result,
-    kind: ekPerson,
+    kind: kind,
     name: name,
     identifiers: { "nkn": nknAddr }.toTable
   )
