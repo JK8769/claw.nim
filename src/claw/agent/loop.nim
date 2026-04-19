@@ -686,8 +686,16 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         agentId = al.contextBuilder.graph.nameIndex[activeRecipient]
         
       let (resolvedID, annotOpt) = al.contextBuilder.graph.resolveUserGraph(opts.channel, opts.senderID, agentId)
-      if uint32(resolvedID) > 0:
-        logicalUserID = toAlias(resolvedID)
+      var entityID = resolvedID
+      # Name-based fallback — catches CLI / first-contact cases where the
+      # sender isn't yet mapped via a channel identifier. Matches the
+      # identitySessionKey derivation and resolveRequesterTrust, so
+      # session key / speaker / trust all agree on the same nc:id.
+      if uint32(entityID) == 0 and
+         al.contextBuilder.graph.nameIndex.hasKey(opts.senderID):
+        entityID = al.contextBuilder.graph.nameIndex[opts.senderID]
+      if uint32(entityID) > 0:
+        logicalUserID = toAlias(entityID)
         isKnown = true
         
         # Calculate user role for tool execution context
@@ -695,7 +703,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         if annotOpt.isSome:
           toolRole = annotOpt.get().role
         else:
-          let ent = al.contextBuilder.graph.entities[resolvedID]
+          let ent = al.contextBuilder.graph.entities[entityID]
           if ent.role.toLowerAscii in ["boss", "master", "admin", "superadmin"]:
             toolRole = if ent.role.toLowerAscii == "boss" or ent.role.toLowerAscii == "superadmin": urBoss else: urMaster
         opts.userRole = $toolRole
@@ -841,7 +849,8 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
 
     let historyLabel = if logicalUserID != "": logicalUserID else: opts.senderID
-    al.sessions.addMessage(opts.sessionKey, "user", historyLabel & ": " & opts.userMessage)
+    al.sessions.addWithSpeaker(opts.sessionKey, "user",
+      historyLabel & ": " & opts.userMessage, logicalUserID)
 
     # Immediate feedback: notify bus that bot is "typing"
     al.bus.publishOutbound(OutboundMessage(
@@ -862,12 +871,10 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     if ctx.responseSent:
       infoCF("agent", "Response already sent via tools, skipping final return message", {"session_key": opts.session_key}.toTable)
       # Still add to history but return empty so gateway doesn't send it again
-      al.sessions.addMessage(opts.sessionKey, "assistant", finalContent)
-      al.sessions.save(al.sessions.getOrCreate(opts.sessionKey))
+      al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
       return ""
 
-    al.sessions.addMessage(opts.sessionKey, "assistant", finalContent)
-    al.sessions.save(al.sessions.getOrCreate(opts.sessionKey))
+    al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
 
     if opts.enableSummary:
       al.maybeSummarize(opts.sessionKey)
