@@ -586,6 +586,24 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
   return (finalContent, iteration, currentMessages)
 
+proc channelIdentifierKey*(channel, appID: string): string =
+  ## Graph-identifier slot key for this message.
+  ##
+  ## A company can run multiple Feishu apps side-by-side (cfg.channels.
+  ## feishu.apps[]). Each app has its own `open_id` namespace — Alice's
+  ## open_id under App A is unrelated to her open_id under App B. If we
+  ## stored both under a plain `"feishu"` identifier, Alice-via-A and
+  ## Alice-via-B would collide into whichever was registered first.
+  ## Namespacing by app_id keeps them distinct.
+  ##
+  ## Single-app channels return the channel name unchanged; Feishu
+  ## without a known app_id falls back the same way (no regression for
+  ## callers that don't pass the metadata).
+  if appID.len > 0 and channel in ["feishu"]:
+    channel & ":" & appID
+  else:
+    channel
+
 proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   ## Produce the on-disk session key for this message.
   ##
@@ -625,8 +643,12 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   if recip != "" and graph.nameIndex.hasKey(recip):
     agentId = graph.nameIndex[recip]
 
+  # Multi-app channels key on (channel, app_id) so each Feishu app's
+  # open_id namespace stays isolated.
+  let channelKey = channelIdentifierKey(opts.channel, opts.appID)
+
   let (resolvedID, _) = graph.resolveUserGraph(
-    opts.channel, opts.senderID, agentId)
+    channelKey, opts.senderID, agentId)
   var entityID = resolvedID
 
   # Name-based fallback — CLI or any channel where the sender hasn't yet
@@ -638,17 +660,22 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   # First-time sender — mint a graph entity so everyone has a stable
   # nc:id from the first message. Trust 10 (Guest); the runtime's normal
   # role-transition paths (redeem_invite, SuperAdmin edit) take them up
-  # from there. We avoid creating a fresh entity for each anon because
-  # the senderID string (channel ID) is stable per user per channel —
-  # resolveUserGraph will find them again next turn.
+  # from there. The channelKey isolates per-app identity so the same
+  # Feishu open_id under a different app gets its own nc:id.
   if uint32(entityID) == 0:
     entityID = graph.addUserToGraph(
       opts.senderID,              # logical name — the raw ID for now
-      opts.senderID,              # nknAddr param used as channel identifier
+      opts.senderID,              # used as channel identifier value
       urGuest,
       agentId,
       10                          # trust — same as legacy default
     )
+    # addUserToGraph currently stores the identifier under channel "nkn"
+    # (legacy default); explicitly record it under the composite channel
+    # key so future lookups via resolveUserGraph hit correctly.
+    if graph.entities.hasKey(entityID):
+      graph.entities[entityID].identifiers[channelKey] = opts.senderID
+      graph.saveWorld()
 
   toAlias(entityID).replace(":", "_")
 
@@ -697,7 +724,11 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       if activeRecipient != "" and al.contextBuilder.graph.nameIndex.hasKey(activeRecipient):
         agentId = al.contextBuilder.graph.nameIndex[activeRecipient]
         
-      let (resolvedID, annotOpt) = al.contextBuilder.graph.resolveUserGraph(opts.channel, opts.senderID, agentId)
+      # Feishu multi-app: key on (channel, app_id) so two apps' open_id
+      # namespaces don't collide. Non-multi-app channels pass through
+      # unchanged via channelIdentifierKey.
+      let chKey = channelIdentifierKey(opts.channel, opts.appID)
+      let (resolvedID, annotOpt) = al.contextBuilder.graph.resolveUserGraph(chKey, opts.senderID, agentId)
       var entityID = resolvedID
       # Name-based fallback — catches CLI / first-contact cases where the
       # sender isn't yet mapped via a channel identifier. Matches the
