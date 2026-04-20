@@ -1448,20 +1448,26 @@ Options:
             # the spawned task owns the reply. Main loop continues to
             # consume the next inbound immediately.
           else:
-            # Chain-spawn processMessage so the main loop never awaits a
-            # 10-60s agent turn. Chain key is the RECIPIENT OFFICE, not
-            # session — because the ToolRegistry's ContextualTool
-            # instances (reply/forward/etc.) carry mutable per-call state
-            # set via setContext() on a ref object shared across all
-            # tasks targeting the same agent. Two tasks with different
-            # session keys but the same office would race on setContext
-            # and cross-wire their replies (Jerry's answer getting sent
-            # to 杰瑞's chat, etc.). Serializing per-office prevents that;
-            # different agents (Atlas vs Lexi) still run in parallel.
-            let cMsg = msg
+            # Chain-spawn processMessage per-office. The ToolRegistry's
+            # ContextualTool instances (reply/forward/etc.) carry mutable
+            # per-call state set via setContext() on a ref object shared
+            # across tasks targeting the same agent. Chaining by office
+            # serializes those tasks so setContext isn't clobbered
+            # mid-turn. Different agents (Atlas vs Lexi) still parallelize.
+            #
+            # Nim async closures over object-typed locals have known
+            # capture sharpness issues inside loop bodies; snapshot each
+            # primitive field explicitly rather than relying on
+            # `let cMsg = msg` capture.
+            let cChannel = msg.channel
+            let cChatID = msg.chat_id
+            let cSenderID = msg.sender_id
+            let cSessionKey = msg.session_key
+            let cAppID = msg.metadata.getOrDefault("app_id", "")
             let cRecipient = recipient
             let cOffice = officeKey
             let chainKey = cOffice
+            let cMsg = msg  # passed by value to processMessage; fields above mirror for later use
             let prevTail =
               if sessionTails.hasKey(chainKey): sessionTails[chainKey]
               else: nil
@@ -1474,18 +1480,18 @@ Options:
                 if r != "":
                   var fMeta = initTable[string, string]()
                   fMeta["final"] = "true"
-                  let appID = cMsg.metadata.getOrDefault("app_id", "")
-                  msgBus.publishOutbound(newOutbound(cMsg.channel, cRecipient,
-                                                     cMsg.chat_id, r,
-                                                     appID = appID,
+                  infoCF("claw", "Publishing outbound from session task",
+                         {"chat_id": cChatID, "recipient": cRecipient,
+                          "session": cSessionKey,
+                          "content_preview": (if r.len > 40: r[0..<40] else: r)}.toTable)
+                  msgBus.publishOutbound(newOutbound(cChannel, cRecipient,
+                                                     cChatID, r,
+                                                     appID = cAppID,
                                                      metadata = fMeta))
-                  statusEmitter.emitChannelMsg(cMsg.channel, "out", cRecipient)
+                  statusEmitter.emitChannelMsg(cChannel, "out", cRecipient)
               except Exception as e:
                 errorCF("claw", "Session task error",
-                        {"error": e.msg, "session": cMsg.session_key}.toTable)
-              # Drop our entry if we're still the tail — prevents the
-              # Table from growing unbounded. Guarded by identity so a
-              # newer chained task isn't wiped.
+                        {"error": e.msg, "session": cSessionKey}.toTable)
               if sessionTails.getOrDefault(chainKey) == newTail:
                 sessionTails.del(chainKey)
             )()
