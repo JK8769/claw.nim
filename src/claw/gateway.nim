@@ -1220,12 +1220,13 @@ Options:
   proc launchSessionTask(chainKey, channel, chatID, sessionKey, appID,
                          recipient, office: string,
                          cMsg: InboundMessage,
+                         graph: WorldGraph,
                          prevTail: Future[void]): Future[void] =
     result = (proc() {.async.} =
       try:
         if prevTail != nil and not prevTail.finished:
           try: await prevTail except: discard
-        let r = await gCtx.offices[office].processMessage(cMsg)
+        let r = await gCtx.offices[office].processMessage(cMsg, graph)
         if r != "":
           var fMeta = initTable[string, string]()
           fMeta["final"] = "true"
@@ -1500,6 +1501,7 @@ Options:
               recipient = recipient,
               office = officeKey,
               cMsg = msg,
+              graph = msgGraph,
               prevTail = prevTail)
             sessionTails[chainKey] = newTail
             # Schedule self-cleanup — drop the tail entry when this task

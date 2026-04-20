@@ -51,6 +51,11 @@ type
     sendResponse*: bool
     userRole*: string
     streamIntermediary*: bool
+    preloadedGraph*: WorldGraph  ## Optional — if non-nil, runAgentLoop
+                                  ## uses it instead of reloading
+                                  ## BASE.json. Gateway threads its
+                                  ## per-message graph to skip the
+                                  ## duplicate parse.
 
   TaskSnapshot* = ref object
     ## Per-turn observable state for /agent. One instance per in-flight
@@ -820,11 +825,14 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     al.liveTurnCount.inc
     al.liveTasks.del(opts.sessionKey)
   # Refresh the cached graph so identifiers stamped by the gateway's
-  # bind check (or any other out-of-loop mutation like invite redeem)
-  # are visible for resolution. Small file, cheap read — protects us
-  # from "bind succeeded but the agent still sees you as guest" races.
+  # bind/invite pipeline are visible for resolution. If the caller
+  # already loaded (and possibly mutated) a graph for this message,
+  # reuse it — saves a redundant BASE.json parse and keeps the pre-LLM
+  # intercepts consistent with runAgentLoop's view.
   if al.contextBuilder != nil:
-    al.contextBuilder.graph = loadWorld(al.workspace)
+    al.contextBuilder.graph =
+      if opts.preloadedGraph != nil: opts.preloadedGraph
+      else: loadWorld(al.workspace)
 
   # Session persistence is identity-scoped, not channel-scoped. Replace
   # the transport-level key (channel:chatID:senderID from the channel
@@ -1138,7 +1146,12 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   finally:
     al.logTaskHeader(ctx, atFinish)
 
-proc processMessage*(al: AgentLoop, msg: InboundMessage): Future[string] {.async.} =
+proc processMessage*(al: AgentLoop, msg: InboundMessage,
+                     preloadedGraph: WorldGraph = nil): Future[string] {.async.} =
+  ## If `preloadedGraph` is non-nil, runAgentLoop reuses it instead of
+  ## doing its own `loadWorld`. Gateway threads its per-message graph
+  ## through so the 4-block pre-LLM pipeline plus runAgentLoop share a
+  ## single load per inbound message (down from 5).
   infoCF("agent", "Processing message from " & msg.channel & ":" & msg.sender_id,
     {"session_key": msg.session_key, "chat_kind": $msg.chat_kind, "chat_id": msg.chat_id}.toTable)
 
@@ -1167,7 +1180,8 @@ proc processMessage*(al: AgentLoop, msg: InboundMessage): Future[string] {.async
     defaultResponse: "I've completed processing but have no response to give.",
     enableSummary: true,
     sendResponse: false,
-    streamIntermediary: channelStreamIntermediary
+    streamIntermediary: channelStreamIntermediary,
+    preloadedGraph: preloadedGraph
   ))
 
 proc processDirect*(al: AgentLoop, content, sessionKey: string, senderID: string = "user", channel: string = "cli"): Future[string] {.async.} =
