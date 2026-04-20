@@ -400,16 +400,32 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       if response.tool_calls.len == 0:
         if response.content.len > 0:
           let trimmed = response.content.strip()
-          # Detect incomplete responses: LLM describes next steps instead of giving results
-          # Nudge up to 2 times if we're mid-task and response is short status text
-          let looksIncomplete = iteration > 3 and toolCallLog.len >= 3 and trimmed.len < 200 and
-            (trimmed.endsWith(":") or trimmed.endsWith("：") or trimmed.endsWith(",") or
-             trimmed.endsWith("。") or trimmed.endsWith("."))
-          if looksIncomplete and emptyRetries < 2:
+          # Detect incomplete responses: LLM describes next steps instead of giving results.
+          # Two patterns get nudged:
+          #   (a) Mid-task: iteration > 3, we've been tool-calling, now short status text.
+          #   (b) First turn narration: iteration 1, no tool calls yet, content announces
+          #       intent ("让我...", "我将...", "I'll check") — classic DeepSeek lazy-narrate
+          #       pattern where the model describes the next action instead of taking it.
+          let endsPromisey = trimmed.endsWith(":") or trimmed.endsWith("：") or
+                              trimmed.endsWith(",") or trimmed.endsWith("。") or
+                              trimmed.endsWith(".")
+          let looksIntentOnly =
+            trimmed.contains("让我") or trimmed.contains("我将") or
+            trimmed.contains("稍等") or trimmed.contains("马上") or
+            trimmed.contains("I'll ") or trimmed.contains("I will ") or
+            trimmed.contains("Let me ")
+          let midTaskStall = iteration > 3 and toolCallLog.len >= 3 and
+                              trimmed.len < 200 and endsPromisey
+          let firstTurnNarration = iteration == 1 and toolCallLog.len == 0 and
+                                    looksIntentOnly
+          if (midTaskStall or firstTurnNarration) and emptyRetries < 2:
             emptyRetries.inc
-            warnCF("agent", "LLM returned short status without tool calls, nudging to continue", {"iteration": $iteration, "retry": $emptyRetries, "preview": trimmed[0..min(trimmed.len-1, 80)]}.toTable)
+            warnCF("agent", "LLM narrated intent without tool call, nudging to act",
+                   {"iteration": $iteration, "retry": $emptyRetries,
+                    "pattern": (if firstTurnNarration: "first-turn-narration" else: "mid-task-stall"),
+                    "preview": trimmed[0..min(trimmed.len-1, 80)]}.toTable)
             currentMessages.add(providers_types.Message(role: "assistant", content: response.content))
-            currentMessages.add(providers_types.Message(role: "user", content: "You described what you plan to do but did not do it. Use tools NOW to complete the task, then provide the final result to the user."))
+            currentMessages.add(providers_types.Message(role: "user", content: "You described what you plan to do but did not call a tool. Take the action NOW: emit the tool call in this turn. Do not respond with words alone."))
             continue
           finalContent = response.content
         elif iteration > 1:
