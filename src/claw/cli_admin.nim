@@ -507,6 +507,60 @@ proc runVendorBuild(script, prettyName: string): string =
            "Common causes: Go not installed, wrong Go version, Python 3 missing."
   return prettyName & " built. Binary is at " & repo & "/channels/bin/."
 
+proc reassignFeishuApp*(cfg: var Config, appID, agentName: string): string =
+  ## Reassign an existing Feishu app to a different agent. Edits the
+  ## `app "<id>", "<agent>"` line in BASE.nims inside the
+  ## `channel "feishu":` block. The running gateway doesn't hot-swap
+  ## lark-cli-subscriber → agent routing, so the caller must `/restart`
+  ## after this returns for the change to take effect.
+  var agentFound = false
+  for a in cfg.agents.named:
+    if a.name.toLowerAscii() == agentName.toLowerAscii():
+      agentFound = true
+      break
+  if not agentFound:
+    return "Error: agent `" & agentName & "` is not declared in BASE.nims."
+
+  var currentAgent = ""
+  var appFound = false
+  for a in cfg.channels.feishu.apps:
+    if a.app_id == appID:
+      appFound = true
+      currentAgent = a.agent
+      break
+  if not appFound:
+    return "Error: app_id `" & appID & "` is not registered. Run " &
+           "`/channel auth feishu " & appID & " <secret>` first."
+  if currentAgent.toLowerAscii() == agentName.toLowerAscii():
+    return "App `" & appID & "` is already routed to " & agentName & ". No change."
+
+  let baseNimsPath = getNimClawDir() / "BASE.nims"
+  if not fileExists(baseNimsPath):
+    return "Error: no BASE.nims at " & baseNimsPath
+  let content = readFile(baseNimsPath)
+  let lines = content.splitLines()
+  var rewritten: seq[string] = @[]
+  var replaced = false
+  for line in lines:
+    if not replaced and appIDInLine(line, appID):
+      let stripped = line.strip(leading = true, trailing = false)
+      let indent = line[0 ..< line.len - stripped.len]
+      rewritten.add(indent & "app \"" & appID & "\", \"" & agentName & "\"")
+      replaced = true
+    else:
+      rewritten.add(line)
+  if not replaced:
+    return "Error: app_id `" & appID & "` not found in BASE.nims. " &
+           "(Found in Config at runtime — the DSL may be out of sync; " &
+           "run `/co update` and try again.)"
+  writeFile(baseNimsPath, rewritten.join("\n"))
+
+  let fromText = if currentAgent.len > 0: currentAgent else: "(unassigned)"
+  return "✅ Reassigned `" & appID & "`: " & fromText & " → " & agentName &
+         ".\n\nRun `/restart` to route this app's incoming events to " &
+         agentName & "'s office. (The lark-cli subscriber is per-process " &
+         "and needs a fresh start to pick up the new routing.)"
+
 proc authFeishuChannel*(cfg: var Config, args: seq[string]): string =
   ## Configure Feishu credentials for THIS company. Mirrors `provider auth`:
   ## no per-company "add" step — the channel type exists in res/channels.json

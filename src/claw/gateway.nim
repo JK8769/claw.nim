@@ -653,8 +653,19 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       # same BASE.nims upsert. Result string is already markdown-ish.
       return authFeishuChannel(cfg[], authArgs) & "\n\n" &
              "Run `/restart` to bring the new app online."
+    if sub == "assign":
+      # `/channel assign <app_id> <agent>` — reroute a Feishu app to a
+      # different agent. Edits BASE.nims; `/restart` applies.
+      if parts.len < 4:
+        return "Usage: `/channel assign <app_id> <agent>`\n" &
+               "Example: `/channel assign cli_a948ea9ee5785cd3 Atlas`"
+      let appID = parts[2]
+      let agentName = parts[3]
+      var cfgCopy = cfg[]
+      return reassignFeishuApp(cfgCopy, appID, agentName)
     return "Unknown /channel subcommand: `" & sub & "`.\n" &
-           "Try `/channel list` or `/channel auth feishu …`."
+           "Try `/channel list`, `/channel auth feishu …`, or " &
+           "`/channel assign <app_id> <agent>`."
 
   elif cmd == "/co" or cmd == "/company" or
        cmd.startsWith("/co ") or cmd.startsWith("/company "):
@@ -1009,17 +1020,23 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
     group: "agent-control", permission: pmSuperAdmin,
     examples: @["/model", "/model list", "/model deepseek:deepseek-reasoner"]))
   register(SystemCommand(
-    name: "/channel", summary: "Register or inspect chat channels (Feishu apps, etc.).",
-    usage: "/channel <list|auth> [<args>...]",
+    name: "/channel", summary: "Register, inspect, or reroute chat channels (Feishu apps, etc.).",
+    usage: "/channel <list|auth|assign> [<args>...]",
     doc: """Channel management.
 
 Usage:
   /channel list
   /channel auth feishu <app_id> <app_secret> [<agent>]
+  /channel assign <app_id> <agent>
+
+`assign` reassigns an already-registered Feishu app to a different
+declared agent. Edits BASE.nims; run `/restart` after for lark-cli
+subscribers to route events to the new agent's office.
 """,
     group: "admin", menuHint: "Channels", permission: pmSuperAdmin,
     examples: @["/channel list",
-                "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas"]))
+                "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas",
+                "/channel assign cli_a948ea9ee5785cd3 Atlas"]))
   register(SystemCommand(
     name: "/user", summary: "User management (list, show, trust, invite, remove).",
     usage: "/user <list|show|trust|invite|remove> [<args>...]",
