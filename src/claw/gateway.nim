@@ -1198,10 +1198,41 @@ Options:
           stderr.writeLine "    " & line
         stderr.writeLine ""
 
-  # Per-session task chain — prevents same-session message interleaving while
-  # letting different sessions run in parallel. The main loop always spawns;
-  # it never awaits processMessage inline. Keyed by session_key.
+  # Per-office task chain — prevents same-agent setContext races on shared
+  # ContextualTool instances. The main loop always spawns; it never awaits
+  # processMessage inline. Different agents run in parallel; same-agent
+  # tasks serialize.
   var sessionTails = initTable[string, Future[void]]()
+
+  # Launch a session task through a proc with explicit parameters. Nim async
+  # closures capture locals through a hoisted env; when the spawn site sits
+  # inside a `while true:` loop, successive iterations' captures can alias
+  # (observed: two parallel tasks' `cChatID` both pointing at the last
+  # iteration's value, cross-wiring replies). Routing the spawn through a
+  # proc guarantees fresh parameter storage per call.
+  proc launchSessionTask(chainKey, channel, chatID, sessionKey, appID,
+                         recipient, office: string,
+                         cMsg: InboundMessage,
+                         prevTail: Future[void]): Future[void] =
+    result = (proc() {.async.} =
+      try:
+        if prevTail != nil and not prevTail.finished:
+          try: await prevTail except: discard
+        let r = await gCtx.offices[office].processMessage(cMsg)
+        if r != "":
+          var fMeta = initTable[string, string]()
+          fMeta["final"] = "true"
+          infoCF("claw", "Publishing outbound from session task",
+                 {"chat_id": chatID, "recipient": recipient,
+                  "session": sessionKey,
+                  "content_preview": (if r.len > 40: r[0..<40] else: r)}.toTable)
+          msgBus.publishOutbound(newOutbound(channel, recipient, chatID, r,
+                                             appID = appID, metadata = fMeta))
+          statusEmitter.emitChannelMsg(channel, "out", recipient)
+      except Exception as e:
+        errorCF("claw", "Session task error",
+                {"error": e.msg, "session": sessionKey}.toTable)
+    )()
 
   # Message loop
   asyncCheck (proc() {.async.} =
@@ -1448,54 +1479,29 @@ Options:
             # the spawned task owns the reply. Main loop continues to
             # consume the next inbound immediately.
           else:
-            # Chain-spawn processMessage per-office. The ToolRegistry's
-            # ContextualTool instances (reply/forward/etc.) carry mutable
-            # per-call state set via setContext() on a ref object shared
-            # across tasks targeting the same agent. Chaining by office
-            # serializes those tasks so setContext isn't clobbered
-            # mid-turn. Different agents (Atlas vs Lexi) still parallelize.
-            #
-            # Nim async closures over object-typed locals have known
-            # capture sharpness issues inside loop bodies; snapshot each
-            # primitive field explicitly rather than relying on
-            # `let cMsg = msg` capture.
-            let cChannel = msg.channel
-            let cChatID = msg.chat_id
-            let cSenderID = msg.sender_id
-            let cSessionKey = msg.session_key
-            let cAppID = msg.metadata.getOrDefault("app_id", "")
-            let cRecipient = recipient
-            let cOffice = officeKey
-            let chainKey = cOffice
-            let cMsg = msg  # passed by value to processMessage; fields above mirror for later use
+            let chainKey = officeKey
             let prevTail =
               if sessionTails.hasKey(chainKey): sessionTails[chainKey]
               else: nil
-            var newTail: Future[void]
-            newTail = (proc() {.async.} =
-              try:
-                if prevTail != nil and not prevTail.finished:
-                  try: await prevTail except: discard
-                let r = await gCtx.offices[cOffice].processMessage(cMsg)
-                if r != "":
-                  var fMeta = initTable[string, string]()
-                  fMeta["final"] = "true"
-                  infoCF("claw", "Publishing outbound from session task",
-                         {"chat_id": cChatID, "recipient": cRecipient,
-                          "session": cSessionKey,
-                          "content_preview": (if r.len > 40: r[0..<40] else: r)}.toTable)
-                  msgBus.publishOutbound(newOutbound(cChannel, cRecipient,
-                                                     cChatID, r,
-                                                     appID = cAppID,
-                                                     metadata = fMeta))
-                  statusEmitter.emitChannelMsg(cChannel, "out", cRecipient)
-              except Exception as e:
-                errorCF("claw", "Session task error",
-                        {"error": e.msg, "session": cSessionKey}.toTable)
-              if sessionTails.getOrDefault(chainKey) == newTail:
-                sessionTails.del(chainKey)
-            )()
+            let newTail = launchSessionTask(
+              chainKey = chainKey,
+              channel = msg.channel,
+              chatID = msg.chat_id,
+              sessionKey = msg.session_key,
+              appID = msg.metadata.getOrDefault("app_id", ""),
+              recipient = recipient,
+              office = officeKey,
+              cMsg = msg,
+              prevTail = prevTail)
             sessionTails[chainKey] = newTail
+            # Schedule self-cleanup — drop the tail entry when this task
+            # finishes, guarded by identity so a newer chained task isn't
+            # wiped. Put the del hook on the Future's completion.
+            let cleanupKey = chainKey
+            let cleanupTail = newTail
+            newTail.addCallback(proc() =
+              if sessionTails.getOrDefault(cleanupKey) == cleanupTail:
+                sessionTails.del(cleanupKey))
 
         if response != "":
           var finalMeta = initTable[string, string]()
