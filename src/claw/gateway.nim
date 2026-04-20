@@ -701,6 +701,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       truncate(e.replace("\n", " ").replace("\r", " "), 40)
     proc fmtTokens(n: int): string =
       if n == 0: "-" else: claw_context.formatTokens(n.int64)
+    proc toolDisplay(t: TaskSnapshot): string =
+      if t == nil: "-"
+      elif t.lastTool.len > 0: t.lastTool
+      else: "(no tool yet)"
     if sub == "list":
       var rows: seq[string] = @["AGENT       STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
       for a in cfg.agents.named:
@@ -711,30 +715,31 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                    "-".alignLeft(12) & "-".alignLeft(21) & "out-of-office")
           continue
         let al2 = gCtx.offices[key]
-        let toolStr =
-          if al2.liveLastTool.len > 0: al2.liveLastTool
-          elif al2.liveStartedAt > 0.0: "(no tool yet)"
-          else: "-"
         let tokStr = fmtTokens(al2.liveTokensTotal)
-        let (state, iterStr, elStr, outcome) =
-          if al2.liveStartedAt == 0.0:
-            if al2.liveTurnCount == 0:
-              ("In-Office", "-", "-", "never-ran")
-            else:
-              ("In-Office",
-               $al2.liveIteration & "/" & $al2.maxIterations,
-               fmtUptime(now - al2.liveFinishedAt) & " ago",
-               (if al2.liveLastError.len > 0: "❌ " & shortErr(al2.liveLastError)
-                else: "✓ ok (turn " & $al2.liveTurnCount & ")"))
-          else:
-            ("Working",
-             $al2.liveIteration & "/" & $al2.maxIterations,
-             fmtUptime(now - al2.liveStartedAt),
-             (if al2.liveLastError.len > 0: "(last ❌ " & shortErr(al2.liveLastError) & ")"
-              else: "running"))
-        rows.add(namePad & state.alignLeft(12) & iterStr.alignLeft(7) &
-                 elStr.alignLeft(12) & tokStr.alignLeft(12) &
-                 toolStr.alignLeft(21) & outcome)
+        if al2.liveTasks.len > 0:
+          # One row per in-flight task so concurrent turns are both visible.
+          for sk, task in al2.liveTasks.pairs:
+            let iterStr = $task.iteration & "/" & $task.maxIterations
+            let elStr = fmtUptime(now - task.startedAt)
+            let outcome = "running (" & truncate(sk, 24) & ")"
+            rows.add(namePad & "Working".alignLeft(12) & iterStr.alignLeft(7) &
+                     elStr.alignLeft(12) & tokStr.alignLeft(12) &
+                     toolDisplay(task).alignLeft(21) & outcome)
+          continue
+        # Idle — show how the last turn ended, if any.
+        let last = al2.liveLastFinished
+        if last == nil:
+          rows.add(namePad & "In-Office".alignLeft(12) & "-".alignLeft(7) &
+                   "-".alignLeft(12) & tokStr.alignLeft(12) & "-".alignLeft(21) & "never-ran")
+        else:
+          let iterStr = $last.iteration & "/" & $last.maxIterations
+          let elStr = fmtUptime(now - last.finishedAt) & " ago"
+          let outcome =
+            if last.lastError.len > 0: "❌ " & shortErr(last.lastError)
+            else: "✓ ok (turn " & $al2.liveTurnCount & ")"
+          rows.add(namePad & "In-Office".alignLeft(12) & iterStr.alignLeft(7) &
+                   elStr.alignLeft(12) & tokStr.alignLeft(12) &
+                   toolDisplay(last).alignLeft(21) & outcome)
       return codeBlock(rows.join("\n"))
     let name = sub
     let key = name.toLowerAscii()
@@ -742,42 +747,44 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       return "**Agent " & name & "** — Out-of-Office (office not opened this session)."
     let al2 = gCtx.offices[key]
     var lines: seq[string] = @[]
-    if al2.liveStartedAt == 0.0:
-      # In-Office — show last-turn post-mortem
-      if al2.liveTurnCount == 0:
-        return "**Agent " & name & "** — In-Office, hasn't taken a turn yet."
-      let sinceStr = fmtUptime(now - al2.liveFinishedAt)
-      lines.add("State:      In-Office (last turn " & sinceStr & " ago)")
-      lines.add("Last msg:   " & al2.liveLastMessagePreview)
-      lines.add("Iterations: " & $al2.liveIteration & "/" & $al2.maxIterations)
-      if al2.liveLastTool.len > 0:
-        lines.add("Last tool:  " & al2.liveLastTool)
-      if al2.liveToolLog.len > 0:
-        lines.add("Tool log:   " & al2.liveToolLog.join(" → "))
-      if al2.liveLastError.len > 0:
-        lines.add("Outcome:    ❌ " & al2.liveLastError)
-      else:
-        lines.add("Outcome:    ✓ ok")
-      if al2.liveTokensTurn > 0:
-        lines.add("Tokens:     " & $al2.liveTokensTurn & " (last turn)")
+    if al2.liveTasks.len > 0:
+      # At least one in-flight turn — list each separately.
+      lines.add("State:      Working (" & $al2.liveTasks.len & " concurrent turn(s))")
+      for sk, task in al2.liveTasks.pairs:
+        lines.add("")
+        lines.add("  Session:    " & sk)
+        lines.add("  Sender:     " & task.senderID)
+        lines.add("  Message:    " & task.messagePreview)
+        lines.add("  Iteration:  " & $task.iteration & "/" & $task.maxIterations)
+        lines.add("  Elapsed:    " & fmtUptime(now - task.startedAt))
+        if task.lastTool.len > 0:
+          lines.add("  Last tool:  " & task.lastTool)
+        if task.toolLog.len > 0:
+          lines.add("  Tool log:   " & task.toolLog.join(" → "))
+        if task.tokens > 0:
+          lines.add("  Tokens:     " & $task.tokens & " so far")
+      lines.add("")
       lines.add("Total turns since boot:  " & $al2.liveTurnCount)
       lines.add("Total tokens since boot: " & $al2.liveTokensTotal)
     else:
-      let elapsed = now - al2.liveStartedAt
-      lines.add("State:      Working")
-      lines.add("Session:    " & al2.liveSessionKey)
-      lines.add("Sender:     " & al2.liveSenderID)
-      lines.add("Message:    " & al2.liveMessagePreview)
-      lines.add("Iteration:  " & $al2.liveIteration & "/" & $al2.maxIterations)
-      lines.add("Elapsed:    " & fmtUptime(elapsed))
-      if al2.liveLastTool.len > 0:
-        lines.add("Last tool:  " & al2.liveLastTool)
-      if al2.liveToolLog.len > 0:
-        lines.add("Tool log:   " & al2.liveToolLog.join(" → "))
-      if al2.liveLastError.len > 0:
-        lines.add("Prev error: " & al2.liveLastError)
-      if al2.liveTokensTurn > 0:
-        lines.add("Tokens:     " & $al2.liveTokensTurn & " (this turn so far)")
+      # Idle — show the last completed turn, if any.
+      let last = al2.liveLastFinished
+      if last == nil:
+        return "**Agent " & name & "** — In-Office, hasn't taken a turn yet."
+      let sinceStr = fmtUptime(now - last.finishedAt)
+      lines.add("State:      In-Office (last turn " & sinceStr & " ago)")
+      lines.add("Last msg:   " & last.messagePreview)
+      lines.add("Iterations: " & $last.iteration & "/" & $last.maxIterations)
+      if last.lastTool.len > 0:
+        lines.add("Last tool:  " & last.lastTool)
+      if last.toolLog.len > 0:
+        lines.add("Tool log:   " & last.toolLog.join(" → "))
+      if last.lastError.len > 0:
+        lines.add("Outcome:    ❌ " & last.lastError)
+      else:
+        lines.add("Outcome:    ✓ ok")
+      if last.tokens > 0:
+        lines.add("Tokens:     " & $last.tokens & " (last turn)")
       lines.add("Total turns since boot:  " & $al2.liveTurnCount)
       lines.add("Total tokens since boot: " & $al2.liveTokensTotal)
     return "**Agent " & name & "**\n\n" & codeBlock(lines.join("\n"))
@@ -1222,10 +1229,6 @@ Options:
         if r != "":
           var fMeta = initTable[string, string]()
           fMeta["final"] = "true"
-          infoCF("claw", "Publishing outbound from session task",
-                 {"chat_id": chatID, "recipient": recipient,
-                  "session": sessionKey,
-                  "content_preview": (if r.len > 40: r[0..<40] else: r)}.toTable)
           msgBus.publishOutbound(newOutbound(channel, recipient, chatID, r,
                                              appID = appID, metadata = fMeta))
           statusEmitter.emitChannelMsg(channel, "out", recipient)

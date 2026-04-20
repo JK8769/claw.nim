@@ -52,6 +52,23 @@ type
     userRole*: string
     streamIntermediary*: bool
 
+  TaskSnapshot* = ref object
+    ## Per-turn observable state for /agent. One instance per in-flight
+    ## turn, keyed by sessionKey on AgentLoop.liveTasks. After the turn
+    ## ends the snapshot is moved to AgentLoop.liveLastFinished so the
+    ## idle view can show how the last turn wrapped up.
+    sessionKey*: string
+    senderID*: string
+    messagePreview*: string
+    startedAt*: float        ## epochTime when the turn began
+    finishedAt*: float       ## 0 while running; set when the task ends
+    iteration*: int
+    maxIterations*: int
+    lastTool*: string
+    toolLog*: seq[string]
+    lastError*: string       ## empty on success
+    tokens*: int             ## tokens consumed by this turn
+
   AgentLoop* = ref object
     cfg*: Config
     bus*: MessageBus
@@ -82,27 +99,15 @@ type
     memTool*: UnifiedMemoryTool  ## retained for per-turn sender/trust refresh
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
-    # Live state — observable via `/agent <name>` from chat. Two-phase:
-    #   WORKING fields (cleared on defer): liveStartedAt, liveSessionKey,
-    #     liveSenderID, liveMessagePreview.
-    #   LAST-RUN fields (kept across turns for post-mortem): liveFinishedAt,
-    #     liveIteration, liveLastTool, liveToolLog, liveLastError,
-    #     liveTurnCount, liveLastMessagePreview.
-    # When liveStartedAt == 0 → agent is idle; use last-run fields to show
-    # how the previous turn ended (OK / error with message).
-    liveStartedAt*: float         ## epochTime when current task began; 0 = idle
-    liveFinishedAt*: float        ## epochTime when last task ended; 0 = never
-    liveSessionKey*: string       ## session of the IN-FLIGHT task (cleared on idle)
-    liveSenderID*: string         ## sender of the IN-FLIGHT task (cleared on idle)
-    liveMessagePreview*: string   ## message of the IN-FLIGHT task (cleared on idle)
-    liveLastMessagePreview*: string  ## message of the LAST task (kept)
-    liveIteration*: int           ## last iteration reached (kept across turns)
-    liveLastTool*: string         ## most recently executed tool (kept)
-    liveToolLog*: seq[string]     ## tools called in the most recent turn (kept)
-    liveLastError*: string        ## error from the last turn; empty = OK
-    liveTurnCount*: int           ## monotonic counter of completed turns
-    liveTokensTurn*: int          ## tokens used in the current/last turn
-    liveTokensTotal*: int         ## cumulative tokens since gateway start
+    # Live state — observable via `/agent <name>` from chat. One entry per
+    # in-flight task so concurrent turns (e.g. Jerry + 杰瑞 both on Atlas)
+    # each get their own snapshot. Keyed by session_key — same-session
+    # messages serialize via the gateway chain, so at most one entry per
+    # sessionKey exists at any time.
+    liveTasks*: Table[string, TaskSnapshot]  ## currently-running tasks
+    liveLastFinished*: TaskSnapshot          ## most recently completed; nil if never ran
+    liveTurnCount*: int                      ## monotonic count of completed turns
+    liveTokensTotal*: int                    ## cumulative tokens since gateway start
 
 proc stop*(al: AgentLoop) =
   al.running = false
@@ -268,11 +273,12 @@ proc buildToolContext(al: AgentLoop, opts: ProcessOptions, logicalUserID: string
     identity: al.identity
   )
 
-proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string, allowedTools: seq[string]): Future[(string, int, seq[providers_types.Message])] {.async.} =
+proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string, allowedTools: seq[string], snapshot: TaskSnapshot): Future[(string, int, seq[providers_types.Message])] {.async.} =
   ## `allowedTools` is the dispatch-time allowlist for THIS turn (role.grant +
   ## allowed_skills expansion). Passed by value so concurrent turns on the
-  ## same agent don't clobber each other — was previously a field on
-  ## AgentLoop, which raced on parallel same-office requests.
+  ## same agent don't clobber each other.
+  ## `snapshot` is this task's live-state record on AgentLoop.liveTasks —
+  ## mutate iteration, lastTool, tokens etc. through it rather than on `al`.
   var iteration = 0
   var finalContent = ""
   var lastResponseContent = ""  # Track last response for loop exhaustion fallback
@@ -300,7 +306,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
   while iteration < al.maxIterations and finalContent == "":
     iteration += 1
-    al.liveIteration = iteration
+    snapshot.iteration = iteration
     al.updateStatus(ctx, "Thinking", "Running iteration", iteration)
 
     infoCF("agent", "LLM iteration", {"iteration": $iteration, "max": $al.maxIterations, "xml_tools": $useXmlTools, "messages_count": $currentMessages.len}.toTable)
@@ -349,7 +355,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       response = await al.provider.chat(currentMessages, toolDefs, al.model, options)
     except Exception as e:
       errorCF("agent", "LLM API request failed", {"error": e.msg, "iteration": $iteration}.toTable)
-      al.liveLastError = "LLM: " & e.msg
+      snapshot.lastError = "LLM: " & e.msg
       if finalContent == "":
         finalContent = "Error communicating with LLM provider: " & e.msg
       break
@@ -359,7 +365,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     # visibility across turns).
     let tokens = response.usage.total_tokens
     ctx.tokensTotal += tokens
-    al.liveTokensTurn += tokens
+    snapshot.tokens += tokens
     al.liveTokensTotal += tokens
     
     var llmMeta = newJObject()
@@ -519,7 +525,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         emptyNameRetries += 1
         if emptyNameRetries > 2:
           warnCF("agent", "Too many empty tool name retries, breaking", {"iteration": $iteration}.toTable)
-          al.liveLastError = "Tool protocol: LLM emitted empty tool names " &
+          snapshot.lastError = "Tool protocol: LLM emitted empty tool names " &
                              $emptyNameRetries & "× in a row — check tool schema / context size."
           # Skip the post-loop summary call — same schema would likely
           # trip it again.
@@ -598,8 +604,8 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
             {"tool": tc.name, "allowed": allowedTools.join(",")}.toTable)
           result = "Error: tool '" & tc.name & "' is not authorised at the current requester's trust level. Allowed tools are: " & allowedTools.join(", ") & ". If the user needs a higher-privilege action, they must upgrade via redeem_invite or a SuperAdmin must edit BASE.nims."
         else:
-          al.liveLastTool = tc.name
-          al.liveToolLog.add(tc.name)
+          snapshot.lastTool = tc.name
+          snapshot.toolLog.add(tc.name)
           # Mark this call as pre-authorised when we have an explicit
           # role.grant + allowed_skills allowlist AND the tool cleared
           # it. The registry's blanket external-user gate will then
@@ -795,32 +801,24 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   if opts.userRole == "" and opts.channel == "cli": opts.userRole = "Admin"
   if opts.userRole == "": opts.userRole = "Guest"
 
-  # Stamp live state so `/agent <name>` can observe in-flight work from chat.
-  # `defer` handles the WORKING→idle transition on any exit path, but LAST-RUN
-  # fields (iteration, tool log, error, turnCount) are kept so `/agent` can
-  # show "last turn: iter 4, error=HTTP 524" when the agent is idle.
-  al.liveStartedAt = epochTime()
-  al.liveSessionKey = opts.sessionKey
-  al.liveSenderID = opts.senderID
-  let msgPreview =
-    if opts.userMessage.len > 80: opts.userMessage[0 ..< 80] & "…"
-    else: opts.userMessage
-  al.liveMessagePreview = msgPreview
-  al.liveLastMessagePreview = msgPreview
-  al.liveIteration = 0
-  al.liveLastTool = ""
-  al.liveToolLog = @[]
-  al.liveLastError = ""
-  al.liveTokensTurn = 0
+  # Stamp live state so `/agent <name>` can observe in-flight work from
+  # chat. One snapshot per sessionKey lives in al.liveTasks while running;
+  # when this turn exits we move it to al.liveLastFinished for the idle-
+  # view post-mortem (iteration, tool log, error).
+  let snapshot = TaskSnapshot(
+    sessionKey: opts.sessionKey,
+    senderID: opts.senderID,
+    messagePreview: (if opts.userMessage.len > 80: opts.userMessage[0 ..< 80] & "…"
+                     else: opts.userMessage),
+    startedAt: epochTime(),
+    maxIterations: al.maxIterations,
+    toolLog: @[])
+  al.liveTasks[opts.sessionKey] = snapshot
   defer:
-    al.liveFinishedAt = epochTime()
+    snapshot.finishedAt = epochTime()
+    al.liveLastFinished = snapshot
     al.liveTurnCount.inc
-    al.liveStartedAt = 0.0
-    al.liveSessionKey = ""
-    al.liveSenderID = ""
-    al.liveMessagePreview = ""
-    # KEEP liveIteration, liveLastTool, liveToolLog, liveLastError for
-    # post-mortem inspection via `/agent <name>` on the idle agent.
+    al.liveTasks.del(opts.sessionKey)
   # Refresh the cached graph so identifiers stamped by the gateway's
   # bind check (or any other out-of-loop mutation like invite redeem)
   # are visible for resolution. Small file, cheap read — protects us
@@ -1107,7 +1105,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       app_id: opts.appID
     ))
 
-    let (finalContentRaw, iteration, _) = await al.runLLMIteration(ctx, messages, opts, logicalUserID, allowedTools)
+    let (finalContentRaw, iteration, _) = await al.runLLMIteration(ctx, messages, opts, logicalUserID, allowedTools, snapshot)
     var finalContent = finalContentRaw
 
     if finalContent == "":
@@ -1547,6 +1545,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     contextWindow: cfg.agents.defaults.max_tokens,
     temperature: cfg.agents.defaults.temperature,
     maxIterations: cfg.agents.defaults.max_tool_iterations,
+    liveTasks: initTable[string, TaskSnapshot](),
     sessions: sessionsManager,
     contextBuilder: contextBuilder,
     tools: toolsRegistry,
