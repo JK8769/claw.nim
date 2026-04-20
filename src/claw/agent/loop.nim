@@ -80,11 +80,6 @@ type
     # Per-agent capability scoping (resolved by ClawDSL → BASE.json)
     allowedTools*: seq[string]  ## If non-empty, only these tools exposed to LLM
     memTool*: UnifiedMemoryTool  ## retained for per-turn sender/trust refresh
-    turnAllowedTools*: seq[string]
-      ## Dispatch-time allow-list from the current requester's role.grant.
-      ## Computed per turn by setRequesterTurnContext. Empty = unrestricted.
-      ## When non-empty, tool calls not in this list are refused BEFORE
-      ## execution — the role.grant list becomes authoritative, not cosmetic.
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
     # Live state — observable via `/agent <name>` from chat. Two-phase:
@@ -273,7 +268,11 @@ proc buildToolContext(al: AgentLoop, opts: ProcessOptions, logicalUserID: string
     identity: al.identity
   )
 
-proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string): Future[(string, int, seq[providers_types.Message])] {.async.} =
+proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string, allowedTools: seq[string]): Future[(string, int, seq[providers_types.Message])] {.async.} =
+  ## `allowedTools` is the dispatch-time allowlist for THIS turn (role.grant +
+  ## allowed_skills expansion). Passed by value so concurrent turns on the
+  ## same agent don't clobber each other — was previously a field on
+  ## AgentLoop, which raced on parallel same-office requests.
   var iteration = 0
   var finalContent = ""
   var lastResponseContent = ""  # Track last response for loop exhaustion fallback
@@ -594,10 +593,10 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         # not a prompt decoration. A Guest asking the agent to call a
         # high-privilege tool gets a tool-result error, not execution.
         var result: string
-        if al.turnAllowedTools.len > 0 and tc.name notin al.turnAllowedTools:
+        if allowedTools.len > 0 and tc.name notin allowedTools:
           warnCF("agent", "Tool refused — not in requester's role.grant",
-            {"tool": tc.name, "allowed": al.turnAllowedTools.join(",")}.toTable)
-          result = "Error: tool '" & tc.name & "' is not authorised at the current requester's trust level. Allowed tools are: " & al.turnAllowedTools.join(", ") & ". If the user needs a higher-privilege action, they must upgrade via redeem_invite or a SuperAdmin must edit BASE.nims."
+            {"tool": tc.name, "allowed": allowedTools.join(",")}.toTable)
+          result = "Error: tool '" & tc.name & "' is not authorised at the current requester's trust level. Allowed tools are: " & allowedTools.join(", ") & ". If the user needs a higher-privilege action, they must upgrade via redeem_invite or a SuperAdmin must edit BASE.nims."
         else:
           al.liveLastTool = tc.name
           al.liveToolLog.add(tc.name)
@@ -608,7 +607,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           # Turns where turnAllowedTools is empty (no trust config)
           # keep preAuthorized=false so the floor still protects.
           var ctxForCall = toolCtx
-          if al.turnAllowedTools.len > 0 and tc.name in al.turnAllowedTools:
+          if allowedTools.len > 0 and tc.name in allowedTools:
             ctxForCall.preAuthorized = true
           result = await al.tools.executeWithContext(tc.name, tc.arguments, ctxForCall)
         # Record in tool call log for forced summary context
@@ -1043,7 +1042,9 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     # previously a cosmetic schema filter (the LLM could still call any
     # tool by name). Now we resolve the requester's role every turn and
     # hold its grant list; the tool loop refuses any call outside it.
-    al.turnAllowedTools = @[]
+    # Local var (not an AgentLoop field) so concurrent same-agent turns
+    # don't clobber each other's allowlist mid-dispatch.
+    var allowedTools: seq[string] = @[]
     let reqRole = al.contextBuilder.resolveRequesterRole(
       logicalUserID, targetRecipient, opts.channel)
     # Propagate the resolved role onto ProcessOptions so the tool
@@ -1058,7 +1059,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       if roleCfg.isSome:
         let g = roleCfg.get.grant
         if g.len > 0 and "*" notin g:
-          al.turnAllowedTools = g
+          allowedTools = g
 
     # Per-requester skill grants. The requester's Person entity can carry
     # `custom.allowed_skills = ["[user@]skill[/resource,…]", …]` — each
@@ -1069,7 +1070,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     # `njmkuser@sungrow`) gets sungrow read tools they're entitled to.
     # Resource-level scoping (`sungrow/627305`) is declared but enforced
     # at the tool-call argument layer — still a follow-up.
-    if al.turnAllowedTools.len > 0 and
+    if allowedTools.len > 0 and
        al.contextBuilder != nil and al.contextBuilder.graph != nil and
        logicalUserID.startsWith("nc:"):
       let grantedSkills = requesterGrantedSkills(al.contextBuilder.graph, logicalUserID)
@@ -1080,7 +1081,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         for tn in al.tools.list():
           let lower = tn.toLowerAscii()
           for sk in grantedSkills:
-            if lower.startsWith("mcp_" & sk & "_") and tn notin al.turnAllowedTools:
+            if lower.startsWith("mcp_" & sk & "_") and tn notin allowedTools:
               extra.add(tn)
               break
         if extra.len > 0:
@@ -1088,7 +1089,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
                  {"requester": logicalUserID,
                   "skills": grantedSkills.join(","),
                   "tools_added": $extra.len}.toTable)
-          for t in extra: al.turnAllowedTools.add(t)
+          for t in extra: allowedTools.add(t)
 
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
 
@@ -1106,7 +1107,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       app_id: opts.appID
     ))
 
-    let (finalContentRaw, iteration, _) = await al.runLLMIteration(ctx, messages, opts, logicalUserID)
+    let (finalContentRaw, iteration, _) = await al.runLLMIteration(ctx, messages, opts, logicalUserID, allowedTools)
     var finalContent = finalContentRaw
 
     if finalContent == "":

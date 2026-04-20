@@ -1198,10 +1198,10 @@ Options:
           stderr.writeLine "    " & line
         stderr.writeLine ""
 
-  # Per-office task chain — prevents same-agent setContext races on shared
-  # ContextualTool instances. The main loop always spawns; it never awaits
-  # processMessage inline. Different agents run in parallel; same-agent
-  # tasks serialize.
+  # Per-session task chain — prevents same-session interleaved writes to
+  # the session history file. Different sessions run in parallel (including
+  # different customers on the same agent, now that allowedTools/context
+  # are task-local and no longer shared state on the AgentLoop).
   var sessionTails = initTable[string, Future[void]]()
 
   # Launch a session task through a proc with explicit parameters. Nim async
@@ -1479,7 +1479,7 @@ Options:
             # the spawned task owns the reply. Main loop continues to
             # consume the next inbound immediately.
           else:
-            let chainKey = officeKey
+            let chainKey = msg.session_key
             let prevTail =
               if sessionTails.hasKey(chainKey): sessionTails[chainKey]
               else: nil
