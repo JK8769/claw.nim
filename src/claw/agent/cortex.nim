@@ -430,6 +430,11 @@ proc loadWorld*(workspace: string): WorldGraph =
       if node.hasKey("personas"): ent.custom["personas"] = node["personas"]
       if node.hasKey("entity"): ent.custom["entity"] = node["entity"]
       if node.hasKey("identity"): ent.custom["identity"] = node["identity"]
+      # Generic `custom` passthrough — carries DSL-declared extras like
+      # `allowed_skills` (customer skill allowlist, per-entity quotas, etc.)
+      if node.hasKey("custom") and node["custom"].kind == JObject:
+        for k, v in node["custom"].pairs:
+          ent.custom[k] = v
       
       # Backward compatibility: populate custom node with legacy identity if not explicitly defined in LD
       if not ent.custom.hasKey("identity") and node.hasKey("identity"):

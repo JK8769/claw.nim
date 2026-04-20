@@ -1066,10 +1066,12 @@ type
     agentName*: string
     maxUses*: int
     issuer*: string
+    allowedSkills*: seq[string]
 
 proc mintCustomerInvite*(cfg: Config, workspace: string,
                          issuer, customerName, agentName: string,
-                         maxUses: int = 1): CustomerInviteResult =
+                         maxUses: int = 1,
+                         allowedSkills: openArray[string] = []): CustomerInviteResult =
   ## Single source of truth for "issue a customer access code". Used by
   ## both `claw user invite` (CLI) and `/user invite` (slash command).
   ##
@@ -1108,8 +1110,13 @@ proc mintCustomerInvite*(cfg: Config, workspace: string,
     kind: ekPerson,
     name: customerName,
     role: "Customer",
-    identifiers: initTable[string, string]()
+    identifiers: initTable[string, string](),
+    custom: newJObject()
   )
+  if allowedSkills.len > 0:
+    var arr = newJArray()
+    for s in allowedSkills: arr.add(%s)
+    ent.custom["allowed_skills"] = arr
   graph.entities[newID] = ent
   graph.nameIndex[customerName] = newID
   var agent = graph.entities[agentID]
@@ -1146,18 +1153,22 @@ proc mintCustomerInvite*(cfg: Config, workspace: string,
       for i, l in bLines:
         if l.strip().startsWith("build(currentSourcePath"):
           insertAt = i; break
-      let newBlock = @[
+      var newBlock = @[
         "",
         "person \"" & customerName & "\":",
         "  permission \"Customer\""
       ]
+      for s in allowedSkills:
+        newBlock.add("  skill \"" & s & "\"")
       var merged = bLines[0 ..< insertAt]
       for l in newBlock: merged.add(l)
       for i in insertAt ..< bLines.len: merged.add(bLines[i])
       writeFile(baseNims, merged.join("\n"))
 
+  var asSeq: seq[string]
+  for s in allowedSkills: asSeq.add(s)
   result = CustomerInviteResult(
-    ok: true, code: code, targetNcId: alias,
+    ok: true, code: code, targetNcId: alias, allowedSkills: asSeq,
     customerName: customerName, agentName: agentName,
     maxUses: maxUses, issuer: issuer)
 

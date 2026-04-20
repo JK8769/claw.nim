@@ -530,16 +530,26 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       if uint32(entID) > 0:
         issuer = toAlias(entID)
     var parts = strutils.splitWhitespace(cmd)
-    # Strip --lang=<code> anywhere in the arg vector so positional
-    # parsing stays simple. Target language is null (English) when
-    # absent.
+    # Strip optional flags. `--lang` = paste-template language.
+    # `--skill` (repeatable) or `--skills` (comma-separated) build the
+    # customer's skill allowlist — each entry is a grant in
+    # `[user@]skill[/res,…]` form.
     var targetLang = ""
+    var allowedSkills: seq[string]
     var positional: seq[string]
     for i in 0 ..< parts.len:
       let p = parts[i]
       if i == 0: positional.add(p); continue  # keep "/invite"
-      if p.startsWith("--lang="): targetLang = p["--lang=".len .. ^1]
-      else: positional.add(p)
+      if p.startsWith("--lang="):
+        targetLang = p["--lang=".len .. ^1]
+      elif p.startsWith("--skill="):
+        allowedSkills.add(p["--skill=".len .. ^1])
+      elif p.startsWith("--skills="):
+        for s in p["--skills=".len .. ^1].split(','):
+          let s2 = s.strip()
+          if s2.len > 0: allowedSkills.add(s2)
+      else:
+        positional.add(p)
     parts = positional
     if parts.len < 2:
       return renderCommandDetail("/user")
@@ -553,7 +563,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       try: maxUses = parseInt(parts[3])
       except: discard
     let inv = mintCustomerInvite(cfg[], workspace, issuer, customerName,
-                                  agentName, maxUses)
+                                  agentName, maxUses, allowedSkills)
     if not inv.ok:
       return "Error: " & inv.error
     # Feishu spam filter tolerates natural sentences better than bare
@@ -586,6 +596,9 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            codeBlock("Customer: " & inv.customerName & " (" & inv.targetNcId & ")\n" &
                      "Agent:    " & inv.agentName & "\n" &
                      "Max uses: " & $inv.maxUses &
+                     (if inv.allowedSkills.len > 0:
+                        "\nSkills:   " & inv.allowedSkills.join(", ")
+                      else: "") &
                      (if targetLang.len > 0: "\nLanguage: " & targetLang else: "")) & "\n\n" &
            "**Share one of these with the customer** (Feishu may block\n" &
            "bare codes — wrapping in a sentence usually passes):\n\n" &
@@ -865,7 +878,7 @@ Usage:
   /user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<s>] [--reverse] [--format=<f>]
   /user show <nc-id>
   /user trust
-  /user invite <customer-name> [<agent>] [<uses>] [--lang=<l>]
+  /user invite <customer-name> [<agent>] [<uses>] [--lang=<l>] [--skill=<s>]... [--skills=<cs>]
   /user remove <nc-id>
 
 Options:
@@ -876,6 +889,8 @@ Options:
   --reverse         Reverse sort order
   --format=<f>      table | json  [default: table]
   --lang=<l>        Customer's language for paste templates (zh, en, ja, ko, ru, ar, ...)
+  --skill=<s>       Allowed skill grant (repeatable) — `[user@]skill[/res,...]`
+  --skills=<cs>     Comma-separated shorthand for --skill
 """,
     group: "admin", menuHint: "Users", permission: pmAny,
     examples: @["/user list --kind=Unknown",
@@ -884,6 +899,8 @@ Options:
                 "/user invite Alice",
                 "/user invite Acme Atlas 1",
                 "/user invite Alice --lang=zh",
+                "/user invite JK Atlas --skill=njmkuser@sungrow/627305",
+                "/user invite Acme Atlas --skills=njmkuser@sungrow/627305,njmkuser@sungrow/627306",
                 "/user remove nc:7"]))
   register(SystemCommand(
     name: "/restart", summary: "Restart the gateway (picks up config changes).",

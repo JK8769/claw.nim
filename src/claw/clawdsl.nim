@@ -47,6 +47,8 @@ type
     name*: string
     permission*: string    ## SuperAdmin, Admin, Member
     identifiers*: seq[tuple[channel, id: string]]
+    skills*: seq[string]   ## allowlist in `[user@]skill[/res,...]` form —
+                            ## tool dispatcher checks calls against this.
 
   ClawOrg* = object
     name*: string
@@ -191,6 +193,8 @@ template person*(personName: string, body: untyped) =
       p.permission = perm
     template identifier(chanName, chanId: string) {.used.} =
       p.identifiers.add((channel: chanName, id: chanId))
+    template skill(grant: string) {.used.} =
+      p.skills.add(grant)
     body
     spec.persons.add(p)
 
@@ -661,6 +665,13 @@ proc buildGraph(spec: ClawSpec): JsonNode =
       entity["permission-group"] = %p.permission
     if p.identifiers.len > 0:
       entity["identifiers"] = buildIdentifiers(p.identifiers)
+    if p.skills.len > 0:
+      var arr = newJArray()
+      for s in p.skills: arr.add(%s)
+      # `custom` is a free-form object on WorldEntity; parking skills
+      # under `allowed_skills` there keeps the schema open for other
+      # invite-attached metadata later (plans, quotas, etc.).
+      entity["custom"] = %*{"allowed_skills": arr}
     result.add(entity)
     inc nextId
 
