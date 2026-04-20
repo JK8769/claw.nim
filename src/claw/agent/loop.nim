@@ -617,6 +617,17 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         currentMessages.add(toolResultMsg)
         al.sessions.addFullMessage(opts.sessionKey, toolResultMsg)
 
+      # After finishing all tool calls this iteration: if the LLM sent a
+      # final message via `reply`/`message`, the turn is over. Without
+      # this break, the loop goes back to the LLM, which often treats
+      # the tool-result as incomplete and calls `reply` AGAIN — spamming
+      # the user with duplicate messages (5× observed in the wild before
+      # this fix). `ctx.responseSent` is set inside the dispatch when
+      # reply/message runs; honouring it here matches the check at the
+      # post-loop return and cuts the short-circuit at the right place.
+      if ctx.responseSent:
+        break
+
   # If loop exhausted maxIterations without breaking, make one final LLM call for summary
   if finalContent == "" and (lastResponseContent != "" or toolCallLog.len > 0):
     warnCF("agent", "Tool loop exhausted maxIterations without final response", {"iterations": $iteration, "max": $al.maxIterations, "tool_calls": $toolCallLog.len}.toTable)
