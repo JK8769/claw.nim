@@ -700,13 +700,18 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       if e.len == 0: return ""
       let one = e.replace("\n", " ").replace("\r", " ")
       if one.len > 40: one[0 ..< 40] & "…" else: one
+    proc fmtTokens(n: int): string =
+      if n == 0: "-"
+      elif n < 1000: $n
+      elif n < 1_000_000: $(n div 1000) & "." & $((n mod 1000) div 100) & "k"
+      else: $(n div 1_000_000) & "." & $((n mod 1_000_000) div 100_000) & "M"
     if sub == "list":
-      var rows: seq[string] = @["AGENT       STATE       ITER   ELAPSED     LAST TOOL            OUTCOME"]
+      var rows: seq[string] = @["AGENT       STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
       for a in cfg.agents.named:
         let key = a.name.toLowerAscii()
         let namePad = a.name & spaces(max(0, 12 - a.name.len))
         if not gCtx.offices.hasKey(key):
-          rows.add(namePad & "OOO         -      -           -                    out-of-office")
+          rows.add(namePad & "OOO         -      -           -           -                    out-of-office")
           continue
         let al2 = gCtx.offices[key]
         let toolStr =
@@ -714,10 +719,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           elif al2.liveStartedAt > 0.0: "(no tool yet)"
           else: "-"
         let toolPad = toolStr & spaces(max(0, 20 - toolStr.len))
+        let tokStr = fmtTokens(al2.liveTokensTotal)
+        let tokPad = tokStr & spaces(max(0, 12 - tokStr.len))
         if al2.liveStartedAt == 0.0:
           # idle — show how the last turn ended
           if al2.liveTurnCount == 0:
-            rows.add(namePad & "In-Office   -      -           " & toolPad & "never-ran")
+            rows.add(namePad & "In-Office   -      -           -           " & toolPad & "never-ran")
           else:
             let sinceStr = fmtUptime(now - al2.liveFinishedAt) & " ago"
             let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
@@ -726,7 +733,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
             let outcome =
               if al2.liveLastError.len > 0: "❌ " & shortErr(al2.liveLastError)
               else: "✓ ok (turn " & $al2.liveTurnCount & ")"
-            rows.add(namePad & "In-Office   " & iterPad & elPad & toolPad & outcome)
+            rows.add(namePad & "In-Office   " & iterPad & elPad & tokPad & toolPad & outcome)
         else:
           let elStr = fmtUptime(now - al2.liveStartedAt)
           let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
@@ -735,7 +742,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           let outcome =
             if al2.liveLastError.len > 0: "(last ❌ " & shortErr(al2.liveLastError) & ")"
             else: "running"
-          rows.add(namePad & "Working     " & iterPad & elPad & toolPad & outcome)
+          rows.add(namePad & "Working     " & iterPad & elPad & tokPad & toolPad & outcome)
       return codeBlock(rows.join("\n"))
     let name = sub
     let key = name.toLowerAscii()
@@ -759,7 +766,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         lines.add("Outcome:    ❌ " & al2.liveLastError)
       else:
         lines.add("Outcome:    ✓ ok")
-      lines.add("Total turns since boot: " & $al2.liveTurnCount)
+      if al2.liveTokensTurn > 0:
+        lines.add("Tokens:     " & $al2.liveTokensTurn & " (last turn)")
+      lines.add("Total turns since boot:  " & $al2.liveTurnCount)
+      lines.add("Total tokens since boot: " & $al2.liveTokensTotal)
     else:
       let elapsed = now - al2.liveStartedAt
       lines.add("State:      Working")
@@ -774,7 +784,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         lines.add("Tool log:   " & al2.liveToolLog.join(" → "))
       if al2.liveLastError.len > 0:
         lines.add("Prev error: " & al2.liveLastError)
-      lines.add("Total turns since boot: " & $al2.liveTurnCount)
+      if al2.liveTokensTurn > 0:
+        lines.add("Tokens:     " & $al2.liveTokensTurn & " (this turn so far)")
+      lines.add("Total turns since boot:  " & $al2.liveTurnCount)
+      lines.add("Total tokens since boot: " & $al2.liveTokensTotal)
     return "**Agent " & name & "**\n\n" & codeBlock(lines.join("\n"))
 
   elif cmd == "/restart":

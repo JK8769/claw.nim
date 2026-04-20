@@ -106,6 +106,8 @@ type
     liveToolLog*: seq[string]     ## tools called in the most recent turn (kept)
     liveLastError*: string        ## error from the last turn; empty = OK
     liveTurnCount*: int           ## monotonic counter of completed turns
+    liveTokensTurn*: int          ## tokens used in the current/last turn
+    liveTokensTotal*: int         ## cumulative tokens since gateway start
 
 proc stop*(al: AgentLoop) =
   al.running = false
@@ -353,9 +355,13 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         finalContent = "Error communicating with LLM provider: " & e.msg
       break
 
-    # Accumulate tokens
+    # Accumulate tokens — both on the per-task ctx (for logAction
+    # telemetry) and on the AgentLoop's live state (for /agent
+    # visibility across turns).
     let tokens = response.usage.total_tokens
     ctx.tokensTotal += tokens
+    al.liveTokensTurn += tokens
+    al.liveTokensTotal += tokens
     
     var llmMeta = newJObject()
     llmMeta["iteration"] = %iteration
@@ -798,6 +804,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   al.liveLastTool = ""
   al.liveToolLog = @[]
   al.liveLastError = ""
+  al.liveTokensTurn = 0
   defer:
     al.liveFinishedAt = epochTime()
     al.liveTurnCount.inc
