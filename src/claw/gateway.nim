@@ -678,50 +678,97 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
   elif cmd == "/agent" or cmd == "/agents" or
        cmd.startsWith("/agent ") or cmd.startsWith("/agents "):
     # Live-state inspection. `/agent` or `/agent list` → one-line per agent
-    # with WORKING/idle + iteration + elapsed. `/agent <name>` → full detail:
-    # session, sender, message preview, iteration, last tool, tool log.
+    # with WORKING/idle + iteration + elapsed + outcome (OK/error). Idle rows
+    # show how the previous turn ended so operators can spot silent failures
+    # (HTTP 524 timeouts, tool-loop exhaustion, etc.) without tailing the log.
+    # `/agent <name>` → full detail including last-turn tool log and error.
     let parts = strutils.splitWhitespace(cmd)
     let sub = if parts.len > 1: parts[1] else: "list"
+    let now = epochTime()
+    proc shortErr(e: string): string =
+      if e.len == 0: return ""
+      let one = e.replace("\n", " ").replace("\r", " ")
+      if one.len > 40: one[0 ..< 40] & "…" else: one
     if sub == "list":
-      var rows: seq[string] = @["AGENT       STATE    ITER   ELAPSED  LAST TOOL"]
-      let now = epochTime()
+      var rows: seq[string] = @["AGENT       STATE    ITER   ELAPSED  LAST TOOL           OUTCOME"]
       for a in cfg.agents.named:
         let key = a.name.toLowerAscii()
         let namePad = a.name & spaces(max(0, 12 - a.name.len))
         if not gCtx.offices.hasKey(key):
-          rows.add(namePad & "closed   -      -        -")
+          rows.add(namePad & "closed   -      -        -                   never-opened")
           continue
         let al2 = gCtx.offices[key]
+        let toolStr =
+          if al2.liveLastTool.len > 0: al2.liveLastTool
+          elif al2.liveStartedAt > 0.0: "(no tool yet)"
+          else: "-"
+        let toolPad = toolStr & spaces(max(0, 20 - toolStr.len))
         if al2.liveStartedAt == 0.0:
-          rows.add(namePad & "idle     -      -        -")
+          # idle — describe the last turn
+          if al2.liveTurnCount == 0:
+            rows.add(namePad & "idle     -      -        " & toolPad & "never-ran")
+          else:
+            let sinceStr = fmtUptime(now - al2.liveFinishedAt) & " ago"
+            let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
+            let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
+            let elPad = sinceStr & spaces(max(0, 9 - sinceStr.len))
+            let outcome =
+              if al2.liveLastError.len > 0: "❌ " & shortErr(al2.liveLastError)
+              else: "✓ ok (turn " & $al2.liveTurnCount & ")"
+            rows.add(namePad & "idle     " & iterPad & elPad & toolPad & outcome)
         else:
-          let elapsed = now - al2.liveStartedAt
+          let elStr = fmtUptime(now - al2.liveStartedAt)
           let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
           let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
-          let elStr = fmtUptime(elapsed)
           let elPad = elStr & spaces(max(0, 9 - elStr.len))
-          let tool = if al2.liveLastTool.len > 0: al2.liveLastTool else: "(none yet)"
-          rows.add(namePad & "WORKING  " & iterPad & elPad & tool)
+          let outcome =
+            if al2.liveLastError.len > 0: "(last ❌ " & shortErr(al2.liveLastError) & ")"
+            else: "running"
+          rows.add(namePad & "WORKING  " & iterPad & elPad & toolPad & outcome)
       return codeBlock(rows.join("\n"))
     let name = sub
     let key = name.toLowerAscii()
     if not gCtx.offices.hasKey(key):
       return "Agent `" & name & "` has no open office yet (no message processed this session)."
     let al2 = gCtx.offices[key]
-    if al2.liveStartedAt == 0.0:
-      return "**Agent " & name & "** — idle. Use `/agent list` to see all."
-    let elapsed = epochTime() - al2.liveStartedAt
     var lines: seq[string] = @[]
-    lines.add("State:     WORKING")
-    lines.add("Session:   " & al2.liveSessionKey)
-    lines.add("Sender:    " & al2.liveSenderID)
-    lines.add("Message:   " & al2.liveMessagePreview)
-    lines.add("Iteration: " & $al2.liveIteration & "/" & $al2.maxIterations)
-    lines.add("Elapsed:   " & fmtUptime(elapsed))
-    if al2.liveLastTool.len > 0:
-      lines.add("Last tool: " & al2.liveLastTool)
-    if al2.liveToolLog.len > 0:
-      lines.add("Tool log:  " & al2.liveToolLog.join(" → "))
+    if al2.liveStartedAt == 0.0:
+      # Idle — show last-turn post-mortem
+      if al2.liveTurnCount == 0:
+        return "**Agent " & name & "** — idle, never ran this session."
+      let sinceStr = fmtUptime(now - al2.liveFinishedAt)
+      let durStr =
+        if al2.liveFinishedAt > 0 and al2.liveTurnCount > 0:
+          let approxStart = al2.liveFinishedAt - 0.0  # duration not tracked exactly; use iter as proxy
+          "(" & $al2.liveIteration & " iters)"
+        else: ""
+      lines.add("State:      idle (" & sinceStr & " ago)")
+      lines.add("Last msg:   " & al2.liveLastMessagePreview)
+      lines.add("Iterations: " & $al2.liveIteration & "/" & $al2.maxIterations & " " & durStr)
+      if al2.liveLastTool.len > 0:
+        lines.add("Last tool:  " & al2.liveLastTool)
+      if al2.liveToolLog.len > 0:
+        lines.add("Tool log:   " & al2.liveToolLog.join(" → "))
+      if al2.liveLastError.len > 0:
+        lines.add("Outcome:    ❌ " & al2.liveLastError)
+      else:
+        lines.add("Outcome:    ✓ ok")
+      lines.add("Total turns since boot: " & $al2.liveTurnCount)
+    else:
+      let elapsed = now - al2.liveStartedAt
+      lines.add("State:      WORKING")
+      lines.add("Session:    " & al2.liveSessionKey)
+      lines.add("Sender:     " & al2.liveSenderID)
+      lines.add("Message:    " & al2.liveMessagePreview)
+      lines.add("Iteration:  " & $al2.liveIteration & "/" & $al2.maxIterations)
+      lines.add("Elapsed:    " & fmtUptime(elapsed))
+      if al2.liveLastTool.len > 0:
+        lines.add("Last tool:  " & al2.liveLastTool)
+      if al2.liveToolLog.len > 0:
+        lines.add("Tool log:   " & al2.liveToolLog.join(" → "))
+      if al2.liveLastError.len > 0:
+        lines.add("Prev error: " & al2.liveLastError)
+      lines.add("Total turns since boot: " & $al2.liveTurnCount)
     return "**Agent " & name & "**\n\n" & codeBlock(lines.join("\n"))
 
   elif cmd == "/restart":

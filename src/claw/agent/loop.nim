@@ -86,15 +86,25 @@ type
       ## execution — the role.grant list becomes authoritative, not cosmetic.
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
-    # Live state — observable via `/agent <name>` from chat. Zero when idle.
-    # Set at runAgentLoop entry, updated per iteration / tool call, cleared on exit.
-    liveStartedAt*: float       ## epochTime when current task began; 0 = idle
-    liveSessionKey*: string     ## session being processed right now
-    liveSenderID*: string       ## who sent the in-flight message
-    liveMessagePreview*: string ## first ~80 chars of the user's message
-    liveIteration*: int         ## current iteration number in the loop
-    liveLastTool*: string       ## name of the most recently executed tool
-    liveToolLog*: seq[string]   ## tool names called in this turn (just names)
+    # Live state — observable via `/agent <name>` from chat. Two-phase:
+    #   WORKING fields (cleared on defer): liveStartedAt, liveSessionKey,
+    #     liveSenderID, liveMessagePreview.
+    #   LAST-RUN fields (kept across turns for post-mortem): liveFinishedAt,
+    #     liveIteration, liveLastTool, liveToolLog, liveLastError,
+    #     liveTurnCount, liveLastMessagePreview.
+    # When liveStartedAt == 0 → agent is idle; use last-run fields to show
+    # how the previous turn ended (OK / error with message).
+    liveStartedAt*: float         ## epochTime when current task began; 0 = idle
+    liveFinishedAt*: float        ## epochTime when last task ended; 0 = never
+    liveSessionKey*: string       ## session of the IN-FLIGHT task (cleared on idle)
+    liveSenderID*: string         ## sender of the IN-FLIGHT task (cleared on idle)
+    liveMessagePreview*: string   ## message of the IN-FLIGHT task (cleared on idle)
+    liveLastMessagePreview*: string  ## message of the LAST task (kept)
+    liveIteration*: int           ## last iteration reached (kept across turns)
+    liveLastTool*: string         ## most recently executed tool (kept)
+    liveToolLog*: seq[string]     ## tools called in the most recent turn (kept)
+    liveLastError*: string        ## error from the last turn; empty = OK
+    liveTurnCount*: int           ## monotonic counter of completed turns
 
 proc stop*(al: AgentLoop) =
   al.running = false
@@ -337,6 +347,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       response = await al.provider.chat(currentMessages, toolDefs, al.model, options)
     except Exception as e:
       errorCF("agent", "LLM API request failed", {"error": e.msg, "iteration": $iteration}.toTable)
+      al.liveLastError = "LLM: " & e.msg
       if finalContent == "":
         finalContent = "Error communicating with LLM provider: " & e.msg
       break
@@ -738,24 +749,30 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   if opts.userRole == "": opts.userRole = "Guest"
 
   # Stamp live state so `/agent <name>` can observe in-flight work from chat.
-  # Cleared via `defer` on any exit path (normal return, exception, early break).
+  # `defer` handles the WORKING→idle transition on any exit path, but LAST-RUN
+  # fields (iteration, tool log, error, turnCount) are kept so `/agent` can
+  # show "last turn: iter 4, error=HTTP 524" when the agent is idle.
   al.liveStartedAt = epochTime()
   al.liveSessionKey = opts.sessionKey
   al.liveSenderID = opts.senderID
-  al.liveMessagePreview =
+  let msgPreview =
     if opts.userMessage.len > 80: opts.userMessage[0 ..< 80] & "…"
     else: opts.userMessage
+  al.liveMessagePreview = msgPreview
+  al.liveLastMessagePreview = msgPreview
   al.liveIteration = 0
   al.liveLastTool = ""
   al.liveToolLog = @[]
+  al.liveLastError = ""
   defer:
+    al.liveFinishedAt = epochTime()
+    al.liveTurnCount.inc
     al.liveStartedAt = 0.0
     al.liveSessionKey = ""
     al.liveSenderID = ""
     al.liveMessagePreview = ""
-    al.liveIteration = 0
-    al.liveLastTool = ""
-    al.liveToolLog = @[]
+    # KEEP liveIteration, liveLastTool, liveToolLog, liveLastError for
+    # post-mortem inspection via `/agent <name>` on the idle agent.
   # Refresh the cached graph so identifiers stamped by the gateway's
   # bind check (or any other out-of-loop mutation like invite redeem)
   # are visible for resolution. Small file, cheap read — protects us
