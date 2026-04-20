@@ -1262,14 +1262,22 @@ Options:
           except: discard
 
         var response = ""
+        # Load the world graph ONCE per inbound message. The four inline
+        # checks below (bindCheck, invite-redemption, stranger-gate,
+        # group-chat filter) all share `msgGraph` instead of each doing
+        # their own `loadWorld`. Mutations via `saveWorld` still persist
+        # to disk; they're also visible downstream in the same message
+        # because the in-memory graph is shared.
+        let workspace = cfg[].workspacePath()
+        var msgGraph = loadWorld(workspace)
+
         # SuperAdmin bind-code check — runs BEFORE the LLM so an
         # unauthenticated first-contact carrying the printed code can
         # claim the declared SuperAdmin's identifier without ever
         # reaching the model. Wrong / absent codes fall through as a
         # normal guest message.
         block bindCheck:
-          let workspace = cfg[].workspacePath()
-          let g = loadWorld(workspace)
+          let g = msgGraph
           let channelKey =
             if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
               msg.channel & ":" & msg.metadata["app_id"]
@@ -1303,8 +1311,7 @@ Options:
         # invite string ever hitting the model. Falls through to normal
         # LLM handling for non-code content.
         if response == "":
-          let workspace = cfg[].workspacePath()
-          var g = loadWorld(workspace)
+          var g = msgGraph
           let (parsedNcId, parsedCode) = parseInviteString(plainContent)
           if parsedCode.len > 0:
             var invMap = loadInvites(workspace)
@@ -1372,8 +1379,7 @@ Options:
         # Bind-code and invite-code paths above already had their shot;
         # if we're here, the stranger sent neither.
         if response == "":
-          let workspace2 = cfg[].workspacePath()
-          let g2 = loadWorld(workspace2)
+          let g2 = msgGraph
           let channelKey2 =
             if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
               msg.channel & ":" & msg.metadata["app_id"]
@@ -1414,8 +1420,7 @@ Options:
           let agentName = recipient
           let mentioned = ("@" & agentName.toLowerAscii) in plainContent.toLowerAscii
           if not mentioned:
-            let workspace = cfg[].workspacePath()
-            let g = loadWorld(workspace)
+            let g = msgGraph
             let channelKey =
               if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
                 msg.channel & ":" & msg.metadata["app_id"]
