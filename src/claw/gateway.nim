@@ -663,19 +663,44 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # SuperAdmin already.
     let clawBin = getAppFilename()
     let myPidHere = getpid()
-    # Detached child survives our death (setsid under poDaemon).
-    # Signal us directly with the known PID — avoids `co stop`'s
-    # service-dir lookup which can miss when NIMCLAW env isn't
-    # picked up cleanly in the forked shell. Wait for the process
-    # to actually exit (up to ~5s) before starting the new gateway
-    # so we don't hit the "already running" guard.
+    # Detached child survives our death (setsid under poDaemon). The
+    # shutdown path is defence-in-depth because `FeishuChannel.stop`'s
+    # `joinThread` can hang on a lark-cli subscriber still blocked in
+    # `readLine` — if we just SIGTERM and trust the graceful shutdown,
+    # a half-dead gateway keeps its lark-cli children alive and races
+    # the new gateway for Feishu events.
+    #   1. SIGTERM the whole process group (picks up lark-cli children).
+    #   2. Wait up to 5s for graceful exit.
+    #   3. SIGKILL fallback on the group + PID if still alive.
+    #   4. `exec` the new gateway — no shell wrapper stays as parent.
+    # The new gateway's own startup guard (isProcessAlive check against
+    # the PID file) is left to handle the pathological case where
+    # SIGKILL itself failed — better to refuse to start than duplicate.
+    # PGID guard: only group-kill when PGID == PID (gateway is its own
+    # session leader via poDaemon/setsid). Foreground `claw gateway`
+    # launched from a terminal shares its PGID with the shell — we
+    # don't want to take the shell down too.
     let logPath = getNimClawDir() / "logs" / "restart.log"
-    let script = "sleep 2 && kill -TERM " & $myPidHere & " 2>/dev/null ; " &
-                 "for i in $(seq 1 25); do kill -0 " & $myPidHere &
-                 " 2>/dev/null || break; sleep 0.2; done ; " &
-                 "rm -f '" & getNimClawDir() & "/logs/gateway.pid' ; " &
-                 "NIMCLAW_DIR='" & getNimClawDir() &
-                 "' '" & clawBin & "' gateway > '" & logPath & "' 2>&1"
+    let dirPath = getNimClawDir()
+    let script =
+      "sleep 2; " &
+      "OLD=" & $myPidHere & "; " &
+      "PGID=$(ps -o pgid= -p \"$OLD\" 2>/dev/null | tr -d ' '); " &
+      "if [ -n \"$PGID\" ] && [ \"$PGID\" = \"$OLD\" ]; then " &
+      "  kill -TERM -\"$PGID\" 2>/dev/null; " &
+      "else " &
+      "  kill -TERM \"$OLD\" 2>/dev/null; " &
+      "fi; " &
+      "for i in $(seq 1 25); do kill -0 \"$OLD\" 2>/dev/null || break; sleep 0.2; done; " &
+      "if kill -0 \"$OLD\" 2>/dev/null; then " &
+      "  if [ -n \"$PGID\" ] && [ \"$PGID\" = \"$OLD\" ]; then " &
+      "    kill -KILL -\"$PGID\" 2>/dev/null; " &
+      "  fi; " &
+      "  kill -KILL \"$OLD\" 2>/dev/null; " &
+      "  for i in $(seq 1 10); do kill -0 \"$OLD\" 2>/dev/null || break; sleep 0.2; done; " &
+      "fi; " &
+      "NIMCLAW_DIR='" & dirPath & "' exec '" & clawBin &
+      "' gateway > '" & logPath & "' 2>&1"
     discard startProcess("/bin/sh",
                          args = @["-c", script],
                          options = {poDaemon, poUsePath})
@@ -784,13 +809,20 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
   if debug: setLevel(DEBUG)
 
   # PID file — company-scoped so `claw company list` can show RUNNING per company.
+  # Startup guard. A stale PID file (owner SIGKILLed, so addExitProc
+  # didn't fire) is fine — `isProcessAlive` filters that out. A live
+  # PID is fatal: two gateways on the same Feishu event stream split
+  # messages arbitrarily between them and neither recovers. If this
+  # fires during `/restart`, the old gateway's shutdown failed and
+  # needs manual intervention (`kill -9` + check for orphan lark-cli).
   let companyPidPath = gatewayPidPath()
   if fileExists(companyPidPath):
     try:
       let oldPid = readFile(companyPidPath).strip().parseInt()
       if isProcessAlive(oldPid):
-        echo "Error: gateway is already running for this company (PID: ", oldPid, ")"
-        echo "Use 'claw company stop' to stop it."
+        stderr.writeLine "Error: gateway already running (PID ", oldPid, ") — refusing to start a duplicate."
+        stderr.writeLine "If this came from `/restart`, the old gateway didn't die; inspect with `ps -p ", oldPid, "` and `kill -9` if stuck."
+        stderr.writeLine "Otherwise: `claw company stop`."
         quit(1)
     except: discard
 
