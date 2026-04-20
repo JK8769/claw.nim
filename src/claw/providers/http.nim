@@ -68,28 +68,48 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
 
   var jsonMessages = newJArray()
   for m in messages:
-    var jMsg = %*{
-      "role": m.role,
-      "content": sanitizeUtf8(m.content)
-    }
+    var jMsg = %*{"role": m.role}
+    let hasToolCalls = m.role == "assistant" and m.tool_calls.len > 0
+    # Moonshot/Kimi rejects any assistant message with empty content,
+    # even when tool_calls are present (DeepSeek/OpenAI tolerate ""
+    # there). Normalize:
+    #   - assistant + tool_calls + empty → omit `content` (OpenAI-spec fine)
+    #   - assistant + no tool_calls + empty → substitute " " (prior sessions
+    #       saved these before the fix; dropping the turn re-breaks the
+    #       user↔assistant pairing)
+    #   - other roles keep "" for parity with the old behaviour
+    if m.content != "":
+      jMsg["content"] = %sanitizeUtf8(m.content)
+    elif hasToolCalls:
+      discard   # content omitted
+    elif m.role == "assistant":
+      jMsg["content"] = %" "
+    else:
+      jMsg["content"] = %""
     if m.reasoning_content != "":
       jMsg["reasoning_content"] = %sanitizeUtf8(m.reasoning_content)
     if m.role == "tool":
       jMsg["tool_call_id"] = %m.tool_call_id
       if m.name != "": jMsg["name"] = %sanitizeToolName(m.name)
-    elif m.role == "assistant" and m.tool_calls.len > 0:
+    elif hasToolCalls:
       var jCalls = newJArray()
       for tc in m.tool_calls:
+        # `tc.name` is the canonical field (populated by the parser and
+        # used everywhere in loop.nim); `tc.function.name` is a legacy
+        # nested mirror that was never filled in — reading it produced
+        # empty-name tool_calls in the history, which DeepSeek tolerated
+        # but Xiaomi/Moonshot reject. Same for arguments.
+        let argsStr = if tc.function.arguments.len > 0: tc.function.arguments
+                      else: $(%*tc.arguments)
         jCalls.add(%*{
           "id": tc.id,
           "type": tc.`type`,
           "function": %*{
-            "name": sanitizeToolName(tc.function.name),
-            "arguments": tc.function.arguments
+            "name": sanitizeToolName(tc.name),
+            "arguments": argsStr
           }
         })
       jMsg["tool_calls"] = jCalls
-      if m.content == "": jMsg["content"] = %""
     jsonMessages.add(jMsg)
 
   var requestBody = %*{
@@ -190,10 +210,25 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
     if msg.hasKey("content") and msg["content"].kind != JNull:
       llmResp.content = msg["content"].getStr()
     
+    # Reasoning field naming differs across providers:
+    #   DeepSeek / o1    → "reasoning_content"
+    #   Kimi (Moonshot)  → "reasoning"  (plus structured "reasoning_details")
+    # Kimi's thinking mode requires the trace to be echoed back on the
+    # next turn, so capturing it here is not optional — a missing trace
+    # causes HTTP 400 on the follow-up call.
     if msg.hasKey("reasoning_content") and msg["reasoning_content"].kind != JNull:
       llmResp.reasoning_content = msg["reasoning_content"].getStr()
+    elif msg.hasKey("reasoning") and msg["reasoning"].kind != JNull:
+      llmResp.reasoning_content = msg["reasoning"].getStr()
+    elif msg.hasKey("reasoning_details") and msg["reasoning_details"].kind == JArray:
+      var parts: seq[string]
+      for d in msg["reasoning_details"]:
+        let t = d{"text"}.getStr("")
+        if t.len > 0: parts.add(t)
+      if parts.len > 0:
+        llmResp.reasoning_content = parts.join("\n")
 
-    if msg.hasKey("tool_calls"):
+    if msg.hasKey("tool_calls") and msg["tool_calls"].kind == JArray:
       for tc in msg["tool_calls"]:
         infoCF("http_provider", "Raw tool_call from LLM", {"raw": $tc}.toTable)
         var toolCall = ToolCall(
@@ -231,10 +266,17 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
             warnCF("http_provider", "Fixed malformed tool call name (space)", {"original": fn["name"].getStr(), "fixed_name": rawName, "extracted_command": extra}.toTable)
 
           toolCall.name = rawName
+          # Keep the raw JSON string as the canonical argument form — it's
+          # what we echo back to the LLM on the next turn (some providers
+          # are picky about quoting). The Table form is only used by the
+          # tool-dispatch layer that wants typed access.
+          toolCall.function.name = rawName
+          toolCall.function.arguments = argsStr
           try:
             let argsJson = parseJson(argsStr)
-            for k, v in argsJson.fields:
-              toolCall.arguments[k] = v
+            if argsJson.kind == JObject:
+              for k, v in argsJson.fields:
+                toolCall.arguments[k] = v
           except:
             if argsStr.len > 0 and argsStr != "{}":
               toolCall.arguments["raw"] = %argsStr

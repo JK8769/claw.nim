@@ -63,8 +63,38 @@ proc askPeerImpl(agentName, prompt, senderAlias, callerSessionKey: string): Futu
   return await peer.processDirect(prompt, sessionKey, sender, "internal")
 
 proc makeAgentLoop(agentName: string): AgentLoop =
-  newAgentLoop(gCtx.cfg, gCtx.msgBus, gCtx.provider, agentName,
-               gCtx.cronService, askPeer = askPeerImpl)
+  ## Resolve per-agent model + provider overrides from the ClawDSL spec
+  ## (e.g. Lexi on kimi-k2.5 @ opencode-go while Atlas stays on deepseek).
+  ## Without this, every agent silently inherited `gCtx.provider` and the
+  ## `cfg.agents.defaults.model` fallback — defeating BASE.nims's per-agent
+  ## `model "…"` / `provider "…"` lines.
+  var perAgentProvider = gCtx.provider
+  var perAgentModel = ""
+  for a in gCtx.cfg.agents.named:
+    if a.name.toLowerAscii() != agentName.toLowerAscii(): continue
+    if a.model.len > 0: perAgentModel = a.model
+    if a.provider.len > 0 and a.provider != gCtx.cfg.default_provider:
+      try:
+        let graph = loadWorld(gCtx.cfg.workspacePath())
+        let resolveModel = if perAgentModel.len > 0: perAgentModel
+                           else: gCtx.cfg.agents.defaults.model
+        let tech = resolveProviderTech(resolveModel, a.provider,
+                                       graph.providers,
+                                       providerOverride = a.provider)
+        if tech.apiBase.len > 0 and tech.apiKey.len > 0:
+          perAgentProvider = createProvider(tech.model, tech.apiKey, tech.apiBase)
+          infoCF("gateway", "Per-agent provider override",
+            {"agent": agentName, "provider": a.provider,
+             "model": tech.model, "apiBase": tech.apiBase}.toTable)
+        else:
+          warnCF("gateway", "Per-agent provider override skipped — missing apiBase or apiKey",
+            {"agent": agentName, "provider": a.provider}.toTable)
+      except CatchableError as e:
+        warnCF("gateway", "Per-agent provider resolve failed",
+          {"agent": agentName, "provider": a.provider, "error": e.msg}.toTable)
+    break
+  newAgentLoop(gCtx.cfg, gCtx.msgBus, perAgentProvider, agentName,
+               gCtx.cronService, model = perAgentModel, askPeer = askPeerImpl)
 
 proc ensureOffice(agentName: string): AgentLoop =
   let key = agentName.toLowerAscii
