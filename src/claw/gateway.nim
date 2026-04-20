@@ -2,7 +2,7 @@
 ## gateway — Long-running gateway process: agents, channels, cron.
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
-import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random]
+import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
 import tools/delegate as delegate_tool
@@ -143,14 +143,60 @@ proc hasNonAscii(s: string): bool =
     if c.uint8 >= 0x80: return true
   false
 
-proc maybeTranslate(cfg: ref Config, src, userSample: string): Future[string] {.async.} =
-  ## If the user's last message used non-English characters, run the
-  ## system-generated English reply through the LLM once to translate
-  ## to the user's language. Only fires on the authenticated / one-shot
-  ## paths (bind confirmation, invite redemption) — not the rejection
-  ## path which must stay zero-cost. Silent fallback to English on
-  ## provider error or timeout.
-  if not hasNonAscii(userSample): return src
+proc detectLang*(s: string): string =
+  ## Dominant-script heuristic — returns a BCP-47 style tag. Walks
+  ## codepoints once, tallies per-script votes, returns the plurality
+  ## winner. Covers the common cases we see in practice; falls back to
+  ## "en" for ASCII or unrecognised scripts.
+  var han, hira, kata, hangul, cyr, arab, other = 0
+  for r in s.runes:
+    let cp = r.int32
+    if cp < 0x80: discard
+    elif cp in 0x4E00 .. 0x9FFF or cp in 0x3400 .. 0x4DBF: inc han
+    elif cp in 0x3040 .. 0x309F: inc hira
+    elif cp in 0x30A0 .. 0x30FF: inc kata
+    elif cp in 0xAC00 .. 0xD7AF: inc hangul
+    elif cp in 0x0400 .. 0x04FF: inc cyr
+    elif cp in 0x0600 .. 0x06FF: inc arab
+    else: inc other
+  # Japanese is Hiragana/Katakana (han+kana is still Japanese, but if
+  # only han with no kana it's almost certainly Chinese).
+  if hira + kata > 0: return "ja"
+  if hangul > 0: return "ko"
+  if han > 0: return "zh"
+  if cyr > 0: return "ru"
+  if arab > 0: return "ar"
+  "en"
+
+const refusalByLang = {
+  "en": "Sorry, I don't recognize you on this channel. Please send the " &
+        "invitation code you received from the operator (e.g. `ABC-123` " &
+        "or `nc:X/ABC-123`) to authenticate. If you don't have a code, " &
+        "ask the operator to issue one for you.",
+  "zh": "抱歉，我不认识您在该渠道上的身份。请发送运营人员发给您的" &
+        "邀请码（例如 `ABC-123` 或 `nc:X/ABC-123`）进行身份验证。" &
+        "如果您还没有邀请码，请联系运营人员为您生成一个。",
+  "ja": "申し訳ありません。このチャンネルであなたを認識できません。" &
+        "管理者から受け取った招待コード（例: `ABC-123` または " &
+        "`nc:X/ABC-123`）を送信して認証してください。コードをお持ちで" &
+        "ない場合は、管理者にコードの発行を依頼してください。",
+  "ko": "죄송하지만, 이 채널에서 귀하를 인식할 수 없습니다. 운영자로부터" &
+        "받은 초대 코드(예: `ABC-123` 또는 `nc:X/ABC-123`)를 보내서" &
+        "인증해 주세요. 코드가 없다면 운영자에게 코드 발급을 요청하세요.",
+}.toTable
+
+proc maybeTranslate(cfg: ref Config, src, userSample: string,
+                     targetLang: string = ""): Future[string] {.async.} =
+  ## If the user's last message used non-English characters (or an
+  ## explicit `targetLang` is provided), run the English `src` through
+  ## the LLM and append the translation. `targetLang` uses BCP-47-ish
+  ## tags (zh, en, ja, ko, …); when empty we detect from `userSample`.
+  ## Returns the original src on any error so callers always get
+  ## something printable.
+  let lang =
+    if targetLang.len > 0: targetLang.toLowerAscii
+    else: detectLang(userSample)
+  if lang == "en": return src
   try:
     let graph = loadWorld(cfg[].workspacePath())
     if graph == nil: return src
@@ -160,12 +206,11 @@ proc maybeTranslate(cfg: ref Config, src, userSample: string): Future[string] {.
     if tech.apiBase == "" or tech.apiKey == "": return src
     let provider = createProvider(tech.model, tech.apiKey, tech.apiBase)
     let sysPrompt = "You are a terse translator. Translate the user's " &
-                    "English text into the same language they spoke in " &
-                    "their previous message. Keep inline code spans, " &
-                    "URLs, and code blocks EXACTLY as-is. Output only " &
-                    "the translation, no preamble."
-    let userPrompt = "Previous user message (detect language):\n" &
-                     userSample & "\n\nEnglish text to translate:\n" & src
+                    "English text into the target language. Keep inline " &
+                    "code spans, URLs, and code blocks EXACTLY as-is. " &
+                    "Output only the translation, no preamble."
+    let userPrompt = "Target language: " & lang &
+                     "\n\nEnglish text to translate:\n" & src
     let messages = @[
       providers_types.Message(role: "system", content: sysPrompt),
       providers_types.Message(role: "user", content: userPrompt)]
@@ -399,7 +444,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # runUserCommand / mintCustomerInvite so CLI and chat share the
     # same backend. `/user invite` rewrites to the `/invite` alias
     # below for presentation-layer formatting.
-    let rawParts = cmd.splitWhitespace()
+    let rawParts = strutils.splitWhitespace(cmd)
     let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
     if argv.len == 0 or argv[0] == "help":
       return renderCommandDetail("/user")
@@ -484,7 +529,18 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
       if uint32(entID) > 0:
         issuer = toAlias(entID)
-    let parts = cmd.splitWhitespace()
+    var parts = strutils.splitWhitespace(cmd)
+    # Strip --lang=<code> anywhere in the arg vector so positional
+    # parsing stays simple. Target language is null (English) when
+    # absent.
+    var targetLang = ""
+    var positional: seq[string]
+    for i in 0 ..< parts.len:
+      let p = parts[i]
+      if i == 0: positional.add(p); continue  # keep "/invite"
+      if p.startsWith("--lang="): targetLang = p["--lang=".len .. ^1]
+      else: positional.add(p)
+    parts = positional
     if parts.len < 2:
       return renderCommandDetail("/user")
     let customerName = parts[1]
@@ -503,14 +559,34 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # Feishu spam filter tolerates natural sentences better than bare
     # codes; give the SuperAdmin three paste-ready options at different
     # verbosity levels — intercept matches on substring.
-    let paste1 = "Hi — my access code is " & inv.code &
+    var paste1 = "Hi — my access code is " & inv.code &
                  ", please activate. Thanks!"
-    let paste2 = inv.customerName & " here. My invite code: " & inv.code & "."
-    let paste3 = inv.targetNcId & "/" & inv.code
+    var paste2 = inv.customerName & " here. My invite code: " & inv.code & "."
+    let paste3 = inv.targetNcId & "/" & inv.code   # never translate — structural
+    # Translate the two natural-sentence templates into the customer's
+    # language (when specified), so the SuperAdmin can copy-paste
+    # directly. paste3 stays as-is — it's a machine string, not prose.
+    # The code value must survive translation unchanged: use a
+    # placeholder then swap back in.
+    if targetLang.len > 0 and targetLang.toLowerAscii notin ["en", "en-us"]:
+      let placeholder = "§§CODE§§"
+      proc tr(src, lang: string): Future[string] {.async.} =
+        let srcHidden = src.replace(inv.code, placeholder)
+        let res = await maybeTranslate(cfg, srcHidden, "", lang)
+        # maybeTranslate appends translation to src; keep only the
+        # translated tail (after the first \n\n).
+        let sep = res.find("\n\n")
+        let tail = if sep >= 0: res[sep + 2 .. ^1] else: res
+        return tail.replace(placeholder, inv.code)
+      try:
+        paste1 = await tr(paste1, targetLang)
+        paste2 = await tr(paste2, targetLang)
+      except: discard
     return "**Customer invite created**\n\n" &
            codeBlock("Customer: " & inv.customerName & " (" & inv.targetNcId & ")\n" &
                      "Agent:    " & inv.agentName & "\n" &
-                     "Max uses: " & $inv.maxUses) & "\n\n" &
+                     "Max uses: " & $inv.maxUses &
+                     (if targetLang.len > 0: "\nLanguage: " & targetLang else: "")) & "\n\n" &
            "**Share one of these with the customer** (Feishu may block\n" &
            "bare codes — wrapping in a sentence usually passes):\n\n" &
            codeBlock(paste1) & "\n" &
@@ -523,7 +599,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
   elif cmd == "/help" or cmd.startsWith("/help "):
     # Entry gate confirms SuperAdmin, so show everything (no 🔒 filter).
-    let parts = cmd.splitWhitespace()
+    let parts = strutils.splitWhitespace(cmd)
     if parts.len >= 2:
       return renderCommandDetail(parts[1])
     return renderHelp(pmSuperAdmin)
@@ -532,7 +608,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # `/channel auth feishu <app_id> <app_secret> [<agent>]`
     # `/channel list`
     # Entry gate already confirmed SuperAdmin.
-    let rawParts = cmd.splitWhitespace()
+    let rawParts = strutils.splitWhitespace(cmd)
     # parts[0] = "/channel", pass the rest to docopt.
     let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
     let pr = parseArgs("/channel", cmd, argv)
@@ -789,7 +865,7 @@ Usage:
   /user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<s>] [--reverse] [--format=<f>]
   /user show <nc-id>
   /user trust
-  /user invite <customer-name> [<agent>] [<uses>]
+  /user invite <customer-name> [<agent>] [<uses>] [--lang=<l>]
   /user remove <nc-id>
 
 Options:
@@ -799,6 +875,7 @@ Options:
   --sort=<s>        nc | name | kind | permission | tier | role
   --reverse         Reverse sort order
   --format=<f>      table | json  [default: table]
+  --lang=<l>        Customer's language for paste templates (zh, en, ja, ko, ru, ar, ...)
 """,
     group: "admin", menuHint: "Users", permission: pmAny,
     examples: @["/user list --kind=Unknown",
@@ -806,6 +883,7 @@ Options:
                 "/user trust",
                 "/user invite Alice",
                 "/user invite Acme Atlas 1",
+                "/user invite Alice --lang=zh",
                 "/user remove nc:7"]))
   register(SystemCommand(
     name: "/restart", summary: "Restart the gateway (picks up config changes).",
@@ -1075,19 +1153,15 @@ Options:
           if not recognized:
             stderr.writeLine "claw: refused unknown sender " & channelKey2 &
                              " ← " & msg.sender_id
-            # Bilingual template — no LLM call on the refusal path
-            # (would defeat the whole point of gating strangers). Both
-            # languages shown so the customer gets usable guidance
-            # regardless of which they speak.
+            # Zero-LLM refusal: pick from a pre-translated catalog
+            # based on detected script in the stranger's own message.
+            # An English-ish message gets English; Chinese gets
+            # Chinese; unsupported scripts fall back to a bilingual
+            # EN+ZH template (SunGrow's primary customer base).
+            let lang = detectLang(plainContent)
             response =
-              "Sorry, I don't recognize you on this channel. Please " &
-              "send the invitation code you received from the operator " &
-              "(e.g. `ABC-123` or `nc:X/ABC-123`) to authenticate. If " &
-              "you don't have a code, ask the operator to issue one " &
-              "for you.\n\n" &
-              "抱歉，我不认识您在该渠道上的身份。请发送运营人员发给您的" &
-              "邀请码（例如 `ABC-123` 或 `nc:X/ABC-123`）进行身份验证。" &
-              "如果您还没有邀请码，请联系运营人员为您生成一个。"
+              if refusalByLang.hasKey(lang): refusalByLang[lang]
+              else: refusalByLang["en"] & "\n\n" & refusalByLang["zh"]
 
         # Group-chat response policy: reply iff @mention OR the sender
         # has a `reportsTo`/`serves` relationship with this agent (in
