@@ -1445,8 +1445,17 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
         if fileExists(binaryPath):
           infoCF("agent", "Loading persistent MCP tool",
             {"name": toolName, "path": binaryPath, "tier": srcLabel}.toTable)
-          # Use 'system' as session key so these aren't purged by per-session cleanup
-          discard toolsRegistry.registerMcpServer(binaryPath, @[], "system", @[])
+          # Use 'system' as session key so these aren't purged by per-session cleanup.
+          # `waitFor` instead of `discard` — otherwise the registration task is
+          # scheduled but not guaranteed to complete before the first turn.
+          # That leaves downstream consumers (e.g. per-requester skill-grant
+          # expansion that scans `tools.list()` for `mcp_<skill>_*` prefixes)
+          # querying an incomplete registry and finding nothing to grant.
+          try:
+            waitFor toolsRegistry.registerMcpServer(binaryPath, @[], "system", @[])
+          except Exception as e:
+            errorCF("agent", "Failed to register persistent MCP tool",
+                    {"path": binaryPath, "error": e.msg}.toTable)
   
   # Phase 401: Scan agent-specific forged MCP tools.
   # Primary path: officeDir/workstation/mcp/ (Tier 3, consistent with workstation/skills/).
