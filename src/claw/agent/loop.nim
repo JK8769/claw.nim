@@ -507,11 +507,24 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
             warnCF("agent", "Skipping tool call with empty name", {"id": tc.id, "iteration": $iteration}.toTable)
 
       if validCalls.len == 0:
-        # All tool calls had empty names — nudge to retry (up to 3 times)
+        # All tool calls had empty names — nudge to retry, but cap tightly.
+        # Empty-name tool calls are usually a DeepSeek regression (schema
+        # confusion / context overflow) that doesn't self-correct; burning
+        # 4+ retries just wastes iterations that could fail the whole turn.
+        # Cap at 2 retries (3 attempts total). On the 3rd failure, bail out
+        # with a clean error message and stamp liveLastError so `/agent`
+        # shows WHY the turn died.
         emptyNameRetries += 1
-        if emptyNameRetries > 3:
+        if emptyNameRetries > 2:
           warnCF("agent", "Too many empty tool name retries, breaking", {"iteration": $iteration}.toTable)
-          if response.content.len > 0: finalContent = response.content
+          al.liveLastError = "Tool protocol: LLM emitted empty tool names " &
+                             $emptyNameRetries & "× in a row (DeepSeek regression) " &
+                             "— check tool schema / context size."
+          # Short-circuit the post-loop summary call too — it'd likely hit
+          # the same schema problem and waste another LLM roundtrip.
+          finalContent =
+            if response.content.len > 0: response.content
+            else: "I couldn't complete this task — the tool-calling protocol broke down (empty tool names). Please rephrase or try again. If this recurs, the tool schema may be too large for the model."
           break
         warnCF("agent", "LLM returned empty tool names, nudging to continue", {"iteration": $iteration, "retry": $emptyNameRetries}.toTable)
         if response.content.len > 0:
