@@ -675,6 +675,55 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       return "❌ BASE.nims rebuild failed — BASE.json NOT updated. Fix the " &
              "error below and retry:\n\n" & codeBlock(output)
 
+  elif cmd == "/agent" or cmd == "/agents" or
+       cmd.startsWith("/agent ") or cmd.startsWith("/agents "):
+    # Live-state inspection. `/agent` or `/agent list` → one-line per agent
+    # with WORKING/idle + iteration + elapsed. `/agent <name>` → full detail:
+    # session, sender, message preview, iteration, last tool, tool log.
+    let parts = strutils.splitWhitespace(cmd)
+    let sub = if parts.len > 1: parts[1] else: "list"
+    if sub == "list":
+      var rows: seq[string] = @["AGENT       STATE    ITER   ELAPSED  LAST TOOL"]
+      let now = epochTime()
+      for a in cfg.agents.named:
+        let key = a.name.toLowerAscii()
+        let namePad = a.name & spaces(max(0, 12 - a.name.len))
+        if not gCtx.offices.hasKey(key):
+          rows.add(namePad & "closed   -      -        -")
+          continue
+        let al2 = gCtx.offices[key]
+        if al2.liveStartedAt == 0.0:
+          rows.add(namePad & "idle     -      -        -")
+        else:
+          let elapsed = now - al2.liveStartedAt
+          let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
+          let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
+          let elStr = fmtUptime(elapsed)
+          let elPad = elStr & spaces(max(0, 9 - elStr.len))
+          let tool = if al2.liveLastTool.len > 0: al2.liveLastTool else: "(none yet)"
+          rows.add(namePad & "WORKING  " & iterPad & elPad & tool)
+      return codeBlock(rows.join("\n"))
+    let name = sub
+    let key = name.toLowerAscii()
+    if not gCtx.offices.hasKey(key):
+      return "Agent `" & name & "` has no open office yet (no message processed this session)."
+    let al2 = gCtx.offices[key]
+    if al2.liveStartedAt == 0.0:
+      return "**Agent " & name & "** — idle. Use `/agent list` to see all."
+    let elapsed = epochTime() - al2.liveStartedAt
+    var lines: seq[string] = @[]
+    lines.add("State:     WORKING")
+    lines.add("Session:   " & al2.liveSessionKey)
+    lines.add("Sender:    " & al2.liveSenderID)
+    lines.add("Message:   " & al2.liveMessagePreview)
+    lines.add("Iteration: " & $al2.liveIteration & "/" & $al2.maxIterations)
+    lines.add("Elapsed:   " & fmtUptime(elapsed))
+    if al2.liveLastTool.len > 0:
+      lines.add("Last tool: " & al2.liveLastTool)
+    if al2.liveToolLog.len > 0:
+      lines.add("Tool log:  " & al2.liveToolLog.join(" → "))
+    return "**Agent " & name & "**\n\n" & codeBlock(lines.join("\n"))
+
   elif cmd == "/restart":
     # SuperAdmin-only: stop the current gateway and launch a fresh one
     # so config/DSL changes (e.g. a freshly added Feishu app) take
@@ -962,6 +1011,12 @@ Options:
                 "/user invite JK Atlas --skill=njmkuser@sungrow/627305",
                 "/user invite Acme Atlas --skills=njmkuser@sungrow/627305,njmkuser@sungrow/627306",
                 "/user remove nc:7"]))
+  register(SystemCommand(
+    name: "/agent",
+    summary: "Live agent state — WORKING/idle, current iteration, last tool, elapsed time. `/agent list` for all, `/agent <name>` for detail.",
+    usage: "/agent [<name>|list]", group: "admin",
+    menuHint: "Agent state", permission: pmSuperAdmin,
+    examples: @["/agent list", "/agent Atlas", "/agent Lexi"]))
   register(SystemCommand(
     name: "/restart",
     summary: "Rebuild BASE.json from BASE.nims AND restart the gateway. Fails safely if the rebuild errors — the running gateway stays up.",

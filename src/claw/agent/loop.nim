@@ -86,6 +86,15 @@ type
       ## execution — the role.grant list becomes authoritative, not cosmetic.
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
+    # Live state — observable via `/agent <name>` from chat. Zero when idle.
+    # Set at runAgentLoop entry, updated per iteration / tool call, cleared on exit.
+    liveStartedAt*: float       ## epochTime when current task began; 0 = idle
+    liveSessionKey*: string     ## session being processed right now
+    liveSenderID*: string       ## who sent the in-flight message
+    liveMessagePreview*: string ## first ~80 chars of the user's message
+    liveIteration*: int         ## current iteration number in the loop
+    liveLastTool*: string       ## name of the most recently executed tool
+    liveToolLog*: seq[string]   ## tool names called in this turn (just names)
 
 proc stop*(al: AgentLoop) =
   al.running = false
@@ -279,6 +288,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
   while iteration < al.maxIterations and finalContent == "":
     iteration += 1
+    al.liveIteration = iteration
     al.updateStatus(ctx, "Thinking", "Running iteration", iteration)
 
     infoCF("agent", "LLM iteration", {"iteration": $iteration, "max": $al.maxIterations, "xml_tools": $useXmlTools, "messages_count": $currentMessages.len}.toTable)
@@ -563,6 +573,8 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
             {"tool": tc.name, "allowed": al.turnAllowedTools.join(",")}.toTable)
           result = "Error: tool '" & tc.name & "' is not authorised at the current requester's trust level. Allowed tools are: " & al.turnAllowedTools.join(", ") & ". If the user needs a higher-privilege action, they must upgrade via redeem_invite or a SuperAdmin must edit BASE.nims."
         else:
+          al.liveLastTool = tc.name
+          al.liveToolLog.add(tc.name)
           result = await al.tools.executeWithContext(tc.name, tc.arguments, toolCtx)
         # Record in tool call log for forced summary context
         let resultPreview = if result.len > 200: result[0..199] & "..." else: result
@@ -724,6 +736,26 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   # CLI channel = owner's terminal. Trust as Admin unless explicitly set.
   if opts.userRole == "" and opts.channel == "cli": opts.userRole = "Admin"
   if opts.userRole == "": opts.userRole = "Guest"
+
+  # Stamp live state so `/agent <name>` can observe in-flight work from chat.
+  # Cleared via `defer` on any exit path (normal return, exception, early break).
+  al.liveStartedAt = epochTime()
+  al.liveSessionKey = opts.sessionKey
+  al.liveSenderID = opts.senderID
+  al.liveMessagePreview =
+    if opts.userMessage.len > 80: opts.userMessage[0 ..< 80] & "…"
+    else: opts.userMessage
+  al.liveIteration = 0
+  al.liveLastTool = ""
+  al.liveToolLog = @[]
+  defer:
+    al.liveStartedAt = 0.0
+    al.liveSessionKey = ""
+    al.liveSenderID = ""
+    al.liveMessagePreview = ""
+    al.liveIteration = 0
+    al.liveLastTool = ""
+    al.liveToolLog = @[]
   # Refresh the cached graph so identifiers stamped by the gateway's
   # bind check (or any other out-of-loop mutation like invite redeem)
   # are visible for resolution. Small file, cheap read — protects us
