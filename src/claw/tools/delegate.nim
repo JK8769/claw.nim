@@ -86,6 +86,19 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
   let promptText = args["prompt"].getStr().strip()
   if promptText.len == 0: return "Error: 'prompt' parameter must not be empty"
 
+  # Guard: delegation with `Depth: simple` is a handbook anti-pattern —
+  # simple queries the caller is supposed to handle directly with their
+  # own tools. Refusing here forces a course-correction at the agent loop
+  # level rather than letting the caller burn iterations on a delegate
+  # chain that compounds into a 20-iter narration loop.
+  let promptLow = promptText.toLowerAscii()
+  if promptLow.contains("depth: simple") or promptLow.contains("depth:simple"):
+    return "Error: `delegate` refused — the prompt is tagged `Depth: simple`, " &
+           "which means YOU are supposed to handle it directly with your own " &
+           "tools (sungrow, etc.). Don't delegate simple retrieval; call the " &
+           "relevant tool yourself. Reserve delegation for `Depth: analytical` " &
+           "or `Depth: advisory`."
+
   var contextText: Option[string] = none(string)
   if args.hasKey("context"): contextText = some(args["context"].getStr())
 
