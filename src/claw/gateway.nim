@@ -1449,16 +1449,21 @@ Options:
             # consume the next inbound immediately.
           else:
             # Chain-spawn processMessage so the main loop never awaits a
-            # 10-60s agent turn. Per-session chaining preserves the
-            # serialize-writes-to-one-session-file invariant while letting
-            # different sessions (e.g. Atlas/nc_3 and Lexi/nc_7) run in
-            # parallel. The new task's reply publishes on its own when done.
+            # 10-60s agent turn. Chain key is the RECIPIENT OFFICE, not
+            # session — because the ToolRegistry's ContextualTool
+            # instances (reply/forward/etc.) carry mutable per-call state
+            # set via setContext() on a ref object shared across all
+            # tasks targeting the same agent. Two tasks with different
+            # session keys but the same office would race on setContext
+            # and cross-wire their replies (Jerry's answer getting sent
+            # to 杰瑞's chat, etc.). Serializing per-office prevents that;
+            # different agents (Atlas vs Lexi) still run in parallel.
             let cMsg = msg
             let cRecipient = recipient
             let cOffice = officeKey
-            let sessionKey = msg.session_key
+            let chainKey = cOffice
             let prevTail =
-              if sessionTails.hasKey(sessionKey): sessionTails[sessionKey]
+              if sessionTails.hasKey(chainKey): sessionTails[chainKey]
               else: nil
             var newTail: Future[void]
             newTail = (proc() {.async.} =
@@ -1479,12 +1484,12 @@ Options:
                 errorCF("claw", "Session task error",
                         {"error": e.msg, "session": cMsg.session_key}.toTable)
               # Drop our entry if we're still the tail — prevents the
-              # Table from growing unbounded across many one-off chats.
-              # Guarded by identity so a newer chained task isn't wiped.
-              if sessionTails.getOrDefault(sessionKey) == newTail:
-                sessionTails.del(sessionKey)
+              # Table from growing unbounded. Guarded by identity so a
+              # newer chained task isn't wiped.
+              if sessionTails.getOrDefault(chainKey) == newTail:
+                sessionTails.del(chainKey)
             )()
-            sessionTails[sessionKey] = newTail
+            sessionTails[chainKey] = newTail
 
         if response != "":
           var finalMeta = initTable[string, string]()
