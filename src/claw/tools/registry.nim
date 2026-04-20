@@ -452,11 +452,8 @@ proc executeWithContext*(r: ToolRegistry, name: string, args: Table[string, Json
     return "Error: '" & sname & "' is an internal tool. Use the '" & wrapper & "' tool instead with action parameter."
 
   let roleLow = ctx.role.toLowerAscii()
-  # Blanket external-user safety net — skip when the caller has already
-  # cleared this call through an explicit role.grant / allowed_skills
-  # check (ctx.preAuthorized). Otherwise enforces the always-available
-  # floor: unauthenticated guests and un-scoped customers can only hit
-  # the tools in ExternalAllowedTools.
+  # Safety net for un-configured external users; skipped when the caller
+  # has already authorised via ctx.preAuthorized.
   if roleLow in ExternalUserRoles and not ctx.preAuthorized:
     let tname = sanitizeToolName(name)
     if tname notin ExternalAllowedTools:

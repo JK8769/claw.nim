@@ -507,7 +507,7 @@ proc runVendorBuild(script, prettyName: string): string =
            "Common causes: Go not installed, wrong Go version, Python 3 missing."
   return prettyName & " built. Binary is at " & repo & "/channels/bin/."
 
-proc reassignFeishuApp*(cfg: var Config, appID, agentName: string): string =
+proc reassignFeishuApp*(cfg: Config, appID, agentName: string): string =
   ## Reassign an existing Feishu app to a different agent. Edits the
   ## `app "<id>", "<agent>"` line in BASE.nims inside the
   ## `channel "feishu":` block. The running gateway doesn't hot-swap
@@ -1245,10 +1245,8 @@ proc mintCustomerInvite*(cfg: Config, workspace: string,
       for i in insertAt ..< bLines.len: merged.add(bLines[i])
       writeFile(baseNims, merged.join("\n"))
 
-  var asSeq: seq[string]
-  for s in allowedSkills: asSeq.add(s)
   result = CustomerInviteResult(
-    ok: true, code: code, targetNcId: alias, allowedSkills: asSeq,
+    ok: true, code: code, targetNcId: alias, allowedSkills: @allowedSkills,
     customerName: customerName, agentName: agentName,
     maxUses: maxUses, issuer: issuer)
 

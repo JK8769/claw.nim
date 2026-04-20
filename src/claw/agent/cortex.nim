@@ -268,6 +268,12 @@ proc fromLD*(node: JsonNode): RelationshipLink =
     fromLD(node["@annotation"], annot)
     result.annotation = some(annot)
 
+const CustomLegacyTopLevel* = ["personas", "entity", "identity"]
+  ## Custom-field keys that round-trip at the top level (not nested under
+  ## `custom`) for compatibility with old BASE.json files and JSON-LD
+  ## consumers. Anything not in this set MUST go under `custom` or
+  ## loadWorld will drop it.
+
 proc toLD*(entity: WorldEntity): JsonNode =
   result = %* {
     "id": toAlias(entity.id),
@@ -300,18 +306,12 @@ proc toLD*(entity: WorldEntity): JsonNode =
     result["serves"] = % (entity.serves.mapIt(%it))
 
   if entity.custom != nil and entity.custom.len > 0:
-    # Legacy: personas/entity/identity were historically spread at the top
-    # level (JSON-LD-ish compact form) and the loader tolerates that. But
-    # arbitrary custom keys (`allowed_skills`, per-entity quotas, future
-    # invite-attached metadata) MUST stay nested under `custom` or
-    # loadWorld's `node["custom"]` lookup loses them after a round trip —
-    # which breaks the skill-grant dispatch the moment any runtime path
-    # calls saveWorld() (invite redemption, identifier stamping, mood
-    # writeback, etc.).
-    const LegacyTopLevel = ["personas", "entity", "identity"]
+    # Legacy keys spread to the top level (loader accepts them both
+    # places). Everything else stays nested — otherwise loadWorld's
+    # `node["custom"]` lookup loses it after a round trip.
     var customObj = newJObject()
     for k, v in entity.custom.pairs:
-      if k in LegacyTopLevel:
+      if k in CustomLegacyTopLevel:
         result[k] = v
       else:
         customObj[k] = v
@@ -442,9 +442,8 @@ proc loadWorld*(workspace: string): WorldGraph =
           ent.archetype = m.archetype
 
       # Reconstruct custom fields that were serialized to the root
-      if node.hasKey("personas"): ent.custom["personas"] = node["personas"]
-      if node.hasKey("entity"): ent.custom["entity"] = node["entity"]
-      if node.hasKey("identity"): ent.custom["identity"] = node["identity"]
+      for k in CustomLegacyTopLevel:
+        if node.hasKey(k): ent.custom[k] = node[k]
       # Generic `custom` passthrough — carries DSL-declared extras like
       # `allowed_skills` (customer skill allowlist, per-entity quotas, etc.)
       if node.hasKey("custom") and node["custom"].kind == JObject:

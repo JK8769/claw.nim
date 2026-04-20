@@ -5,6 +5,7 @@
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
+import context as claw_context, utils
 import tools/delegate as delegate_tool
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
@@ -661,8 +662,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                "Example: `/channel assign cli_a948ea9ee5785cd3 Atlas`"
       let appID = parts[2]
       let agentName = parts[3]
-      var cfgCopy = cfg[]
-      return reassignFeishuApp(cfgCopy, appID, agentName)
+      return reassignFeishuApp(cfg[], appID, agentName)
     return "Unknown /channel subcommand: `" & sub & "`.\n" &
            "Try `/channel list`, `/channel auth feishu …`, or " &
            "`/channel assign <app_id> <agent>`."
@@ -698,51 +698,43 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     let now = epochTime()
     proc shortErr(e: string): string =
       if e.len == 0: return ""
-      let one = e.replace("\n", " ").replace("\r", " ")
-      if one.len > 40: one[0 ..< 40] & "…" else: one
+      truncate(e.replace("\n", " ").replace("\r", " "), 40)
     proc fmtTokens(n: int): string =
-      if n == 0: "-"
-      elif n < 1000: $n
-      elif n < 1_000_000: $(n div 1000) & "." & $((n mod 1000) div 100) & "k"
-      else: $(n div 1_000_000) & "." & $((n mod 1_000_000) div 100_000) & "M"
+      if n == 0: "-" else: claw_context.formatTokens(n.int64)
     if sub == "list":
       var rows: seq[string] = @["AGENT       STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
       for a in cfg.agents.named:
         let key = a.name.toLowerAscii()
-        let namePad = a.name & spaces(max(0, 12 - a.name.len))
+        let namePad = a.name.alignLeft(12)
         if not gCtx.offices.hasKey(key):
-          rows.add(namePad & "OOO         -      -           -           -                    out-of-office")
+          rows.add(namePad & "OOO".alignLeft(12) & "-".alignLeft(7) & "-".alignLeft(12) &
+                   "-".alignLeft(12) & "-".alignLeft(21) & "out-of-office")
           continue
         let al2 = gCtx.offices[key]
         let toolStr =
           if al2.liveLastTool.len > 0: al2.liveLastTool
           elif al2.liveStartedAt > 0.0: "(no tool yet)"
           else: "-"
-        let toolPad = toolStr & spaces(max(0, 20 - toolStr.len))
         let tokStr = fmtTokens(al2.liveTokensTotal)
-        let tokPad = tokStr & spaces(max(0, 12 - tokStr.len))
-        if al2.liveStartedAt == 0.0:
-          # idle — show how the last turn ended
-          if al2.liveTurnCount == 0:
-            rows.add(namePad & "In-Office   -      -           -           " & toolPad & "never-ran")
+        let (state, iterStr, elStr, outcome) =
+          if al2.liveStartedAt == 0.0:
+            if al2.liveTurnCount == 0:
+              ("In-Office", "-", "-", "never-ran")
+            else:
+              ("In-Office",
+               $al2.liveIteration & "/" & $al2.maxIterations,
+               fmtUptime(now - al2.liveFinishedAt) & " ago",
+               (if al2.liveLastError.len > 0: "❌ " & shortErr(al2.liveLastError)
+                else: "✓ ok (turn " & $al2.liveTurnCount & ")"))
           else:
-            let sinceStr = fmtUptime(now - al2.liveFinishedAt) & " ago"
-            let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
-            let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
-            let elPad = sinceStr & spaces(max(0, 12 - sinceStr.len))
-            let outcome =
-              if al2.liveLastError.len > 0: "❌ " & shortErr(al2.liveLastError)
-              else: "✓ ok (turn " & $al2.liveTurnCount & ")"
-            rows.add(namePad & "In-Office   " & iterPad & elPad & tokPad & toolPad & outcome)
-        else:
-          let elStr = fmtUptime(now - al2.liveStartedAt)
-          let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
-          let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
-          let elPad = elStr & spaces(max(0, 12 - elStr.len))
-          let outcome =
-            if al2.liveLastError.len > 0: "(last ❌ " & shortErr(al2.liveLastError) & ")"
-            else: "running"
-          rows.add(namePad & "Working     " & iterPad & elPad & tokPad & toolPad & outcome)
+            ("Working",
+             $al2.liveIteration & "/" & $al2.maxIterations,
+             fmtUptime(now - al2.liveStartedAt),
+             (if al2.liveLastError.len > 0: "(last ❌ " & shortErr(al2.liveLastError) & ")"
+              else: "running"))
+        rows.add(namePad & state.alignLeft(12) & iterStr.alignLeft(7) &
+                 elStr.alignLeft(12) & tokStr.alignLeft(12) &
+                 toolStr.alignLeft(21) & outcome)
       return codeBlock(rows.join("\n"))
     let name = sub
     let key = name.toLowerAscii()
@@ -1468,7 +1460,8 @@ Options:
             let prevTail =
               if sessionTails.hasKey(sessionKey): sessionTails[sessionKey]
               else: nil
-            let newTail = (proc() {.async.} =
+            var newTail: Future[void]
+            newTail = (proc() {.async.} =
               try:
                 if prevTail != nil and not prevTail.finished:
                   try: await prevTail except: discard
@@ -1485,6 +1478,11 @@ Options:
               except Exception as e:
                 errorCF("claw", "Session task error",
                         {"error": e.msg, "session": cMsg.session_key}.toTable)
+              # Drop our entry if we're still the tail — prevents the
+              # Table from growing unbounded across many one-off chats.
+              # Guarded by identity so a newer chained task isn't wiped.
+              if sessionTails.getOrDefault(sessionKey) == newTail:
+                sessionTails.del(sessionKey)
             )()
             sessionTails[sessionKey] = newTail
 

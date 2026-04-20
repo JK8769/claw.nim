@@ -514,21 +514,16 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
             warnCF("agent", "Skipping tool call with empty name", {"id": tc.id, "iteration": $iteration}.toTable)
 
       if validCalls.len == 0:
-        # All tool calls had empty names — nudge to retry, but cap tightly.
-        # Empty-name tool calls are usually a DeepSeek regression (schema
-        # confusion / context overflow) that doesn't self-correct; burning
-        # 4+ retries just wastes iterations that could fail the whole turn.
-        # Cap at 2 retries (3 attempts total). On the 3rd failure, bail out
-        # with a clean error message and stamp liveLastError so `/agent`
-        # shows WHY the turn died.
+        # Cap empty-name retries at 2; DeepSeek rarely self-corrects past
+        # that and it's usually a schema / context-size issue, not a
+        # transient glitch.
         emptyNameRetries += 1
         if emptyNameRetries > 2:
           warnCF("agent", "Too many empty tool name retries, breaking", {"iteration": $iteration}.toTable)
           al.liveLastError = "Tool protocol: LLM emitted empty tool names " &
-                             $emptyNameRetries & "× in a row (DeepSeek regression) " &
-                             "— check tool schema / context size."
-          # Short-circuit the post-loop summary call too — it'd likely hit
-          # the same schema problem and waste another LLM roundtrip.
+                             $emptyNameRetries & "× in a row — check tool schema / context size."
+          # Skip the post-loop summary call — same schema would likely
+          # trip it again.
           finalContent =
             if response.content.len > 0: response.content
             else: "I couldn't complete this task — the tool-calling protocol broke down (empty tool names). Please rephrase or try again. If this recurs, the tool schema may be too large for the model."
@@ -623,14 +618,8 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         currentMessages.add(toolResultMsg)
         al.sessions.addFullMessage(opts.sessionKey, toolResultMsg)
 
-      # After finishing all tool calls this iteration: if the LLM sent a
-      # final message via `reply`/`message`, the turn is over. Without
-      # this break, the loop goes back to the LLM, which often treats
-      # the tool-result as incomplete and calls `reply` AGAIN — spamming
-      # the user with duplicate messages (5× observed in the wild before
-      # this fix). `ctx.responseSent` is set inside the dispatch when
-      # reply/message runs; honouring it here matches the check at the
-      # post-loop return and cuts the short-circuit at the right place.
+      # reply/message already delivered the turn's final content — break
+      # before the LLM gets another turn and calls reply again.
       if ctx.responseSent:
         break
 
@@ -781,6 +770,25 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
       graph.saveWorld()
 
   toAlias(entityID).replace(":", "_")
+
+proc requesterGrantedSkills(graph: WorldGraph, logicalUserID: string): seq[string] =
+  ## Resolve the requester's entity (by nc:id) and return the lowercased
+  ## `skill` name for each entry in their `custom.allowed_skills`. Empty
+  ## seq when the id doesn't resolve, the entity has no `custom`, or the
+  ## field is missing/malformed. Used by the dispatch gate to expand
+  ## turnAllowedTools on top of role.grant for per-requester skill access.
+  if graph == nil: return
+  let id = parseAlias(logicalUserID)
+  if uint32(id) == 0 or not graph.entities.hasKey(id): return
+  let ent = graph.entities[id]
+  if ent.custom == nil or not ent.custom.hasKey("allowed_skills"): return
+  let arr = ent.custom["allowed_skills"]
+  if arr.kind != JArray: return
+  for raw in arr:
+    let (ok, g, _) = parseSkillGrant(raw.getStr(""))
+    if ok and g.skill.len > 0:
+      let s = g.skill.toLowerAscii()
+      if s notin result: result.add(s)
 
 proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.async.} =
   var opts = optsParam
@@ -1061,56 +1069,26 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     # `njmkuser@sungrow`) gets sungrow read tools they're entitled to.
     # Resource-level scoping (`sungrow/627305`) is declared but enforced
     # at the tool-call argument layer — still a follow-up.
-    # Debug trace for the skill-grant expansion path — helps diagnose why
-    # a customer's allowed_skills might not be reaching the allowlist.
-    infoCF("agent", "Skill-grant check entering",
-            {"logicalUserID": logicalUserID,
-             "turnAllowedTools_count": $al.turnAllowedTools.len,
-             "graph_nil": $(al.contextBuilder == nil or al.contextBuilder.graph == nil),
-             "starts_with_nc": $logicalUserID.startsWith("nc:")}.toTable)
     if al.turnAllowedTools.len > 0 and
        al.contextBuilder != nil and al.contextBuilder.graph != nil and
        logicalUserID.startsWith("nc:"):
-      let reqID = parseAlias(logicalUserID)
-      infoCF("agent", "Skill-grant resolving entity",
-              {"reqID": $uint32(reqID),
-               "entity_exists": $al.contextBuilder.graph.entities.hasKey(reqID)}.toTable)
-      if uint32(reqID) > 0 and al.contextBuilder.graph.entities.hasKey(reqID):
-        let reqEnt = al.contextBuilder.graph.entities[reqID]
-        let hasCustom = reqEnt.custom != nil
-        let hasKey = hasCustom and reqEnt.custom.hasKey("allowed_skills")
-        let rightKind = hasKey and reqEnt.custom["allowed_skills"].kind == JArray
-        infoCF("agent", "Skill-grant entity.custom check",
-                {"ent_name": reqEnt.name,
-                 "has_custom": $hasCustom,
-                 "has_allowed_skills_key": $hasKey,
-                 "is_array": $rightKind}.toTable)
-        if rightKind:
-          var extra: seq[string]
-          var grantedSkills: seq[string]
-          for raw in reqEnt.custom["allowed_skills"]:
-            let (ok, g, _) = parseSkillGrant(raw.getStr(""))
-            if ok and g.skill.len > 0:
-              grantedSkills.add(g.skill.toLowerAscii())
-          if grantedSkills.len > 0:
-            # Expand each granted skill to its concrete MCP tool names:
-            # tools registered from MCP servers land as `mcp_<server>_<tool>`;
-            # the server name IS the skill name. Scan the registry and add
-            # anything matching a granted skill prefix.
-            let allTools = al.tools.list()
-            for tn in allTools:
-              let lower = tn.toLowerAscii()
-              for sk in grantedSkills:
-                let prefix = "mcp_" & sk & "_"
-                if lower.startsWith(prefix) and tn notin al.turnAllowedTools:
-                  extra.add(tn)
-                  break
-            if extra.len > 0:
-              infoCF("agent", "Per-requester skill grants expanded role.grant",
-                     {"requester": logicalUserID,
-                      "skills": grantedSkills.join(","),
-                      "tools_added": $extra.len}.toTable)
-              for t in extra: al.turnAllowedTools.add(t)
+      let grantedSkills = requesterGrantedSkills(al.contextBuilder.graph, logicalUserID)
+      if grantedSkills.len > 0:
+        var extra: seq[string]
+        # MCP server tools land as `mcp_<server>_<tool>` and the server
+        # name IS the skill name — scan the registry for any granted prefix.
+        for tn in al.tools.list():
+          let lower = tn.toLowerAscii()
+          for sk in grantedSkills:
+            if lower.startsWith("mcp_" & sk & "_") and tn notin al.turnAllowedTools:
+              extra.add(tn)
+              break
+        if extra.len > 0:
+          infoCF("agent", "Per-requester skill grants expanded role.grant",
+                 {"requester": logicalUserID,
+                  "skills": grantedSkills.join(","),
+                  "tools_added": $extra.len}.toTable)
+          for t in extra: al.turnAllowedTools.add(t)
 
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
 
