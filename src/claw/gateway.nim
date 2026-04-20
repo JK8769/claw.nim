@@ -1134,6 +1134,11 @@ Options:
           stderr.writeLine "    " & line
         stderr.writeLine ""
 
+  # Per-session task chain — prevents same-session message interleaving while
+  # letting different sessions run in parallel. The main loop always spawns;
+  # it never awaits processMessage inline. Keyed by session_key.
+  var sessionTails = initTable[string, Future[void]]()
+
   # Message loop
   asyncCheck (proc() {.async.} =
     while true:
@@ -1379,7 +1384,37 @@ Options:
             # the spawned task owns the reply. Main loop continues to
             # consume the next inbound immediately.
           else:
-            response = await gCtx.offices[officeKey].processMessage(msg)
+            # Chain-spawn processMessage so the main loop never awaits a
+            # 10-60s agent turn. Per-session chaining preserves the
+            # serialize-writes-to-one-session-file invariant while letting
+            # different sessions (e.g. Atlas/nc_3 and Lexi/nc_7) run in
+            # parallel. The new task's reply publishes on its own when done.
+            let cMsg = msg
+            let cRecipient = recipient
+            let cOffice = officeKey
+            let sessionKey = msg.session_key
+            let prevTail =
+              if sessionTails.hasKey(sessionKey): sessionTails[sessionKey]
+              else: nil
+            let newTail = (proc() {.async.} =
+              try:
+                if prevTail != nil and not prevTail.finished:
+                  try: await prevTail except: discard
+                let r = await gCtx.offices[cOffice].processMessage(cMsg)
+                if r != "":
+                  var fMeta = initTable[string, string]()
+                  fMeta["final"] = "true"
+                  let appID = cMsg.metadata.getOrDefault("app_id", "")
+                  msgBus.publishOutbound(newOutbound(cMsg.channel, cRecipient,
+                                                     cMsg.chat_id, r,
+                                                     appID = appID,
+                                                     metadata = fMeta))
+                  statusEmitter.emitChannelMsg(cMsg.channel, "out", cRecipient)
+              except Exception as e:
+                errorCF("claw", "Session task error",
+                        {"error": e.msg, "session": cMsg.session_key}.toTable)
+            )()
+            sessionTails[sessionKey] = newTail
 
         if response != "":
           var finalMeta = initTable[string, string]()
