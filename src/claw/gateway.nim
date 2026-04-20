@@ -656,11 +656,39 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     return "Unknown /channel subcommand: `" & sub & "`.\n" &
            "Try `/channel list` or `/channel auth feishu …`."
 
+  elif cmd == "/co" or cmd == "/company" or
+       cmd.startsWith("/co ") or cmd.startsWith("/company "):
+    # Currently one subcommand: `/co update` — rebuild BASE.json from
+    # BASE.nims WITHOUT restarting. For the combined rebuild+restart
+    # flow, use `/restart` (which now rebuilds first on its own).
+    let parts = strutils.splitWhitespace(cmd)
+    let sub = if parts.len > 1: parts[1] else: ""
+    if sub != "update":
+      return "Usage: `/co update` — rebuild BASE.json from BASE.nims.\n" &
+             "For rebuild + restart in one step, use `/restart`."
+    let (ok, output) = rebuildBaseJson(getNimClawDir())
+    if ok:
+      return "✅ BASE.json rebuilt from BASE.nims. Changes take effect on " &
+             "next `/restart`.\n\n" &
+             (if output.strip().len > 0: codeBlock(output) else: "")
+    else:
+      return "❌ BASE.nims rebuild failed — BASE.json NOT updated. Fix the " &
+             "error below and retry:\n\n" & codeBlock(output)
+
   elif cmd == "/restart":
     # SuperAdmin-only: stop the current gateway and launch a fresh one
     # so config/DSL changes (e.g. a freshly added Feishu app) take
     # effect without dropping to a terminal. Entry gate confirmed
     # SuperAdmin already.
+    #
+    # Step 0: rebuild BASE.json from BASE.nims FIRST. If this fails
+    # (syntax error, missing template, etc.), bail out immediately —
+    # the running gateway keeps serving on the old config, which is
+    # strictly better than killing it only to fail the replacement.
+    let (rebuildOk, rebuildOutput) = rebuildBaseJson(getNimClawDir())
+    if not rebuildOk:
+      return "❌ BASE.nims rebuild failed — gateway NOT restarted. Fix and " &
+             "retry:\n\n" & codeBlock(rebuildOutput)
     let clawBin = getAppFilename()
     let myPidHere = getpid()
     # Detached child survives our death (setsid under poDaemon). The
@@ -704,11 +732,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     discard startProcess("/bin/sh",
                          args = @["-c", script],
                          options = {poDaemon, poUsePath})
-    return "Restarting gateway in ~2s. I'll be unreachable for a few " &
-           "seconds — **please send a message yourself** when you want " &
-           "to check I'm back (the gateway doesn't push-notify). New " &
-           "app routings (e.g. freshly added Feishu apps) will be live " &
-           "on the next message."
+    return "✅ BASE.json rebuilt. Restarting gateway in ~2s — I'll be " &
+           "unreachable for a few seconds. **Please send a message** " &
+           "yourself when you want to check I'm back (the gateway " &
+           "doesn't push-notify). New app routings (e.g. freshly added " &
+           "Feishu apps) and config changes take effect on the next message."
   return ""
 
 # ── stdio handler (Zen mode) ─────────────────────────────────────────
@@ -935,10 +963,17 @@ Options:
                 "/user invite Acme Atlas --skills=njmkuser@sungrow/627305,njmkuser@sungrow/627306",
                 "/user remove nc:7"]))
   register(SystemCommand(
-    name: "/restart", summary: "Restart the gateway (picks up config changes).",
+    name: "/restart",
+    summary: "Rebuild BASE.json from BASE.nims AND restart the gateway. Fails safely if the rebuild errors — the running gateway stays up.",
     usage: "/restart", group: "admin",
     menuHint: "Restart gateway", permission: pmSuperAdmin,
     examples: @["/restart"]))
+  register(SystemCommand(
+    name: "/co",
+    summary: "Company management. `/co update` rebuilds BASE.json from BASE.nims without restarting — changes take effect on the next `/restart`.",
+    usage: "/co update", group: "admin",
+    menuHint: "Company update", permission: pmSuperAdmin,
+    examples: @["/co update"]))
 
   # Config & provider
   var cfg = new(Config)

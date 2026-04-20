@@ -16,6 +16,32 @@ proc isBootstrapFile*(name: string): bool =
     if name == f: return true
   return false
 
+proc rebuildBaseJson*(companyDir: string): tuple[ok: bool, output: string] =
+  ## Execute BASE.nims via NimScript to regenerate BASE.json for this company.
+  ## Used both by the CLI (`claw co update`) and the gateway (`/restart`,
+  ## `/co update`) so the two surfaces stay in lockstep.
+  ## Captures stdout+stderr — caller decides what to surface to the user.
+  let scriptPath = companyDir / "BASE.nims"
+  if not fileExists(scriptPath):
+    return (false, "No BASE.nims at " & scriptPath &
+                   " — this company wasn't created from a template.")
+
+  # Locate the claw source tree so `import claw/clawdsl` inside the NimScript
+  # resolves. Try CWD/src, then the binary's dir, then its parent — covers
+  # running from the repo, from a build dir, and from an installed binary.
+  var srcPath = getCurrentDir() / "src"
+  if not dirExists(srcPath / "claw"):
+    srcPath = getAppDir() / "src"
+    if not dirExists(srcPath / "claw"):
+      srcPath = getAppDir().parentDir() / "src"
+
+  var cmd = "nim e"
+  if dirExists(srcPath / "claw"):
+    cmd &= " --path:" & quoteShell(srcPath)
+  cmd &= " " & quoteShell(scriptPath)
+  let (output, exitCode) = execCmdEx(cmd)
+  return (exitCode == 0, output)
+
 proc runCompetenciesCommand*(workspace, globalRoot: string, args: seq[string]): string
 
 proc runWorkspaceCommand*(cfg: Config, args: seq[string]): string =

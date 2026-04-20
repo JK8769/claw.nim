@@ -713,17 +713,9 @@ when isMainModule:
       echo "      (or re-run with --restart to do it in one step)"
       echo ""
 
-    var srcPath = getCurrentDir() / "src"
-    if not dirExists(srcPath / "claw"):
-      srcPath = getAppDir() / "src"
-      if not dirExists(srcPath / "claw"):
-        srcPath = getAppDir().parentDir() / "src"
-    var cmd = "nim e"
-    if dirExists(srcPath / "claw"):
-      cmd &= " --path:" & quoteShell(srcPath)
-    cmd &= " " & quoteShell(scriptPath)
-    let exitCode = execCmd(cmd)
-    if exitCode != 0: quit(exitCode)
+    let (ok, output) = rebuildBaseJson(companyDir)
+    if output.len > 0: stdout.write output
+    if not ok: quit(1)
 
     if wasRunning and doRestart:
       echo ""
