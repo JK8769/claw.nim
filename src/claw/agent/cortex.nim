@@ -299,9 +299,24 @@ proc toLD*(entity: WorldEntity): JsonNode =
   if entity.serves.len > 0:
     result["serves"] = % (entity.serves.mapIt(%it))
 
-  if entity.custom != nil:
+  if entity.custom != nil and entity.custom.len > 0:
+    # Legacy: personas/entity/identity were historically spread at the top
+    # level (JSON-LD-ish compact form) and the loader tolerates that. But
+    # arbitrary custom keys (`allowed_skills`, per-entity quotas, future
+    # invite-attached metadata) MUST stay nested under `custom` or
+    # loadWorld's `node["custom"]` lookup loses them after a round trip —
+    # which breaks the skill-grant dispatch the moment any runtime path
+    # calls saveWorld() (invite redemption, identifier stamping, mood
+    # writeback, etc.).
+    const LegacyTopLevel = ["personas", "entity", "identity"]
+    var customObj = newJObject()
     for k, v in entity.custom.pairs:
-      result[k] = v
+      if k in LegacyTopLevel:
+        result[k] = v
+      else:
+        customObj[k] = v
+    if customObj.len > 0:
+      result["custom"] = customObj
 
 proc toLD*(graph: WorldGraph): JsonNode =
   let context = %* {
@@ -435,6 +450,12 @@ proc loadWorld*(workspace: string): WorldGraph =
       if node.hasKey("custom") and node["custom"].kind == JObject:
         for k, v in node["custom"].pairs:
           ent.custom[k] = v
+      # Back-compat: older saveWorld flattened entity.custom onto the
+      # root of each node. Rescue known custom-only keys from the top
+      # level so existing BASE.json files (pre-fix) still resolve their
+      # allowed_skills until the next rebuild lands the nested form.
+      if node.hasKey("allowed_skills") and not ent.custom.hasKey("allowed_skills"):
+        ent.custom["allowed_skills"] = node["allowed_skills"]
       
       # Backward compatibility: populate custom node with legacy identity if not explicitly defined in LD
       if not ent.custom.hasKey("identity") and node.hasKey("identity"):
