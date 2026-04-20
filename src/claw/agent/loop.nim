@@ -1034,14 +1034,31 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     # `njmkuser@sungrow`) gets sungrow read tools they're entitled to.
     # Resource-level scoping (`sungrow/627305`) is declared but enforced
     # at the tool-call argument layer — still a follow-up.
+    # Debug trace for the skill-grant expansion path — helps diagnose why
+    # a customer's allowed_skills might not be reaching the allowlist.
+    infoCF("agent", "Skill-grant check entering",
+            {"logicalUserID": logicalUserID,
+             "turnAllowedTools_count": $al.turnAllowedTools.len,
+             "graph_nil": $(al.contextBuilder == nil or al.contextBuilder.graph == nil),
+             "starts_with_nc": $logicalUserID.startsWith("nc:")}.toTable)
     if al.turnAllowedTools.len > 0 and
        al.contextBuilder != nil and al.contextBuilder.graph != nil and
        logicalUserID.startsWith("nc:"):
       let reqID = parseAlias(logicalUserID)
+      infoCF("agent", "Skill-grant resolving entity",
+              {"reqID": $uint32(reqID),
+               "entity_exists": $al.contextBuilder.graph.entities.hasKey(reqID)}.toTable)
       if uint32(reqID) > 0 and al.contextBuilder.graph.entities.hasKey(reqID):
         let reqEnt = al.contextBuilder.graph.entities[reqID]
-        if reqEnt.custom != nil and reqEnt.custom.hasKey("allowed_skills") and
-           reqEnt.custom["allowed_skills"].kind == JArray:
+        let hasCustom = reqEnt.custom != nil
+        let hasKey = hasCustom and reqEnt.custom.hasKey("allowed_skills")
+        let rightKind = hasKey and reqEnt.custom["allowed_skills"].kind == JArray
+        infoCF("agent", "Skill-grant entity.custom check",
+                {"ent_name": reqEnt.name,
+                 "has_custom": $hasCustom,
+                 "has_allowed_skills_key": $hasKey,
+                 "is_array": $rightKind}.toTable)
+        if rightKind:
           var extra: seq[string]
           var grantedSkills: seq[string]
           for raw in reqEnt.custom["allowed_skills"]:
