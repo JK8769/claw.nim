@@ -72,7 +72,10 @@ type
     lastTool*: string
     toolLog*: seq[string]
     lastError*: string       ## empty on success
-    tokens*: int             ## tokens consumed by this turn
+    tokens*: int             ## total tokens consumed this turn (prompt+completion)
+    tokensIn*: int           ## prompt_tokens
+    tokensOut*: int          ## completion_tokens
+    model*: string           ## model name used for this turn (for cost calc)
 
   AgentLoop* = ref object
     cfg*: Config
@@ -113,6 +116,8 @@ type
     liveLastFinished*: TaskSnapshot          ## most recently completed; nil if never ran
     liveTurnCount*: int                      ## monotonic count of completed turns
     liveTokensTotal*: int                    ## cumulative tokens since gateway start
+    liveTokensInTotal*: int                  ## cumulative prompt_tokens
+    liveTokensOutTotal*: int                 ## cumulative completion_tokens
 
 proc stop*(al: AgentLoop) =
   al.running = false
@@ -365,13 +370,20 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         finalContent = "Error communicating with LLM provider: " & e.msg
       break
 
-    # Accumulate tokens — both on the per-task ctx (for logAction
-    # telemetry) and on the AgentLoop's live state (for /agent
-    # visibility across turns).
+    # Accumulate tokens — per-task (for logAction telemetry), per-turn
+    # snapshot (for /agent display), and per-agent totals (for /status
+    # and /cost). Split input/output so /cost can apply the right
+    # per-M rate to each half.
     let tokens = response.usage.total_tokens
+    let tokensIn = response.usage.prompt_tokens
+    let tokensOut = response.usage.completion_tokens
     ctx.tokensTotal += tokens
     snapshot.tokens += tokens
+    snapshot.tokensIn += tokensIn
+    snapshot.tokensOut += tokensOut
     al.liveTokensTotal += tokens
+    al.liveTokensInTotal += tokensIn
+    al.liveTokensOutTotal += tokensOut
     
     var llmMeta = newJObject()
     llmMeta["iteration"] = %iteration
@@ -817,7 +829,8 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
                      else: opts.userMessage),
     startedAt: epochTime(),
     maxIterations: al.maxIterations,
-    toolLog: @[])
+    toolLog: @[],
+    model: al.model)
   al.liveTasks[opts.sessionKey] = snapshot
   defer:
     snapshot.finishedAt = epochTime()

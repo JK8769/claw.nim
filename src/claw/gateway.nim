@@ -5,7 +5,7 @@
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
-import context as claw_context, utils
+import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
 import providers/http, providers/types as providers_types, protocol
 import channels/[base as channel_base, manager as channel_manager]
@@ -669,22 +669,67 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
   elif cmd == "/co" or cmd == "/company" or
        cmd.startsWith("/co ") or cmd.startsWith("/company "):
-    # Currently one subcommand: `/co update` — rebuild BASE.json from
-    # BASE.nims WITHOUT restarting. For the combined rebuild+restart
-    # flow, use `/restart` (which now rebuilds first on its own).
+    # Subcommands:
+    #   `/co update` — rebuild BASE.json from BASE.nims (no restart).
+    #   `/co cost`   — token+USD breakdown across all agents.
     let parts = strutils.splitWhitespace(cmd)
     let sub = if parts.len > 1: parts[1] else: ""
-    if sub != "update":
-      return "Usage: `/co update` — rebuild BASE.json from BASE.nims.\n" &
-             "For rebuild + restart in one step, use `/restart`."
-    let (ok, output) = rebuildBaseJson(getNimClawDir())
-    if ok:
-      return "✅ BASE.json rebuilt from BASE.nims. Changes take effect on " &
-             "next `/restart`.\n\n" &
-             (if output.strip().len > 0: codeBlock(output) else: "")
-    else:
-      return "❌ BASE.nims rebuild failed — BASE.json NOT updated. Fix the " &
-             "error below and retry:\n\n" & codeBlock(output)
+    if sub == "update":
+      let (ok, output) = rebuildBaseJson(getNimClawDir())
+      if ok:
+        return "✅ BASE.json rebuilt from BASE.nims. Changes take effect on " &
+               "next `/restart`.\n\n" &
+               (if output.strip().len > 0: codeBlock(output) else: "")
+      else:
+        return "❌ BASE.nims rebuild failed — BASE.json NOT updated. Fix the " &
+               "error below and retry:\n\n" & codeBlock(output)
+    if sub == "cost":
+      # Aggregate per-agent tokens across the company. Cost uses each
+      # agent's declared model rate from the pricing table; unknown
+      # models show "—" in the cost column so the operator can tell
+      # the difference between $0 (truly unused) and "no rate yet".
+      var rows: seq[string] = @[
+        "AGENT       MODEL                  IN       OUT      TOTAL    COST"]
+      var coTokensIn, coTokensOut = 0
+      var coCost = 0.0
+      var unknownModels: seq[string]
+      for a in cfg.agents.named:
+        let key = a.name.toLowerAscii()
+        var tIn, tOut = 0
+        if gCtx.offices.hasKey(key):
+          let al2 = gCtx.offices[key]
+          tIn = al2.liveTokensInTotal
+          tOut = al2.liveTokensOutTotal
+        coTokensIn += tIn
+        coTokensOut += tOut
+        let model = a.model
+        let cost = estimateCost(tIn, tOut, model)
+        let costStr =
+          if knownModel(model): fmtCost(cost)
+          elif tIn + tOut == 0: "-"
+          else: "— (" & model & " not priced)"
+        if not knownModel(model) and model.len > 0 and model notin unknownModels:
+          unknownModels.add(model)
+        if knownModel(model): coCost += cost
+        rows.add(a.name.alignLeft(12) & model.alignLeft(23) &
+                 claw_context.formatTokens(tIn.int64).alignLeft(9) &
+                 claw_context.formatTokens(tOut.int64).alignLeft(9) &
+                 claw_context.formatTokens((tIn+tOut).int64).alignLeft(9) &
+                 costStr)
+      rows.add("")
+      rows.add("TOTAL                              " &
+               claw_context.formatTokens(coTokensIn.int64).alignLeft(9) &
+               claw_context.formatTokens(coTokensOut.int64).alignLeft(9) &
+               claw_context.formatTokens((coTokensIn+coTokensOut).int64).alignLeft(9) &
+               fmtCost(coCost))
+      var body = codeBlock(rows.join("\n"))
+      body.add("\n\nTotals reset on each `/restart`. Rates are per-million " &
+               "tokens from each provider's current pricing page.")
+      if unknownModels.len > 0:
+        body.add("\n\nℹ️  Untracked model(s): " & unknownModels.join(", ") &
+                 " — add rates in `src/claw/pricing.nim` to include in totals.")
+      return body
+    return "Usage: `/co update` or `/co cost`."
 
   elif cmd == "/agent" or cmd == "/agents" or
        cmd.startsWith("/agent ") or cmd.startsWith("/agents "):
@@ -1096,10 +1141,10 @@ Options:
     examples: @["/restart"]))
   register(SystemCommand(
     name: "/co",
-    summary: "Company management. `/co update` rebuilds BASE.json from BASE.nims without restarting — changes take effect on the next `/restart`.",
-    usage: "/co update", group: "admin",
-    menuHint: "Company update", permission: pmSuperAdmin,
-    examples: @["/co update"]))
+    summary: "Company management. `/co update` rebuilds BASE.json from BASE.nims; `/co cost` shows token + USD spend across all agents.",
+    usage: "/co <update|cost>", group: "admin",
+    menuHint: "Company admin", permission: pmSuperAdmin,
+    examples: @["/co update", "/co cost"]))
 
   # Config & provider
   var cfg = new(Config)
