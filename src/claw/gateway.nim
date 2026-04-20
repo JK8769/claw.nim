@@ -690,12 +690,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       let one = e.replace("\n", " ").replace("\r", " ")
       if one.len > 40: one[0 ..< 40] & "…" else: one
     if sub == "list":
-      var rows: seq[string] = @["AGENT       STATE    ITER   ELAPSED  LAST TOOL           OUTCOME"]
+      var rows: seq[string] = @["AGENT       STATE       ITER   ELAPSED     LAST TOOL            OUTCOME"]
       for a in cfg.agents.named:
         let key = a.name.toLowerAscii()
         let namePad = a.name & spaces(max(0, 12 - a.name.len))
         if not gCtx.offices.hasKey(key):
-          rows.add(namePad & "closed   -      -        -                   never-opened")
+          rows.add(namePad & "OOO         -      -           -                    out-of-office")
           continue
         let al2 = gCtx.offices[key]
         let toolStr =
@@ -704,47 +704,42 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           else: "-"
         let toolPad = toolStr & spaces(max(0, 20 - toolStr.len))
         if al2.liveStartedAt == 0.0:
-          # idle — describe the last turn
+          # idle — show how the last turn ended
           if al2.liveTurnCount == 0:
-            rows.add(namePad & "idle     -      -        " & toolPad & "never-ran")
+            rows.add(namePad & "In-Office   -      -           " & toolPad & "never-ran")
           else:
             let sinceStr = fmtUptime(now - al2.liveFinishedAt) & " ago"
             let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
             let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
-            let elPad = sinceStr & spaces(max(0, 9 - sinceStr.len))
+            let elPad = sinceStr & spaces(max(0, 12 - sinceStr.len))
             let outcome =
               if al2.liveLastError.len > 0: "❌ " & shortErr(al2.liveLastError)
               else: "✓ ok (turn " & $al2.liveTurnCount & ")"
-            rows.add(namePad & "idle     " & iterPad & elPad & toolPad & outcome)
+            rows.add(namePad & "In-Office   " & iterPad & elPad & toolPad & outcome)
         else:
           let elStr = fmtUptime(now - al2.liveStartedAt)
           let iterStr = $al2.liveIteration & "/" & $al2.maxIterations
           let iterPad = iterStr & spaces(max(0, 7 - iterStr.len))
-          let elPad = elStr & spaces(max(0, 9 - elStr.len))
+          let elPad = elStr & spaces(max(0, 12 - elStr.len))
           let outcome =
             if al2.liveLastError.len > 0: "(last ❌ " & shortErr(al2.liveLastError) & ")"
             else: "running"
-          rows.add(namePad & "WORKING  " & iterPad & elPad & toolPad & outcome)
+          rows.add(namePad & "Working     " & iterPad & elPad & toolPad & outcome)
       return codeBlock(rows.join("\n"))
     let name = sub
     let key = name.toLowerAscii()
     if not gCtx.offices.hasKey(key):
-      return "Agent `" & name & "` has no open office yet (no message processed this session)."
+      return "**Agent " & name & "** — Out-of-Office (office not opened this session)."
     let al2 = gCtx.offices[key]
     var lines: seq[string] = @[]
     if al2.liveStartedAt == 0.0:
-      # Idle — show last-turn post-mortem
+      # In-Office — show last-turn post-mortem
       if al2.liveTurnCount == 0:
-        return "**Agent " & name & "** — idle, never ran this session."
+        return "**Agent " & name & "** — In-Office, hasn't taken a turn yet."
       let sinceStr = fmtUptime(now - al2.liveFinishedAt)
-      let durStr =
-        if al2.liveFinishedAt > 0 and al2.liveTurnCount > 0:
-          let approxStart = al2.liveFinishedAt - 0.0  # duration not tracked exactly; use iter as proxy
-          "(" & $al2.liveIteration & " iters)"
-        else: ""
-      lines.add("State:      idle (" & sinceStr & " ago)")
+      lines.add("State:      In-Office (last turn " & sinceStr & " ago)")
       lines.add("Last msg:   " & al2.liveLastMessagePreview)
-      lines.add("Iterations: " & $al2.liveIteration & "/" & $al2.maxIterations & " " & durStr)
+      lines.add("Iterations: " & $al2.liveIteration & "/" & $al2.maxIterations)
       if al2.liveLastTool.len > 0:
         lines.add("Last tool:  " & al2.liveLastTool)
       if al2.liveToolLog.len > 0:
@@ -756,7 +751,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       lines.add("Total turns since boot: " & $al2.liveTurnCount)
     else:
       let elapsed = now - al2.liveStartedAt
-      lines.add("State:      WORKING")
+      lines.add("State:      Working")
       lines.add("Session:    " & al2.liveSessionKey)
       lines.add("Sender:     " & al2.liveSenderID)
       lines.add("Message:    " & al2.liveMessagePreview)
