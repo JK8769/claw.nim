@@ -1,5 +1,6 @@
 import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets]
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
+import ../skill_grant
 import context as agent_context
 import xml_tools
 import ../schema
@@ -1023,6 +1024,49 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         let g = roleCfg.get.grant
         if g.len > 0 and "*" notin g:
           al.turnAllowedTools = g
+
+    # Per-requester skill grants. The requester's Person entity can carry
+    # `custom.allowed_skills = ["[user@]skill[/resource,…]", …]` — each
+    # entry grants this specific requester the tools from that skill,
+    # *on top of* their role's generic grant. This is the per-customer
+    # isolation path: a Customer role can stay locked down for writes/
+    # admin tools, while an individual customer (e.g. JK with
+    # `njmkuser@sungrow`) gets sungrow read tools they're entitled to.
+    # Resource-level scoping (`sungrow/627305`) is declared but enforced
+    # at the tool-call argument layer — still a follow-up.
+    if al.turnAllowedTools.len > 0 and
+       al.contextBuilder != nil and al.contextBuilder.graph != nil and
+       logicalUserID.startsWith("nc:"):
+      let reqID = parseAlias(logicalUserID)
+      if uint32(reqID) > 0 and al.contextBuilder.graph.entities.hasKey(reqID):
+        let reqEnt = al.contextBuilder.graph.entities[reqID]
+        if reqEnt.custom != nil and reqEnt.custom.hasKey("allowed_skills") and
+           reqEnt.custom["allowed_skills"].kind == JArray:
+          var extra: seq[string]
+          var grantedSkills: seq[string]
+          for raw in reqEnt.custom["allowed_skills"]:
+            let (ok, g, _) = parseSkillGrant(raw.getStr(""))
+            if ok and g.skill.len > 0:
+              grantedSkills.add(g.skill.toLowerAscii())
+          if grantedSkills.len > 0:
+            # Expand each granted skill to its concrete MCP tool names:
+            # tools registered from MCP servers land as `mcp_<server>_<tool>`;
+            # the server name IS the skill name. Scan the registry and add
+            # anything matching a granted skill prefix.
+            let allTools = al.tools.list()
+            for tn in allTools:
+              let lower = tn.toLowerAscii()
+              for sk in grantedSkills:
+                let prefix = "mcp_" & sk & "_"
+                if lower.startsWith(prefix) and tn notin al.turnAllowedTools:
+                  extra.add(tn)
+                  break
+            if extra.len > 0:
+              infoCF("agent", "Per-requester skill grants expanded role.grant",
+                     {"requester": logicalUserID,
+                      "skills": grantedSkills.join(","),
+                      "tools_added": $extra.len}.toTable)
+              for t in extra: al.turnAllowedTools.add(t)
 
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
 
