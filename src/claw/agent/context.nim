@@ -707,7 +707,23 @@ $1""".format(skillsSummary))
 proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_types.Message], summary: string, currentMessage: string, channel, chatID: string, useXmlTools: bool = false, recipientID: string = ""): seq[providers_types.Message] =
   var systemPrompt = cb.buildSystemPrompt(userID, useXmlTools, recipientID, channel)
   if channel != "" and chatID != "":
-    let displayID = if userID.startsWith("nc:"): userID else: "Guest (" & userID & ")"
+    # Resolve nc:id → human-readable label (name + role) by looking up
+    # the entity in the graph. Without this, the LLM just sees the raw
+    # nc:id and has no way to call the user by name or understand their
+    # trust tier. Falls back to "Guest (raw-id)" if the id doesn't
+    # resolve to an entity.
+    var displayID = userID
+    if userID.startsWith("nc:") and cb.graph != nil:
+      let entID = parseAlias(userID)
+      if uint32(entID) > 0 and cb.graph.entities.hasKey(entID):
+        let ent = cb.graph.entities[entID]
+        var bits: seq[string] = @[]
+        if ent.name.len > 0: bits.add(ent.name)
+        bits.add(userID)
+        if ent.role.len > 0: bits.add("role=" & ent.role)
+        displayID = bits.join(" · ")
+    elif not userID.startsWith("nc:"):
+      displayID = "Guest (" & userID & ")"
     systemPrompt.add("\n\n## Current Session\nChannel: $1\nChat ID: $2\nInbound User: $3\nResolved Identity: $4".format(channel, chatID, userID, displayID))
 
   if summary != "":
