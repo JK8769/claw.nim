@@ -1293,9 +1293,36 @@ Options:
                       "chat": msg.chat_id}.toTable)
         if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
-            var sysMsg = msg
-            sysMsg.content = plainContent
-            response = await handleSystemCommand(cfg, sysMsg, gCtx.offices[officeKey])
+            # Fast path: system commands run in a spawned task so they
+            # don't block the main inbound loop behind a 10-60s agent
+            # turn on an unrelated chat. These handlers are read-only
+            # (or fork-and-forget like /restart), so concurrent execution
+            # with an in-flight agent run is safe.
+            let cMsg = msg
+            let cPlain = plainContent
+            let cRecipient = recipient
+            let cOffice = officeKey
+            asyncCheck (proc() {.async.} =
+              try:
+                var sm = cMsg
+                sm.content = cPlain
+                let r = await handleSystemCommand(cfg, sm, gCtx.offices[cOffice])
+                if r != "":
+                  var fMeta = initTable[string, string]()
+                  fMeta["final"] = "true"
+                  let appID = cMsg.metadata.getOrDefault("app_id", "")
+                  msgBus.publishOutbound(newOutbound(cMsg.channel, cRecipient,
+                                                     cMsg.chat_id, r,
+                                                     appID = appID,
+                                                     metadata = fMeta))
+                  statusEmitter.emitChannelMsg(cMsg.channel, "out", cRecipient)
+              except Exception as e:
+                errorCF("claw", "System-command fast-path error",
+                        {"error": e.msg}.toTable)
+            )()
+            # Leave response = "" so the main path's publish is skipped;
+            # the spawned task owns the reply. Main loop continues to
+            # consume the next inbound immediately.
           else:
             response = await gCtx.offices[officeKey].processMessage(msg)
 
