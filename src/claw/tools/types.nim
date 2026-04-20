@@ -18,6 +18,13 @@ type
     graph*: WorldGraph
     entity*: string
     identity*: string
+    preAuthorized*: bool  ## Caller (usually the agent loop's dispatch gate)
+                          ## has ALREADY cleared this call through a
+                          ## role.grant / allowed_skills check. When true,
+                          ## the registry's blanket external-user gate at
+                          ## executeWithContext is bypassed — explicit
+                          ## grants take precedence over the
+                          ## always-available floor.
 
   Tool* = ref object of RootObj
     toolTags*: seq[string]  ## Tags for discovery, ordered by importance (first = primary)

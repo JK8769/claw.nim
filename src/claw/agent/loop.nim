@@ -600,7 +600,16 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         else:
           al.liveLastTool = tc.name
           al.liveToolLog.add(tc.name)
-          result = await al.tools.executeWithContext(tc.name, tc.arguments, toolCtx)
+          # Mark this call as pre-authorised when we have an explicit
+          # role.grant + allowed_skills allowlist AND the tool cleared
+          # it. The registry's blanket external-user gate will then
+          # skip — an explicit grant overrides the safety-net floor.
+          # Turns where turnAllowedTools is empty (no trust config)
+          # keep preAuthorized=false so the floor still protects.
+          var ctxForCall = toolCtx
+          if al.turnAllowedTools.len > 0 and tc.name in al.turnAllowedTools:
+            ctxForCall.preAuthorized = true
+          result = await al.tools.executeWithContext(tc.name, tc.arguments, ctxForCall)
         # Record in tool call log for forced summary context
         let resultPreview = if result.len > 200: result[0..199] & "..." else: result
         toolCallLog.add("[" & $iteration & "] " & tc.name & " → " & resultPreview)
