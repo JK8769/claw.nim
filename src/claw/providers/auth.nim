@@ -99,6 +99,92 @@ proc verifyKey*(def: ProviderDef, apiKey: string, timeoutMs: int = 10_000): Veri
     result.outcome = voNetwork
     result.errMsg = "network error: " & e.msg
 
+proc verifyViaChat*(def: ProviderDef, apiKey, modelId: string,
+                    timeoutMs: int = 15_000): VerifyResult =
+  ## Alternative verify for providers that don't expose a working GET /models
+  ## (e.g. OpenCode Go at /zen/go/v1): POST a minimal chat-completion and
+  ## treat the response code as the signal. HTTP 200 / 400 / a credits-style
+  ## error all mean auth passed. Caller picks `modelId` from res/models.json —
+  ## `models_catalog.getProviderModels(def.name)` is the canonical source.
+  result.provider = def.name
+  if def.local:
+    result.outcome = voSkipped
+    result.errMsg = "local provider — no API key required"
+    return
+  if apiKey.len == 0:
+    result.outcome = voAuthFailed
+    result.errMsg = "no key supplied"
+    return
+  if modelId.len == 0:
+    result.outcome = voUnknown
+    result.errMsg = "no probe model available in res/models.json for " & def.name
+    return
+
+  let url = def.apiBase & "/chat/completions"
+  var headers = buildHeaders(def, apiKey)
+  headers["Content-Type"] = "application/json"
+  let body = $(%*{
+    "model": modelId,
+    "messages": [{"role": "user", "content": "ping"}],
+    "max_tokens": 1
+  })
+  let c = newCurly()
+  defer: c.close()
+
+  try:
+    let resp = c.post(url, headers = headers, body = body,
+                      timeout = timeoutMs div 1000)
+    result.httpStatus = resp.code
+    # Some providers (OpenCode Zen) signal "out of credits" with HTTP 401 plus
+    # a structured error body — the key is actually valid. Peek at the body
+    # before classifying.
+    var errType, errMsg = ""
+    try:
+      let j = parseJson(resp.body)
+      errType = j{"error"}{"type"}.getStr("")
+      errMsg = j{"error"}{"message"}.getStr("")
+    except: discard
+    let looksLikeCredits = errType.toLowerAscii().contains("credit") or
+                           errMsg.toLowerAscii().contains("balance") or
+                           errMsg.toLowerAscii().contains("quota")
+
+    case resp.code
+    of 200:
+      result.outcome = voOk
+      result.errMsg = "key accepted (chat probe: " & modelId & ")"
+    of 400:
+      # Request-shape issue (bad model name, missing param) — auth still passed.
+      result.outcome = voOk
+      result.errMsg = "key accepted (HTTP 400 on " & modelId & ": " & errMsg & ")"
+    of 401, 403:
+      if looksLikeCredits:
+        result.outcome = voOk
+        result.errMsg = "key accepted (provider: " & errMsg & ")"
+      else:
+        result.outcome = voAuthFailed
+        result.errMsg = "key rejected by " & def.name & " (HTTP " & $resp.code &
+                        (if errMsg.len > 0: ": " & errMsg else: "") & ")"
+    of 404:
+      # Model not in this tier's catalog — caller should retry with a different
+      # probe model. Leaves outcome ambiguous rather than asserting auth status.
+      result.outcome = voUnknown
+      result.errMsg = "model '" & modelId & "' not available on " & def.name &
+                      " — pick another from res/models.json"
+    of 429:
+      result.outcome = voRateLimit
+      result.errMsg = "rate limited (HTTP 429)"
+    else:
+      if resp.code >= 500:
+        result.outcome = voServerError
+        result.errMsg = "provider " & def.name & " returned HTTP " & $resp.code
+      else:
+        result.outcome = voUnknown
+        result.errMsg = "unexpected HTTP " & $resp.code &
+                        (if errMsg.len > 0: ": " & errMsg else: "")
+  except CatchableError as e:
+    result.outcome = voNetwork
+    result.errMsg = "network error: " & e.msg
+
 proc parseModelEntry(e: JsonNode): ModelInfo =
   ## Best-effort extraction of common fields from a provider's model entry.
   ## Different providers return different shapes; we pick whatever matches.

@@ -16,7 +16,7 @@
 import std/[asyncdispatch, json, tables, os, strutils]
 import types
 import ../config
-import ../providers/[registry as prov_registry, auth as prov_auth]
+import ../providers/[registry as prov_registry, auth as prov_auth, models_catalog]
 import ../env_file
 
 type
@@ -63,7 +63,7 @@ method execute*(t: ProviderAuthTool, args: Table[string, JsonNode]): Future[stri
       return "✗ " & def.envKey & " is not set in " & envPath &
              ". A human operator must run `claw provider auth " & name & "` at the CLI to add it."
 
-  let vr = prov_auth.verifyKey(def, storedKey)
+  let vr = models_catalog.verifyProviderKey(def, storedKey)
 
   # Build a result that exposes outcome + metadata but NEVER the key value.
   var status = ""

@@ -962,7 +962,7 @@ when isMainModule:
       elif not r.isSet:
         r.status = "not set"
       elif doVerify:
-        let vr = prov_auth.verifyKey(p, stored)
+        let vr = models_catalog.verifyProviderKey(p, stored)
         case vr.outcome
         of prov_auth.voOk:          r.isValid = true; r.status = "✓ valid"
         of prov_auth.voAuthFailed:  r.status = "✗ invalid"
@@ -1065,7 +1065,7 @@ when isMainModule:
     if existing.len > 0:
       echo "  " & def.envKey & " is already set in .env."
       echo "  Re-verifying the stored key..."
-      let vr = prov_auth.verifyKey(def, existing)
+      let vr = models_catalog.verifyProviderKey(def, existing)
       if vr.outcome == prov_auth.voOk:
         echo "  ✓ stored key is valid" &
              (if vr.modelCount > 0: " (" & $vr.modelCount & " models available)" else: "")
@@ -1089,11 +1089,13 @@ when isMainModule:
       quit(1)
 
     echo "  Verifying via GET " & def.apiBase & def.verifyPath & " ..."
-    let vr = prov_auth.verifyKey(def, apiKey)
+    let vr = models_catalog.verifyProviderKey(def, apiKey)
     case vr.outcome
     of prov_auth.voOk:
       echo "  ✓ key accepted" &
-           (if vr.modelCount > 0: " (" & $vr.modelCount & " models available)" else: "")
+           (if vr.modelCount > 0: " (" & $vr.modelCount & " models available)"
+            elif vr.errMsg.len > 0: " (" & vr.errMsg & ")"
+            else: "")
       writeEnvValue(envPath, def.envKey, apiKey)
       echo "  ✓ written to " & envPath & "  (" & def.envKey & ")"
       echo ""

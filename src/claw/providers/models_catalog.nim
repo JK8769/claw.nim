@@ -166,6 +166,25 @@ proc findCanonical*(canonicalId: string): (CanonicalModel, bool) =
     return (cat.canonical[canonicalId], true)
   return (CanonicalModel(), false)
 
+proc probeModelFor*(providerName: string): string =
+  ## First model id from res/models.json for this provider, or "" if none.
+  ## Used by `verifyProviderKey` below to pick a known-good model when the
+  ## provider has no /models listing endpoint.
+  for m in getProviderModels(providerName):
+    if m.id.len > 0: return m.id
+
+proc verifyProviderKey*(def: ProviderDef, apiKey: string): auth.VerifyResult =
+  ## Robust verify: try GET <verifyPath> first (fast, cheap). If that returns
+  ## voUnknown (e.g. 404 — some provider tiers don't expose /models), fall back
+  ## to a minimal chat-completion probe with a model from the shipped catalog.
+  ## Every caller (CLI auth, `provider list --verify`, the agent's
+  ## provider_auth tool) gets the same behavior this way.
+  result = auth.verifyKey(def, apiKey)
+  if result.outcome != auth.voUnknown: return
+  let probe = probeModelFor(def.name)
+  if probe.len == 0: return
+  result = auth.verifyViaChat(def, apiKey, probe)
+
 # ─── Refresh: hit the live API, write back to res/models.json ───
 #
 # Refresh merges: the provider's live model list replaces its entry, but we
