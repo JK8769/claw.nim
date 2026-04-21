@@ -1,12 +1,17 @@
 # SunGrow.nims — solar/storage fleet monitoring company.
 #
-# This company is configured around the Sungrow iSolarCloud API.
-# Its operator agent (Lexi) has access to:
-#   - sungrow skill (bundled Tier 2) — query plants, devices, real-time & history
-#   - forge-tool                     — to author custom analytics/report tools
-#   - learn_skill tool (automatic)   — to capture repeated workflows as SKILL.md
-#   - doc-parse                      — to ingest data sheets / service reports
-#   - anygen                         — to generate dashboards and reports
+# Two-agent architecture:
+#   - Atlas (Customer Support)  — customer-facing front desk; classifies intent,
+#                                 answers simple "current state" lookups, delegates
+#                                 analytical work to Lexi.
+#   - Lexi  (Secretary / Analyst) — deep analysis: baselines, CAGR anomalies,
+#                                   performance ratios, report generation via anygen.
+#
+# Core skills referenced below:
+#   - sungrow    — query plants, devices, real-time & history; solar_report_* pipeline
+#                  (solar_report_build orchestrator + primitives)
+#   - doc-parse  — ingest data sheets / service reports
+#   - anygen     — AI generation of slides, docs, diagrams, websites
 #
 # Setup:
 #   1. claw create templates/clawfiles/SunGrow.nims
@@ -29,37 +34,100 @@ org "SunGrow":
   description "Solar and energy-storage fleet monitoring."
 
 # ── People ────────────────────────────────────────────
+# The SuperAdmin. Channel bindings (feishu, nkn, …) are added automatically
+# by `claw channel auth <channel>` / `redeem_invite` flows — don't add them
+# here by hand.
 person "Owner":
   permission "SuperAdmin"
 
 # ── Providers ─────────────────────────────────────────
+# Keep deepseek as a zero-friction fallback. opencode-go is preferred for
+# production: glm-5.1 handles Chinese analytical prose well; mimo-v2-pro is
+# a strong customer-facing model for Atlas.
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
   defaultModel "deepseek-chat"
   models "deepseek-chat", "deepseek-reasoner"
 
+provider "opencode-go":
+  apiBase "https://opencode.ai/zen/go/v1"
+  apiKey "${OPENCODE_GO_API_KEY}"
+  defaultModel "kimi-k2.5"
+  models "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni",
+         "minimax-m2.5", "minimax-m2.7",
+         "qwen3.5-plus", "qwen3.6-plus",
+         "glm-5", "glm-5.1"
+
+# ── Competencies (role bundles — skill requirements + handbook pointer) ─
+# A competency groups the skills an agent needs plus a handbook that teaches
+# the "when to reach for which tool" decision tree. Reference from an agent
+# via `practices "<name>"`.
+competency "solar-frontdesk":
+  description "Customer-facing routing: classify depth, handle simple sungrow lookups directly, delegate analytical/advisory queries to the solar analyst."
+  skills "sungrow", "delegate"
+  source "solar-frontdesk.md"
+
+competency "solar-analysis":
+  description "Deep solar performance analysis: baselines, anomaly detection, performance ratios, and operator-facing recommendations."
+  skills "sungrow"
+  source "solar-analysis.md"
+
 # ── Agents ────────────────────────────────────────────
 agent "Lexi":
-  model "deepseek-chat"
-  provider "deepseek"
+  model "glm-5.1"             # swap to "deepseek-chat" + provider "deepseek" if no opencode-go key
+  provider "opencode-go"
   role "Admin"
   identity "Staff"
-  jobTitle "Solar Ops Analyst"
+  jobTitle "Secretary"
   profile "Secretary"
   maxDepth 10
-  uses "sungrow", "doc-parse", "anygen", "forge-tool"
-  workstation true
+  # Skill-level change on sungrow: raw sungrow_* tools are hidden from MCP
+  # exposure. Lexi sees only the solar_* analyst surface + local history
+  # store + solar_report_* pipeline — ~15 focused tools instead of 33.
+  # No deny-list needed here.
+  uses "sungrow", "doc-parse", "anygen"
+  practices "solar-analysis"
 
   reportsTo "Owner":
     role "boss"
     trustLevel 100
     etiquette "Primary lead. Prefers concise reports with kWh and SOC numbers stated clearly."
 
+agent "Atlas":
+  model "mimo-v2-pro"         # swap to "deepseek-chat" + provider "deepseek" if no opencode-go key
+  provider "opencode-go"
+  role "Staff"
+  identity "Staff"
+  jobTitle "Customer Support"
+  profile "Secretary"
+  maxDepth 8
+  uses "sungrow", "doc-parse", "delegate"
+  practices "solar-frontdesk"
+  # Atlas is customer-facing front desk — needs "current state" tools only.
+  # Historical analysis + stats are Lexi's job; Atlas delegates those via
+  # the `delegate` tool. Restricting to the now-tools + string-health keeps
+  # him focused: 5 analyst tools instead of 15. forge-tool is also removed
+  # (front desk never forges custom tools).
+  deny "mcp_sungrow_solar_plant_history",
+       "mcp_sungrow_solar_device_history",
+       "mcp_sungrow_solar_optimizer_now",
+       "mcp_sungrow_solar_optimizer_history",
+       "mcp_sungrow_solar_environment_now",
+       "mcp_sungrow_solar_environment_history",
+       "mcp_sungrow_solar_history_sync",
+       "mcp_sungrow_solar_history_query",
+       "mcp_sungrow_solar_history_stats",
+       "mcp_sungrow_solar_history_status"
+
+  reportsTo "Owner":
+    role "boss"
+    trustLevel 100
+
 # ── Company Rules ─────────────────────────────────────
 defaults:
-  maxTokens 4096
+  maxTokens 8192         # wide enough that Chinese analytical markdown doesn't truncate
   temperature 0.5        # lower than MyCompany — analytics prefers deterministic output
-  maxToolIterations 20
+  maxToolIterations 40   # report-generation chains can legitimately need 15-25 tool calls
 
 security:
   policy "rate_limit",
@@ -72,12 +140,13 @@ gateway:
   port 18791           # differs from MyCompany so both can run in parallel
 
 # ── Skills (Tier 2 Company Lab) ───────────────────────
-# Only Tier 2 opt-ins need declaration. Tier 1 base skill `forge-tool`
-# is universal — reference via `uses "..."` on an agent, no company-level
-# `skill "..."` line needed. The learn_skill TOOL is automatic for any
-# agent with `workstation: true`.
-# Skills. Adjust the refs below once you have sungrow/doc-parse in git
-# (or use `claw:` refs to another company that owns them).
+# Tier 1 base skills (forge-tool, delegate) are universal — reference via
+# `uses "..."` on an agent, no company-level `skill "..."` line needed.
+#
+# For `sungrow` and `doc-parse` you need either:
+#   - a fork in your own GitHub:  skill "sungrow", "github:<you>/claw-sungrow-skill"
+#   - a `claw:` ref to a company that owns them:  skill "claw:<Co>/sungrow"
+# See skills/sungrow/ in the claw.nim repo for the reference implementation.
 #   skill "sungrow",   "github:<you>/claw-sungrow-skill"
 #   skill "doc-parse", "github:<you>/claw-doc-parse-skill"
 skill "anygen", "github:AnyGenIO/anygen-suite-skill/anygen-suite"
