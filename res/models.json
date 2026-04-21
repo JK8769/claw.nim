@@ -409,7 +409,7 @@
       ]
     },
     "ollama": {
-      "updated": "2026-04-18",
+      "updated": "2026-04-21",
       "models": [
         {
           "id": "gemma4:e2b",
@@ -439,7 +439,7 @@
       ]
     },
     "deepseek": {
-      "updated": "2026-04-18",
+      "updated": "2026-04-21",
       "models": [
         {
           "id": "deepseek-chat",
