@@ -13,11 +13,12 @@
 ## Gate: SuperAdmin/Admin only. Creating persons + persisting invite
 ## codes is not something a guest should do mid-chat.
 
-import std/[asyncdispatch, json, tables, strutils, times, random, options]
+import std/[asyncdispatch, json, tables, strutils, times, random, options, os]
 import types
 import ../config
 import ../agent/cortex
 import ../agent/invites
+import ../skill_grant
 
 type
   CreateCustomerInviteTool* = ref object of ContextualTool
@@ -52,6 +53,11 @@ method parameters*(t: CreateCustomerInviteTool): Table[string, JsonNode] =
       "max_uses": {
         "type": "integer",
         "description": "How many distinct redemptions the code allows. Default 1 (one-shot). Use a small positive number for a shared-device group; -1 for unlimited (not recommended — per-redemption entity binding doesn't make sense)."
+      },
+      "skills": {
+        "type": "array",
+        "description": "Skill grants to attach to the customer. Each entry is either '<skill>' (unscoped — uses default creds), '<skill>::<credential>' (credential-scoped — routes to the skill's named credential, and the invite materializes a member record at creation so the customer is ready to use it immediately), or '<account>@<skill>' (legacy account-prefixed syntax). Example: ['sungrow::acme-solar'].",
+        "items": { "type": "string" }
       }
     },
     "required": %*["customer_name", "agent"]
@@ -96,17 +102,35 @@ method execute*(t: CreateCustomerInviteTool, args: Table[string, JsonNode]): Fut
     return "Error: no agent named '" & agentName & "'. Known: " &
            known.join(", ") & "."
 
+  # Parse & validate skill grants up front so a typo doesn't land a
+  # partially-provisioned customer in the graph.
+  var grants: seq[SkillGrant]
+  if args.hasKey("skills") and args["skills"].kind == JArray:
+    for item in args["skills"]:
+      let raw = item.getStr("").strip()
+      if raw.len == 0: continue
+      let (ok, g, err) = parseSkillGrant(raw)
+      if not ok:
+        return "Error: invalid skill grant '" & raw & "': " & err
+      grants.add(g)
+
   # Pre-allocate the customer Person entity so we have a stable nc:id
   # to hand back to the SuperAdmin.
   var g = t.graph
   let newID = WorldEntityID(g.nextID)
   g.nextID += 1
+  var entCustom: JsonNode = nil
+  if grants.len > 0:
+    entCustom = %*{"allowed_skills": newJArray()}
+    for gr in grants:
+      entCustom["allowed_skills"].add(%($gr))
   var ent = WorldEntity(
     id: newID,
     kind: ekPerson,
     name: customerName,
     role: "Customer",
-    identifiers: initTable[string, string]()
+    identifiers: initTable[string, string](),
+    custom: entCustom
   )
   # Connect the customer to the serving agent via a `serves` edge so
   # the relationship graph reflects the new customer's membership.
@@ -147,11 +171,38 @@ method execute*(t: CreateCustomerInviteTool, args: Table[string, JsonNode]): Fut
   )
   saveInvites(workspace, invMap)
 
+  # Materialize per-skill member records for any `<skill>::<credential>`
+  # grants. Record format matches each skill's convention — for now we
+  # assume `$NIMCLAW_DIR/support/<skill>/members/<nc_id>.json` with a
+  # `{"account_id": "<credential>"}` payload, mirroring the sungrow
+  # skill's layout. The skill itself reads these to route per-customer.
+  let ncIdSlot = alias.replace(":", "_")  # nc:7 → nc_7
+  var materialized: seq[string]
+  for gr in grants:
+    if gr.credential.len == 0: continue
+    let membersDir = getNimClawDir() / "support" / gr.skill / "members"
+    try:
+      createDir(membersDir)
+      let path = membersDir / (ncIdSlot & ".json")
+      writeFile(path, $(%*{"account_id": gr.credential}))
+      materialized.add(gr.skill & "::" & gr.credential)
+    except CatchableError as e:
+      return "Error: failed to write member record for " & $gr & ": " & e.msg
+
+  var skillLine = ""
+  if grants.len > 0:
+    var rendered: seq[string]
+    for gr in grants: rendered.add($gr)
+    skillLine = "  Skills:   " & rendered.join(", ") & "\n"
+    if materialized.len > 0:
+      skillLine.add("  Credentials routed: " & materialized.join(", ") & "\n")
+
   return "Customer invite created.\n" &
          "  Share this string with the customer:  **" & alias & "/" & code & "**\n\n" &
          "  Customer: " & customerName & " (" & alias & ")\n" &
          "  Agent:    " & agentName & "\n" &
-         "  Max uses: " & $maxUses & "\n\n" &
+         "  Max uses: " & $maxUses & "\n" &
+         skillLine & "\n" &
          "The customer sends the bundled string as their first " &
          "message to any channel routing to " & agentName &
          ". The gateway authenticates them before the LLM sees the " &
