@@ -93,8 +93,19 @@ proc normalizeCommandInput*(command: string): string =
 
 method execute*(t: ExecTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("command"): return "Error: command is required"
-  
-  let rawCommand = args["command"].getStr()
+
+  # `command` must be a string (shell command). On JObject/JArray, getStr() would
+  # silently return "", `sh -c ""` would succeed, and the tool would produce the
+  # useless "(no output)" — breaking the agent's recovery. Reject with guidance.
+  let cmdNode = args["command"]
+  if cmdNode.kind != JString:
+    return "Error: 'command' must be a string, got " & $cmdNode.kind &
+           ". If you need to pass structured data to a CLI, stringify it " &
+           "first, or use a dedicated tool if one exists for that domain."
+  if cmdNode.getStr().strip().len == 0:
+    return "Error: 'command' is empty. Pass the shell command to run."
+
+  let rawCommand = cmdNode.getStr()
   let command = normalizeCommandInput(rawCommand)
   
   var cwd = t.workingDir
