@@ -3,6 +3,7 @@
 ## Generates ~/.nimclaw-<OrgName>/ with BASE.json, workspace, skills, etc.
 
 import std/[json, os, strutils, tables]
+import libnkn/nkn_bridge
 
 # ── Spec Types ────────────────────────────────────────────────────
 
@@ -669,10 +670,14 @@ proc buildGraph(spec: ClawSpec): JsonNode =
     if a.role != "":
       entity["permission-group"] = %a.role
     entity["mood"] = %*{"valence": 0.0, "arousal": 0.1, "archetype": "Assistant"}
+    # Channel identifiers (feishu:<app_id>, nmobile, etc.) are stamped
+    # by the post-entity pass below based on DSL channel-block routing
+    # targets. Inline `identifier "..."` lines under `agent "...":` still
+    # seed the entity directly.
     if a.identifiers.len > 0:
       entity["identifiers"] = buildIdentifiers(a.identifiers)
     else:
-      entity["identifiers"] = %*{"nkn": a.name}
+      entity["identifiers"] = newJObject()
     # Membership — always member of org
     entity["memberOf"] = %*["nc:1"]
     # Relationships
@@ -725,7 +730,94 @@ proc buildGraph(spec: ClawSpec): JsonNode =
     orgEntity["identifiers"] = buildIdentifiers(spec.org.identifiers)
   result.add(orgEntity)
 
-proc buildChannelConfig(spec: ClawSpec): JsonNode =
+  # ── Channel identifier stamping pass ──────────────────────────────
+  #
+  # For each `channel "X":` block's routing declarations (`app "id",
+  # "target"` or `identifier "sub", "target"`), stamp the target entity
+  # with `identifiers["<channel-key>"] = <address>`. The "target" is
+  # either a declared agent name or the org name (company-owned apps /
+  # main-line identifiers).
+  #
+  # For NKN, we spawn a short-lived nkn-cli to derive
+  # `<sub>.<pubkey>` / bare `<pubkey>` from `NKN_WALLET_SEED`. Skipped
+  # silently when no seed is available — the operator re-runs
+  # `co update` after their first `claw channel auth nmobile`.
+
+  proc findEntity(entities: JsonNode, name: string): JsonNode =
+    for ent in entities.mitems:
+      if ent{"name"}.getStr() == name: return ent
+    nil
+
+  proc stampChannelIdent(entities: JsonNode, targetName, key, value: string) =
+    let ent = findEntity(entities, targetName)
+    if ent == nil or value.len == 0: return
+    if not ent.hasKey("identifiers") or ent["identifiers"].kind != JObject:
+      ent["identifiers"] = newJObject()
+    ent["identifiers"][key] = %value
+
+  for ch in spec.channels:
+    let kind = ch.kind.toLowerAscii
+    case kind:
+    of "feishu":
+      # Collect (app_id, target) pairs. First pass: apps. Second pass:
+      # routing targets from `app_agent:<id>` field key.
+      var targets = initTable[string, string]()
+      var appIds: seq[string] = @[]
+      for f in ch.fields:
+        if f.key == "app":
+          appIds.add(f.val)
+          if not targets.hasKey(f.val): targets[f.val] = ""
+        elif f.key.startsWith("app_agent:"):
+          let id = f.key["app_agent:".len .. ^1]
+          targets[id] = f.val
+      for appId in appIds:
+        let target = targets.getOrDefault(appId, "")
+        if target.len == 0: continue
+        stampChannelIdent(result, target, "feishu:" & appId, appId)
+    of "nmobile":
+      var targets = initTable[string, string]()
+      var subs: seq[string] = @[]
+      var seedEnvRef = ""
+      for f in ch.fields:
+        if f.key == "identifier":
+          subs.add(f.val)
+          if not targets.hasKey(f.val): targets[f.val] = ""
+        elif f.key.startsWith("identifier_agent:"):
+          let sub = f.key["identifier_agent:".len .. ^1]
+          targets[sub] = f.val
+        elif f.key == "seed":
+          seedEnvRef = f.val
+      # Resolve the seed. `seed "${NKN_WALLET_SEED}"` is the convention.
+      var seed = seedEnvRef
+      if seed.startsWith("${") and seed.endsWith("}"):
+        seed = getEnv(seed[2 ..< seed.len - 1])
+      if seed.len == 0:
+        # Seed not in env yet — typical on first `co update` before the
+        # operator has run `claw channel auth nmobile`. Subsequent runs
+        # will fill in the addresses.
+        continue
+      # Short-lived nkn-cli spawn to derive pubkey + per-sub addresses.
+      var bridgeImported = false
+      try:
+        let bridge = nkn_bridge.newNknBridge()
+        bridgeImported = true
+        defer: bridge.stop()
+        let (pubKey, pubErr) = bridge.getAddressFromSeed(seed, "")
+        if pubErr.len == 0 and pubKey.len > 0:
+          # Company main line — bare pubkey stamped on the org entity
+          # regardless of whether any DSL line explicitly targets the
+          # company. Convention: bare pubkey is always the org's line.
+          stampChannelIdent(result, spec.org.name, "nmobile", pubKey)
+          for sub in subs:
+            let target = targets.getOrDefault(sub, "")
+            if target.len == 0: continue
+            let (fullAddr, err) = bridge.getAddressFromSeed(seed, sub)
+            if err.len == 0 and fullAddr.len > 0:
+              stampChannelIdent(result, target, "nmobile", fullAddr)
+      except CatchableError:
+        if not bridgeImported:
+          echo "Warning: nkn-cli unavailable — skipping nmobile identifier stamping."
+    else: discard  # future channels plug in here
   ## Build the channels config section with defaults for all channel types.
   result = %*{
     "whatsapp": {"enabled": false, "bridge_url": "ws://localhost:3001", "allow_from": []},

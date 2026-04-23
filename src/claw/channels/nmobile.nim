@@ -957,7 +957,17 @@ method start*(c: NMobileChannel) {.async.} =
       if identifiersToStart.len == 0:
         identifiersToStart.add(("", ""))
 
-    for (id, agent) in identifiersToStart:
+    # Spawn per-agent sub-clients AND a bare-pubkey main-line client.
+    # The main-line receives bind codes (pre-LLM intercept in gateway)
+    # and any customer traffic that addresses the company directly
+    # rather than a specific agent extension.
+    var toSpawn = identifiersToStart
+    if seedMode:
+      # Bare pubkey = company main line. Routed with recipient_id=""
+      # so gateway's default-recipient path handles it.
+      toSpawn.add(("", ""))
+
+    for (id, agent) in toSpawn:
       let (clientAddrRes, err) =
         if seedMode:
           c.bridge.createClientFromSeed(c.seed, id, c.numSubClients, c.originalClient)
@@ -975,9 +985,10 @@ method start*(c: NMobileChannel) {.async.} =
       c.clientLastEventAt[clientAddrRes] = 0
       if c.botDeviceId == "":
         c.botDeviceId = getBotDeviceId(clientAddrRes)
+      let roleLabel = if id.len == 0: "main-line" else: "agent"
       infoCF("nmobile", "NMobile client connected",
              {"address": clientAddrRes, "deviceId": c.botDeviceId,
-              "agent": agent}.toTable)
+              "agent": agent, "role": roleLabel}.toTable)
 
     if c.clientAddrs.len == 0:
       errorC("nmobile", "Failed to start any NMobile sub-clients")

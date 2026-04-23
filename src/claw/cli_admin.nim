@@ -816,19 +816,31 @@ proc authNmobileChannel*(cfg: var Config, args: seq[string]): string =
   of cnuItemUpdated:    lines.add("  Updated existing identifier line in BASE.nims.")
   of cnuAlreadyPresent: lines.add("  BASE.nims already declared this identifier.")
   of cnuNoFile:         lines.add("  Warning: BASE.nims not found — `co update` won't preserve this.")
+  # Company main line — the QR a customer scans to add SolarIQ (or
+  # whatever the brand is) as a contact in their nMobile app. Bare
+  # pubkey, no sub-identifier: this is the org's address, not any
+  # particular agent's.
+  let (companyAddr, companyErr) = bridge.getAddressFromSeed(seedHex, "")
+  let brand =
+    try: resolveBrand(loadWorld(cfg.workspacePath()))
+    except CatchableError: "Company"
+  if companyErr.len == 0 and companyAddr.len > 0:
+    lines.add("")
+    lines.add("📇 Company address — scan with nMobile app to add " & brand & " as contact:")
+    lines.add("")
+    lines.add("  " & companyAddr)
+    try:
+      lines.add(indent(renderQRAsString(newQR(companyAddr)), 2))
+    except CatchableError:
+      lines.add("    (QR render failed — use the address string above)")
   if cfg.channels.nmobile.identifiers.len > 0:
     lines.add("")
-    lines.add("Addresses — scan with the nMobile app to add as contact:")
+    lines.add("Extensions (direct lines — shared with customers post-bind):")
     for idCfg in cfg.channels.nmobile.identifiers:
       let (fullAddr, err) = bridge.getAddressFromSeed(seedHex, idCfg.identifier)
       if err.len > 0: continue
       let agentLabel = if idCfg.agent.len > 0: idCfg.agent else: "unbound"
-      lines.add("")
-      lines.add("  " & agentLabel & "  →  " & fullAddr)
-      try:
-        lines.add(indent(renderQRAsString(newQR(fullAddr)), 2))
-      except CatchableError:
-        lines.add("    (QR render failed — use the address string above)")
+      lines.add("  " & agentLabel & " → " & fullAddr)
   lines.add("")
   lines.add("Restart the gateway to connect.")
   lines.join("\n")
