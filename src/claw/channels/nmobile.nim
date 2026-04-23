@@ -26,6 +26,15 @@ type
     agentIdentifiers: Table[string, string]    ## legacy agent→identifier map
     clientAddrs: seq[string]
     activeClients: Table[string, string]
+    # Per-client liveness tracking for the watchdog. Keyed by clientAddr.
+    # Single-writer invariant for each map (inbox callback writes
+    # lastEventAt; start() writes spawnedAt; watchdog thread reads) —
+    # 64-bit aligned float store is safe without a lock.
+    clientSpawnedAt: Table[string, float]
+    clientLastEventAt: Table[string, float]
+    clientIdentifiers: Table[string, string]  ## clientAddr → sub, for respawn
+    watchdogThread: Thread[NMobileChannel]
+    watchdogRunning: bool
     fcmKey: string
     pushProxy: string
     enableOfflineQueue: bool
@@ -368,6 +377,9 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
     agentIdentifiers: agentMap,
     clientAddrs: newSeq[string](),
     activeClients: initTable[string, string](),
+    clientSpawnedAt: initTable[string, float](),
+    clientLastEventAt: initTable[string, float](),
+    clientIdentifiers: initTable[string, string](),
     fcmKey: ncfg.fcm_key,
     pushProxy: ncfg.push_proxy,
     enableOfflineQueue: ncfg.enable_offline_queue,
@@ -801,6 +813,54 @@ proc poll(c: NMobileChannel) {.async.} =
       errorCF("nmobile", "Polling exception", {"error": e.msg}.toTable)
       await sleepAsync(2000)
 
+const
+  NknClientMaxAgeSec = 14_400   ## 4h blind cycle cap (same as feishu).
+  NknClientStaleSec  = 900      ## 15min silent → treat as dead.
+  NknWatchdogTickSec = 60       ## Scan cadence.
+
+proc clientWatchdog(c: NMobileChannel) {.thread.} =
+  ## SIGKILL+respawn NKN sub-clients whose relay session has gone silently
+  ## dead. nkn-cli's MultiClient can lose its relay-node connection without
+  ## bubbling an error up — the message pipe stays open but deliveries
+  ## stop. Without this, a single network hiccup causes hours of
+  ## indistinguishable silence. Polls the shutdown flag every second so
+  ## `stop()` returns promptly.
+  var tickElapsed = 0
+  while c.watchdogRunning and c.running:
+    sleep(1000)
+    tickElapsed += 1
+    if tickElapsed < NknWatchdogTickSec: continue
+    tickElapsed = 0
+    if c.seed.len == 0: continue  # legacy mode — no respawn path
+    let now = epochTime()
+    for clientAddr in c.clientAddrs:
+      let spawned = c.clientSpawnedAt.getOrDefault(clientAddr, 0.0)
+      let lastEvt = c.clientLastEventAt.getOrDefault(clientAddr, 0.0)
+      if spawned <= 0: continue
+      let age = now - spawned
+      let staleness = if lastEvt > 0: now - lastEvt else: 0.0
+      var reason = ""
+      if age > NknClientMaxAgeSec.float:
+        reason = "4h cycle (age=" & $int(age) & "s)"
+      elif lastEvt > 0 and staleness > NknClientStaleSec.float:
+        reason = "no events " & $int(staleness) & "s (alive " &
+                 $int(age) & "s)"
+      if reason.len == 0: continue
+      let sub = c.clientIdentifiers.getOrDefault(clientAddr, "")
+      infoCF("nmobile", "Watchdog cycling client",
+             {"address": clientAddr, "reason": reason}.toTable)
+      discard c.bridge.closeNKNClient(clientAddr)
+      # Re-create with same seed + identifier — nkn-cli derives the same
+      # address deterministically, so clientAddr-keyed tables stay valid.
+      let (_, err) = c.bridge.createClientFromSeed(c.seed, sub,
+                        c.numSubClients, c.originalClient)
+      if err.len > 0:
+        errorCF("nmobile", "Watchdog respawn failed",
+                {"address": clientAddr, "error": err}.toTable)
+        continue
+      c.clientSpawnedAt[clientAddr] = epochTime()
+      c.clientLastEventAt[clientAddr] = 0
+
 method start*(c: NMobileChannel) {.async.} =
   randomize()
   infoC("nmobile", "Starting NMobile channel...")
@@ -811,6 +871,10 @@ method start*(c: NMobileChannel) {.async.} =
       return
 
     let onMsg = proc(clientAddr, src, data: string) {.gcsafe.} =
+      # Stamp liveness for the watchdog. Single writer (this callback
+      # thread), single reader (watchdog thread) — plain float store is
+      # safe without a lock, same as feishu's subscriber-liveness path.
+      c.clientLastEventAt[clientAddr] = epochTime()
       acquire(c.inboxLock)
       c.inbox.add((clientAddr, src, data))
       release(c.inboxLock)
@@ -881,6 +945,9 @@ method start*(c: NMobileChannel) {.async.} =
         continue
       c.clientAddrs.add(clientAddrRes)
       c.activeClients[clientAddrRes] = agent
+      c.clientIdentifiers[clientAddrRes] = id
+      c.clientSpawnedAt[clientAddrRes] = epochTime()
+      c.clientLastEventAt[clientAddrRes] = 0
       if c.botDeviceId == "":
         c.botDeviceId = getBotDeviceId(clientAddrRes)
       infoCF("nmobile", "NMobile client connected",
@@ -892,6 +959,12 @@ method start*(c: NMobileChannel) {.async.} =
       return
 
     c.running = true
+    # Liveness watchdog — seed-mode only. Legacy deployments don't get
+    # transparent respawn because we don't hold the password in memory
+    # across the lifetime of the channel.
+    if seedMode:
+      c.watchdogRunning = true
+      createThread(c.watchdogThread, clientWatchdog, c)
     discard poll(c)
   except Exception as e:
     errorCF("nmobile", "Failed to start NMobile channel",
@@ -899,6 +972,9 @@ method start*(c: NMobileChannel) {.async.} =
 
 method stop*(c: NMobileChannel) {.async.} =
   c.running = false
+  if c.watchdogRunning:
+    c.watchdogRunning = false
+    joinThread(c.watchdogThread)
   for a in c.clientAddrs:
     if a.len > 0:
       discard c.bridge.closeNKNClient(a)
