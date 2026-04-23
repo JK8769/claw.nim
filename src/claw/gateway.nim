@@ -1629,6 +1629,25 @@ Options:
             infoCF("claw", "Group-chat silent (no @mention)",
                    {"agent": agentName, "sender": msg.sender_id,
                     "chat": msg.chat_id}.toTable)
+        # Main-line reception gate — bare-pubkey nMobile traffic is a
+        # reception desk, not a conversation surface. Anything that
+        # reached here (recognised sender, past bind/invite intercepts,
+        # not a slash-command) is by definition a freeform message to
+        # the company address, which shouldn't spin up the LLM. Reply
+        # with a static pointer to the per-agent extensions and skip the
+        # agent loop entirely.
+        if response == "" and shouldRespond and
+           msg.channel == "nmobile" and msg.recipient_id.len == 0 and
+           not plainContent.startsWith("/"):
+          let lang = detectLang(plainContent)
+          let zh = lang.startsWith("zh")
+          response =
+            if zh:
+              "这是公司主线（接待台），不接入助理对话。请直接私信下列助理："
+            else:
+              "This is the company main line (reception). It doesn't route to a chat assistant — please DM an agent directly:"
+          response.add(nmobile_channel.nkyYellowBook(cfg[], if zh: "zh" else: "en"))
+
         if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
             # System commands are operator-level actions — gateway/config
