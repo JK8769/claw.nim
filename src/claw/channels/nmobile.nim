@@ -706,20 +706,26 @@ proc poll(c: NMobileChannel) {.async.} =
           var finalData = data
           try:
             let j = parseJson(data)
-            if j.hasKey("id"):
-              let msgId = j["id"].getStr()
+            let msgId = j{"id"}.getStr()
+            let incomingType = j{"contentType"}.getStr()
+            # `nknOnePiece` fragments of a single logical media message
+            # all share the same outer `id` — dedupe by id would drop
+            # every piece after the first and break reassembly. Rely on
+            # nkn-sdk-go's MultiClient msgCache (NKN-transport layer
+            # MessageID) for these; they're already deduped there.
+            if msgId.len > 0 and incomingType != "nknOnePiece":
               let now = getTime().toUnixFloat()
               if c.seenMessages.hasKey(msgId):
                 # Skip already processed message
                 continue
-              
+
               # Clean up old seen messages periodically
               if c.seenMessages.len > 1000:
                 var toDel = newSeq[string]()
                 for k, v in c.seenMessages.pairs:
                   if now - v > 3600: toDel.add(k)
                 for k in toDel: c.seenMessages.del(k)
-              
+
               c.seenMessages[msgId] = now
    
             let contentType = j.safeGetStr("contentType")

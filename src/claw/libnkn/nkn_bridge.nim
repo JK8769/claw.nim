@@ -21,6 +21,9 @@ type
                                          ## handle outlives createThread
                                          ## — stack-allocating triggers
                                          ## SIGILL on ARM64.
+    stderrThread: Thread[(NknBridge,)]  ## same discipline as the
+                                         ## reader — drains nkn-cli's
+                                         ## stderr into our own stderr.
 
 proc findBridgeBinary(): string =
   # Look in channels/bin/nkn-cli, next to executable, then on PATH
@@ -94,11 +97,32 @@ proc readerLoop(args: (NknBridge,)) {.thread.} =
     except:
       discard
 
+proc stderrDrainLoop(args: (NknBridge,)) {.thread.} =
+  let b = args[0]
+  let stream = b.process.errorStream
+  while b.running:
+    try:
+      let line = stream.readLine()
+      if line.len == 0:
+        if not b.process.running: break
+        continue
+      # Prefix so drain output is identifiable in the gateway's log.
+      stderr.writeLine "[nkn-cli] " & line
+    except IOError:
+      break
+    except:
+      discard
+
 proc newNknBridge*(onMessage: NknMessageCallback = nil): NknBridge =
   let binPath = findBridgeBinary()
   if binPath.len == 0:
     raise newException(IOError, "nkn_bridge binary not found. Build with: cd src/claw/libnkn && go build -o nkn_bridge nkn_bridge.go")
 
+  # `poStdErrToStdOut` would collapse nkn-cli's diagnostic stderr into
+  # the NDJSON response stream and break our parser. Instead, start a
+  # tiny drain thread that relays stderr lines to our own stderr so
+  # Go-side diagnostics (debug prints, nkn-sdk-go warnings) surface in
+  # the gateway's log file rather than rotting in an unread pipe.
   let process = startProcess(binPath, options = {poUsePath})
 
   var b = NknBridge(
@@ -111,6 +135,7 @@ proc newNknBridge*(onMessage: NknMessageCallback = nil): NknBridge =
   initLock(b.pendingLock)
 
   createThread(b.readerThread, readerLoop, (b,))
+  createThread(b.stderrThread, stderrDrainLoop, (b,))
   return b
 
 proc stop*(b: NknBridge) =
