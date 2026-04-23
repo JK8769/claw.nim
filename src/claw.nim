@@ -39,7 +39,10 @@ Usage:
   claw provider remove <name>
   claw provider <cmd> [<args>...]
   claw channel <cmd> [<args>...]
-  claw user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<key>] [--reverse] [--format=<fmt>]
+  claw user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<key>] [--reverse] [--format=<fmt>] [--recycled] [--all]
+  claw user invite [<args>...] [--skill=<g>]... [--skills=<list>] [--lang=<l>]
+  claw user subscription [<args>...] [--plan=<p>] [--days=<n>] [--tokens=<n>] [--reason=<r>] [--lang=<l>] [--company=<c>] [--agent=<a>]
+  claw user remove [<args>...] [--hard] [--reason=<r>]
   claw user <cmd> [<args>...]
   claw role <cmd> [<args>...]
   claw agent list
@@ -99,6 +102,21 @@ Options:
   --input-cost=<f>     USD per 1M input tokens (model add)
   --output-cost=<f>    USD per 1M output tokens (model add)
   --capabilities=<l>   Comma-separated list (tool-use,vision,reasoning,code,multilingual,audio)
+  --skill=<g>          Skill grant for an invited customer (repeatable; `user invite` only).
+                       Forms: `sungrow` (unscoped), `sungrow::acme-solar`
+                       (credential-scoped — materializes a member record so
+                       the customer is ready on redeem), `acme@sungrow` (legacy).
+  --skills=<list>      Comma-joined alternative to repeating --skill.
+  --plan=<p>           Subscription plan: trial|active (user subscription).
+  --days=<n>           Trial length or extension in days (user subscription).
+  --tokens=<n>         Daily token cap (user subscription).
+  --reason=<r>         Free-text reason, audit-logged (user remove/subscription suspend).
+  --lang=<l>           Customer language for welcome text (en|zh|zh-CN; subscription activate).
+  --company=<c>        Company display name in the welcome text (default: from config).
+  --agent=<a>          Override serving agent in the welcome text.
+  --hard               Permanent delete instead of soft recycle (user remove).
+  --recycled           Show only soft-removed users (user list).
+  --all                Show everyone including soft-removed users (user list).
 """
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -1489,6 +1507,40 @@ when isMainModule:
       if args["--sort"]:       userArgs.add("--sort=" & $args["--sort"])
       if args["--reverse"]:    userArgs.add("--reverse")
       if args["--format"]:     userArgs.add("--format=" & $args["--format"])
+      if args["--recycled"]:   userArgs.add("--recycled")
+      if args["--all"]:        userArgs.add("--all")
+      echo runUserCommand(cfg, userArgs)
+    elif args["remove"] and not args["<cmd>"]:
+      # Specific `user remove [<args>...] [--hard] [--reason=<r>]` rule.
+      userArgs.add("remove")
+      for a in @(args["<args>"]): userArgs.add(a)
+      if args["--hard"]:   userArgs.add("--hard")
+      if args["--reason"]: userArgs.add("--reason=" & $args["--reason"])
+      echo runUserCommand(cfg, userArgs)
+    elif args["invite"] and not args["<cmd>"]:
+      # Specific `user invite [<args>...] [--skill=<g>]... [--skills=<list>]`
+      # rule: docopt parsed the skill flags; re-encode them as positional
+      # --skill= / --skills= strings so runUserCommand's shared parser
+      # consumes them identically to other surfaces (gateway /invite, MCP tool).
+      userArgs.add("invite")
+      for a in @(args["<args>"]): userArgs.add(a)
+      for s in @(args["--skill"]): userArgs.add("--skill=" & s)
+      if args["--skills"]: userArgs.add("--skills=" & $args["--skills"])
+      if args["--lang"]:   userArgs.add("--lang=" & $args["--lang"])
+      echo runUserCommand(cfg, userArgs)
+    elif args["subscription"] and not args["<cmd>"]:
+      # Specific `user subscription [<args>...] [--plan=...] [--days=...]` rule.
+      # Same pattern: re-encode docopt flags as positional --flag=value so
+      # runUserCommand's subscription parser consumes them uniformly.
+      userArgs.add("subscription")
+      for a in @(args["<args>"]): userArgs.add(a)
+      if args["--plan"]:    userArgs.add("--plan=" & $args["--plan"])
+      if args["--days"]:    userArgs.add("--days=" & $args["--days"])
+      if args["--tokens"]:  userArgs.add("--tokens=" & $args["--tokens"])
+      if args["--reason"]:  userArgs.add("--reason=" & $args["--reason"])
+      if args["--lang"]:    userArgs.add("--lang=" & $args["--lang"])
+      if args["--company"]: userArgs.add("--company=" & $args["--company"])
+      if args["--agent"]:   userArgs.add("--agent=" & $args["--agent"])
       echo runUserCommand(cfg, userArgs)
     else:
       for a in @(args["<args>"]): userArgs.add(a)

@@ -144,11 +144,13 @@ proc isReportsToTarget(t: ForwardTool, viaID, targetID: WorldEntityID): bool =
       return true
   return false
 
-proc relationsPath(t: ForwardTool): string =
-  t.officeDir / "RELATIONS.json"
+proc guestsPath(t: ForwardTool): string =
+  ## Guest-ledger path resolved via cortex's shared helper so the
+  ## legacy-filename fallback lives in exactly one place.
+  guestsFilePath(t.officeDir)
 
 proc trustLevelFor(t: ForwardTool, channel, outsiderID: string): int =
-  let path = t.relationsPath()
+  let path = t.guestsPath()
   if not fileExists(path): return 10
   try:
     let j = parseFile(path)
@@ -316,7 +318,7 @@ method execute*(t: ForwardTool, args: Table[string, JsonNode]): Future[string] {
     let (channel, chatID, err) = t.resolveInternalTarget(toID)
     if err != "": return err
     var guestName = ""
-    let path = t.relationsPath()
+    let path = t.guestsPath()
     if fileExists(path):
       try:
         let j = parseFile(path)

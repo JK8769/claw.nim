@@ -161,6 +161,39 @@ proc persistPersonIdentifiers*(baseNimsPath, personName: string,
   for i in insertAt ..< updated.len: finalLines.add(updated[i])
   writeFile(baseNimsPath, finalLines.join("\n"))
 
+proc persistPersonName*(baseNimsPath, ncId, newName: string) =
+  ## Rename a `person "OLD":` block in BASE.nims to `person "NEW":`,
+  ## identified by its `# nc:<id>` tag comment (names aren't unique;
+  ## the nc:id tag is the canonical anchor). No-op when the file or
+  ## the tagged block doesn't exist. Caller validates `newName` —
+  ## unescaped quotes or empty would break the DSL at `co update`.
+  if not fileExists(baseNimsPath): return
+  var lines = readFile(baseNimsPath).splitLines()
+  # Find the `# nc:<id>` tag, then walk backward for the enclosing
+  # `person "...":` header — the canonical layout for a Person block.
+  let tag = "# " & ncId
+  var tagIdx = -1
+  for i, l in lines:
+    if l.strip() == tag: tagIdx = i; break
+  if tagIdx < 0: return
+  var headerIdx = -1
+  for j in countdown(tagIdx - 1, 0):
+    let s = lines[j].strip()
+    if s.startsWith("person \"") and s.endsWith("\":"):
+      headerIdx = j; break
+    # Stop if we hit another block header — the tag doesn't belong to
+    # a person block, don't rewrite unrelated lines.
+    if s.endsWith("\":") and not s.startsWith("person \""): return
+  if headerIdx < 0: return
+  # Preserve leading indentation on the header line (blocks declared at
+  # column 0 vs. nested under a parent — be conservative and keep it).
+  let orig = lines[headerIdx]
+  var indent = ""
+  for c in orig:
+    if c == ' ' or c == '\t': indent.add(c) else: break
+  lines[headerIdx] = indent & "person \"" & newName & "\":"
+  writeFile(baseNimsPath, lines.join("\n"))
+
 proc tryBind*(graph: WorldGraph, workspace: string,
               channelKey, senderID, message: string,
               extras: openArray[(string, string)] = []): Option[BindingCode] =

@@ -51,7 +51,18 @@ type
                             ## tool dispatcher checks calls against this.
 
   ClawOrg* = object
-    name*: string
+    name*: string           ## Internal codename. Drives NIMCLAW_DIR,
+                            ## BASE.json key, git repo — do not change
+                            ## lightly. Leaks only to operators.
+    brand*: string          ## Customer-facing service name (e.g. "SolarIQ").
+                            ## Shown in welcome messages and any other
+                            ## external-facing surface. Defaults to `name`
+                            ## when the DSL doesn't set it.
+    support*: string        ## Name of a declared Person to show on
+                            ## blocked/grace messages as "contact for
+                            ## help". Resolved lazily at render time so
+                            ## identifiers (Feishu/email/etc.) can change
+                            ## without rewriting every stamped entity.
     description*: string
     identifiers*: seq[tuple[channel, id: string]]
 
@@ -180,6 +191,10 @@ template org*(orgName: string, body: untyped) =
   block:
     template description(d: string) {.used.} =
       spec.org.description = d
+    template brand(b: string) {.used.} =
+      spec.org.brand = b
+    template support(name: string) {.used.} =
+      spec.org.support = name
     template identifier(chanName, chanId: string) {.used.} =
       spec.org.identifiers.add((channel: chanName, id: chanId))
     body
@@ -683,6 +698,14 @@ proc buildGraph(spec: ClawSpec): JsonNode =
   }
   if spec.org.description != "":
     orgEntity["description"] = %spec.org.description
+  if spec.org.brand != "" or spec.org.support != "":
+    # Brand + support go into custom (free-form extension point on
+    # WorldEntity) so we don't have to grow the entity schema just for
+    # display labels. Welcome + gate messages both read these back.
+    var c = newJObject()
+    if spec.org.brand != "":   c["brand"] = %spec.org.brand
+    if spec.org.support != "": c["support"] = %spec.org.support
+    orgEntity["custom"] = c
   orgEntity["mood"] = %*{"valence": 0.0, "arousal": 0.1, "archetype": "Assistant"}
   if spec.org.identifiers.len > 0:
     orgEntity["identifiers"] = buildIdentifiers(spec.org.identifiers)

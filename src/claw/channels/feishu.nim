@@ -1,4 +1,4 @@
-import std/[asyncdispatch, json, strutils, tables, os, osproc, strtabs, streams, times, locks, typedthreads, options, unicode]
+import std/[asyncdispatch, json, strutils, tables, os, osproc, strtabs, streams, times, locks, typedthreads, options, unicode, sets, posix]
 import unicodedb/[widths, properties]
 import base
 import ../bus, ../bus_types, ../config, ../logger
@@ -8,18 +8,25 @@ type
     reactionID: string
     appID: string
 
-  SubscriberArgs = object
-    channel: FeishuChannel
-    appID: string
-    larkCliBin: string
-    configDir: string
-
   FeishuAppInstance = ref object
     appID: string
     enabled: bool
     agent: string              ## which agent this app routes inbound to
     subscribeProcess: Process
     subscriberThread: Thread[SubscriberArgs]
+    spawnedAt: float           ## epoch seconds — lark-cli child start time
+    lastEventAt: float         ## epoch seconds — last observed line from stdout.
+                                ## Written by the app's reader thread, read by
+                                ## the watchdog thread. Single writer + 64-bit
+                                ## aligned float store = safe without a lock on
+                                ## every supported target.
+
+  SubscriberArgs = object
+    channel: FeishuChannel
+    app: FeishuAppInstance     ## resolved at spawn so the hot-path stamp
+                                ## doesn't re-scan `c.apps` per event
+    larkCliBin: string
+    configDir: string
 
   FeishuChannel* = ref object of BaseChannel
     apps: seq[FeishuAppInstance]
@@ -27,6 +34,122 @@ type
     messageCache*: Table[string, float] # message_id -> timestamp
     cacheLock*: Lock
     larkCliBin: string  # path to lark-cli binary
+    watchdogThread: Thread[FeishuChannel]
+    watchdogRunning: bool
+    # Per-(app, chat) bot display name, auto-discovered from @mentions
+    # in that specific chat. Stays in-memory for the gateway process —
+    # intentionally not persisted to graph/disk. A bot can appear under
+    # different display names in different chats (Feishu lets users
+    # rename bots locally), so graph-level persistence would conflate
+    # them. Lost on restart; re-populated on the first @mention in
+    # each chat after boot.
+    botNames: Table[string, string]  # "<app_id>:<chat_id>" → display name
+    botNamesLock: Lock
+
+# --- Bot display-name auto-discovery (in-memory, per-chat) ----------
+#
+# Feishu bots can appear under different display names in different
+# chats (Feishu lets users rename bots locally within a chat). So the
+# right key is `(app_id, chat_id)`, not just `agent_name`. Cache is
+# in-memory on the FeishuChannel; lost on restart and re-populated on
+# the first @mention in each chat after boot.
+#
+# On every outgoing message to the bus, the channel stuffs the current
+# cached display name (if any) into `metadata.bot_display_name`. The
+# gateway forwards it into ProcessOptions so the agent's system prompt
+# for THIS turn knows what name to sign with.
+
+proc chatKey(appID, chatID: string): string = appID & ":" & chatID
+
+const
+  BotNamesCap = 4096
+    ## Hard ceiling on cached (app,chat) → display-name entries. When
+    ## the cache exceeds this (long-running daemon participating in
+    ## thousands of chats), we clear it; re-population is cheap (one
+    ## @mention per chat after eviction).
+
+proc recordBotDisplayName*(c: FeishuChannel, appID, chatID, displayName: string) =
+  ## Cache a bot's display name discovered in this (app, chat) pair.
+  ## Idempotent — silently no-ops when the cache already matches.
+  if displayName.len == 0 or appID.len == 0 or chatID.len == 0: return
+  let key = chatKey(appID, chatID)
+  acquire(c.botNamesLock)
+  try:
+    if c.botNames.getOrDefault(key) == displayName: return
+    if c.botNames.len >= BotNamesCap:
+      c.botNames.clear()
+    c.botNames[key] = displayName
+    infoCF("feishu", "Bot display name for chat",
+           {"app": appID, "chat": chatID, "name": displayName}.toTable)
+  finally:
+    release(c.botNamesLock)
+
+proc lookupBotDisplayName*(c: FeishuChannel, appID, chatID: string): string =
+  ## Return the cached display name for this (app, chat) or empty.
+  if appID.len == 0 or chatID.len == 0: return ""
+  let key = chatKey(appID, chatID)
+  acquire(c.botNamesLock)
+  try: result = c.botNames.getOrDefault(key)
+  finally: release(c.botNamesLock)
+
+# --- Chat-description fetch with TTL cache -------------------------
+
+var chatDescCache {.threadvar.}: Table[string, (string, float)]
+  ## `<app_id>:<chat_id>` → (description, cachedAtEpoch). 60-second TTL.
+  ## Populated on-demand by `fetchChatDescription`; avoids hitting the
+  ## Feishu API on every invite. Threadvar because the tool that calls
+  ## this runs on the agent-loop's thread pool, not the channel thread.
+
+const ChatDescCacheCap = 2048
+  ## Prevent unbounded growth over long daemon lifetimes. Stale entries
+  ## aren't swept on TTL expiry (only overwritten on re-read), so a
+  ## chat invited-to once will sit in the cache forever; this cap
+  ## keeps memory use bounded. Eviction is drop-all (cheap re-fill).
+
+proc findLarkCli*(): string
+
+proc fetchChatDescription*(appID, chatID: string): string =
+  ## Fetch the Feishu group's description field via lark-cli. Caches
+  ## per-(app, chat) for 60 seconds so repeated invites in the same
+  ## group don't spam the API. Returns empty string on any failure
+  ## (missing config dir, network issue, API permission denied, etc.) —
+  ## callers treat empty as "no default available".
+  if appID.len == 0 or chatID.len == 0: return ""
+  let key = appID & ":" & chatID
+  let now = epochTime()
+  if chatDescCache.hasKey(key):
+    let (cached, t) = chatDescCache[key]
+    if now - t < 60.0: return cached
+
+  let configDir = getNimClawDir() / "channels" / "feishu" / ("lark-cli-" & appID)
+  if not dirExists(configDir): return ""
+  let bin = findLarkCli()
+  if bin.len == 0: return ""
+
+  var env = newStringTable()
+  env["LARKSUITE_CLI_CONFIG_DIR"] = configDir
+  for k in ["HOME", "PATH", "USER", "LANG"]:
+    let v = getEnv(k)
+    if v.len > 0: env[k] = v
+
+  var desc = ""
+  try:
+    let p = startProcess(bin, args = @[
+      "api", "GET", "/open-apis/im/v1/chats/" & chatID
+    ], env = env, options = {poUsePath, poStdErrToStdOut})
+    discard p.waitForExit(5000)
+    let output = readAll(p.outputStream())
+    p.close()
+    if output.strip.len > 0 and output.strip.startsWith("{"):
+      let j = parseJson(output)
+      if j.getOrDefault("code").getInt(0) == 0:
+        desc = j{"data"}.getOrDefault("description").getStr("")
+  except CatchableError: discard
+
+  if chatDescCache.len >= ChatDescCacheCap:
+    chatDescCache.clear()
+  chatDescCache[key] = (desc, now)
+  desc
 
 # --- Markdown table → Feishu post formatting utilities ---
 
@@ -396,25 +519,135 @@ proc buildLarkEnv(configDir: string): StringTableRef =
 
 # --- lark-cli bridge reader ---
 
+proc safeObj(n: JsonNode): JsonNode =
+  ## Returns an empty JObject when the input isn't an object (JNull,
+  ## missing, wrong type) so chained `.getOrDefault(...)` calls don't
+  ## blow up. Nim's `getOrDefault` is only safe on JObject.
+  if n != nil and n.kind == JObject: n else: newJObject()
+
+proc flattenFeishuEvent*(e: JsonNode): JsonNode =
+  ## Normalize lark-cli subscriber output. `--compact` mode gives us a
+  ## flat event with top-level fields and drops the `mentions` array.
+  ## Without `--compact`, events arrive in Feishu's native webhook shape
+  ## — nested under `header` + `event.message` + `event.sender`, with
+  ## `mentions` preserved. We want the flat shape plus mentions.
+  ##
+  ## Wrapped in a try to survive any malformed events — on any parse
+  ## issue, fall back to the original so we never crash the subscriber
+  ## loop. The caller's downstream code already handles empty/missing
+  ## fields defensively.
+  if e == nil or e.kind != JObject: return e
+  if not (e.hasKey("header") and e.hasKey("event")):
+    return e  # already flat or unknown — pass through
+  try:
+    let header = safeObj(e.getOrDefault("header"))
+    let ev = safeObj(e.getOrDefault("event"))
+    let message = safeObj(ev.getOrDefault("message"))
+    let sender = safeObj(ev.getOrDefault("sender"))
+    let senderID = safeObj(sender.getOrDefault("sender_id"))
+    result = %* {
+      "type": header.getOrDefault("event_type"),
+      "app_id": header.getOrDefault("app_id"),
+      "message_id": message.getOrDefault("message_id"),
+      "chat_id": message.getOrDefault("chat_id"),
+      "chat_type": message.getOrDefault("chat_type"),
+      "message_type": message.getOrDefault("message_type"),
+      "create_time": message.getOrDefault("create_time"),
+      "root_id": message.getOrDefault("root_id"),
+      "parent_id": message.getOrDefault("parent_id"),
+      "thread_id": message.getOrDefault("thread_id"),
+      "sender_id": senderID.getOrDefault("open_id"),
+      "union_id": senderID.getOrDefault("union_id"),
+      "user_id": senderID.getOrDefault("user_id"),
+      "mentions": message.getOrDefault("mentions")
+    }
+    # Resolve the nested content: Feishu sends `content` as a stringified
+    # JSON like `{"text":"@_user_1 你好"}`. Parse + substitute placeholders.
+    var resolvedText = ""
+    let nestedContent = message.getOrDefault("content").getStr("")
+    if nestedContent.len > 0:
+      try:
+        resolvedText = parseJson(nestedContent).getOrDefault("text").getStr("")
+      except CatchableError: discard
+    let mentions = result["mentions"]
+    if mentions != nil and mentions.kind == JArray and resolvedText.len > 0:
+      for m in mentions:
+        if m.kind != JObject: continue
+        let key = m.getOrDefault("key").getStr("")
+        let name = m.getOrDefault("name").getStr("")
+        if key.len > 0 and name.len > 0 and key in resolvedText:
+          resolvedText = resolvedText.replace(key, "@" & name)
+    result["content"] = %resolvedText
+    # Card events nest differently — surface useful fields if any.
+    if ev.hasKey("action"):   result["action"] = ev["action"]
+    if ev.hasKey("context"):  result["context"] = ev["context"]
+    if ev.hasKey("operator"): result["operator"] = ev["operator"]
+  except CatchableError as err:
+    errorCF("feishu", "Event flatten failed; passing through raw",
+            {"error": err.msg}.toTable)
+    return e
+
 proc startSubscriberProcess(larkCliBin, configDir: string): Process =
   let env = buildLarkEnv(configDir)
   result = startProcess(
     larkCliBin,
-    args = ["event", "+subscribe", "--event-types", "im.message.receive_v1,card.action.trigger", "--compact", "--quiet"],
+    # Dropped `--compact`: it strips the `mentions` array we need for
+    # auto-discovering bot display names. We flatten the nested event
+    # ourselves via `flattenFeishuEvent` — see that proc for details.
+    args = ["event", "+subscribe",
+            "--event-types", "im.message.receive_v1,card.action.trigger",
+            "--quiet"],
     env = env,
     options = {poUsePath}
   )
 
-proc readEvents(p: Process, c: FeishuChannel, appID: string) =
+const
+  SubscriberMaxAgeSec = 14_400     ## 4h blind-cycle cap.
+  SubscriberStaleSec  = 900        ## 15min without any stdout line = dead.
+  WatchdogTickSec     = 60         ## Liveness scan cadence.
+
+proc subscriberWatchdog(c: FeishuChannel) {.thread.} =
+  ## SIGTERM subscribers whose Feishu event socket has silently died
+  ## (no data, no error, readLine blocked). eventReader's existing
+  ## exit-detection loop then respawns with a fresh socket. Polls the
+  ## shutdown flag each second so `stop()` returns promptly.
+  var tickElapsed = 0
+  while c.watchdogRunning and c.running:
+    sleep(1000)
+    tickElapsed += 1
+    if tickElapsed < WatchdogTickSec: continue
+    tickElapsed = 0
+    let now = epochTime()
+    for app in c.apps:
+      if not app.enabled or app.subscribeProcess == nil or app.spawnedAt <= 0:
+        continue
+      let age = now - app.spawnedAt
+      let staleness = if app.lastEventAt > 0: now - app.lastEventAt else: 0.0
+      var reason = ""
+      if age > SubscriberMaxAgeSec.float:
+        reason = "4h cycle (age=" & $int(age) & "s)"
+      elif app.lastEventAt > 0 and staleness > SubscriberStaleSec.float:
+        reason = "no events " & $int(staleness) & "s (alive " &
+                 $int(age) & "s)"
+      if reason.len == 0: continue
+      infoCF("feishu", "Watchdog cycling subscriber",
+             {"app_id": app.appID, "reason": reason}.toTable)
+      try: app.subscribeProcess.terminate() except CatchableError: discard
+
+proc readEvents(p: Process, c: FeishuChannel, app: FeishuAppInstance) =
   ## Read events from a single subscriber process until it dies or channel stops.
   let s = p.outputStream()
+  let appID = app.appID
   var line = ""
   while c.running and not s.atEnd():
     try:
       if not s.readLine(line): continue
       if line.len == 0 or not line.startsWith("{"): continue
+      # Stamp liveness for the watchdog. Single writer (this thread),
+      # single reader (watchdog) — the plain float store is safe.
+      app.lastEventAt = epochTime()
 
-      let evt = parseJson(line)
+      let evt = flattenFeishuEvent(parseJson(line))
       let evtType = evt.getOrDefault("type").getStr()
 
       if evtType == "card.action.trigger":
@@ -478,6 +711,15 @@ proc readEvents(p: Process, c: FeishuChannel, appID: string) =
       let threadID = evt.getOrDefault("thread_id").getStr()
       infoCF("feishu", "Processing message", {"msg_id": messageID, "sender": senderID, "chat": chatID, "type": messageType, "root_id": rootID, "parent_id": parentID, "thread_id": threadID}.toTable)
 
+      # Per-app agent routing. Resolved here (earlier than strictly
+      # needed for publishing) so the text-mention resolver below can
+      # substitute a bot's display name with the agent's config name.
+      var routeTo = ""
+      for a in c.apps:
+        if a.appID == appID:
+          routeTo = a.agent
+          break
+
       var finalContent = content
       var mediaPaths: seq[string] = @[]
 
@@ -522,10 +764,42 @@ proc readEvents(p: Process, c: FeishuChannel, appID: string) =
         finalContent = "[audio: " & messageID & "]"
       elif messageType == "file":
         finalContent = "[file: " & messageID & "]"
+      elif messageType == "text":
+        # Mentions auto-discovery. flattenFeishuEvent already placed
+        # `mentions` as a sibling field on the event with placeholders
+        # resolved. Scan for any bot mention (empty `user_id`) and
+        # cache the bot's display name for this (app, chat) pair.
+        # Defensively typed — SIGSEGV on malformed JSON subtrees would
+        # bypass try/except, so every step validates kind.
+        try:
+          let mentions = evt.getOrDefault("mentions")
+          if mentions != nil and mentions.kind == JArray:
+            for m in mentions:
+              if m == nil or m.kind != JObject: continue
+              let displayName = m.getOrDefault("name").getStr("").strip()
+              let mIdObj = m.getOrDefault("id")
+              let mUserId =
+                if mIdObj != nil and mIdObj.kind == JObject:
+                  mIdObj.getOrDefault("user_id").getStr("")
+                else: ""
+              let isBot = mUserId.len == 0
+              if isBot and displayName.len > 0 and routeTo.len > 0:
+                c.recordBotDisplayName(appID, chatID, displayName)
+                break  # one bot per message is the 99% case
+        except CatchableError: discard
       elif messageType != "text":
         finalContent = "[Non-text message: " & messageType & "]"
 
       var metadata = {"message_id": messageID, "app_id": appID}.toTable
+      # Pass the resolved mentions array through as JSON in metadata so
+      # downstream (context builder → agent LLM → create_customer_invite
+      # tool) can see who was @mentioned alongside the bot. Powers the
+      # group-chat invite UX where operators @mention the customer.
+      try:
+        let m = evt.getOrDefault("mentions")
+        if m != nil and m.kind == JArray and m.len > 0:
+          metadata["mentions"] = $m
+      except CatchableError: discard
       # Tenant-scoped cross-app identifiers: `union_id` is stable across
       # all apps published by the same Feishu tenant; `user_id` is the
       # tenant's internal employee ID (only present for corporate users
@@ -555,24 +829,65 @@ proc readEvents(p: Process, c: FeishuChannel, appID: string) =
         if chatID.startsWith("ou_"):   kind = ckDM
         elif chatID.startsWith("oc_"): kind = ckGroup
 
-      # Per-app agent routing. The app_id that received this message
-      # determines which agent handles it. Look up our configured
-      # routing and set it as the recipient so the gateway dispatches
-      # to that office. Empty → gateway uses its default (Lexi).
-      var routeTo = ""
-      for a in c.apps:
-        if a.appID == appID:
-          routeTo = a.agent
-          break
+      # Bot display name — group-chat only. In a 1:1 DM the customer
+      # is talking directly to one bot, so the bot's "display name"
+      # doesn't need to compete with other participants or personas;
+      # just use the internal config name. Group chats have multiple
+      # members who may see the bot under a chat-local nickname, so
+      # the agent should sign as that name there.
+      if kind == ckGroup:
+        let botName = c.lookupBotDisplayName(appID, chatID)
+        if botName.len > 0:
+          metadata["bot_display_name"] = botName
+
+      # `routeTo` was computed above (before content pre-processing)
+      # so the mention resolver could use it. Empty → gateway uses its
+      # default (Lexi).
       c.handleMessage(senderID, chatID, finalContent, mediaPaths, metadata,
                        recipientID = routeTo, chatKind = kind)
     except Exception as e:
       errorCF("feishu", "Event parse error", {"error": e.msg}.toTable)
 
+proc subscriberPidPath(configDir: string): string =
+  configDir / "locks" / "subscriber.pid"
+
+proc processAlive(pid: int): bool =
+  pid > 0 and kill(Pid(pid), 0) == 0
+
+proc reapOrphanSubscriber(configDir, appID: string) =
+  ## Kill a lark-cli subscriber left running by a previous gateway.
+  ## Feishu load-balances events across all connected subscribers for
+  ## one app_id — a leftover orphan steals half the @mentions from the
+  ## new gateway, so we SIGTERM, poll briefly, SIGKILL if still alive.
+  let path = subscriberPidPath(configDir)
+  if not fileExists(path): return
+  var pid = 0
+  try: pid = parseInt(readFile(path).strip()) except CatchableError: discard
+  if pid > 0 and pid != getCurrentProcessId() and processAlive(pid):
+    discard kill(Pid(pid), SIGTERM)
+    # Poll for up to 200ms before escalating — lark-cli usually exits
+    # in <50ms on SIGTERM, the budget is for the slow case.
+    for _ in 0 ..< 20:
+      if not processAlive(pid): break
+      sleep(10)
+    if processAlive(pid):
+      discard kill(Pid(pid), SIGKILL)
+    infoCF("feishu", "Reaped orphan subscriber",
+           {"app_id": appID, "pid": $pid}.toTable)
+  try: removeFile(path) except CatchableError: discard
+
+proc writeSubscriberPid(configDir: string, pid: int) =
+  let path = subscriberPidPath(configDir)
+  try:
+    createDir(path.parentDir)
+    writeFile(path, $pid)
+  except CatchableError: discard
+
 proc eventReader(args: SubscriberArgs) {.thread.} =
   ## Reads events from lark-cli subscriber. Auto-restarts on crash with backoff.
   let c = args.channel
-  let appID = args.appID
+  let app = args.app
+  let appID = app.appID
   var backoff = 1  # seconds
 
   while c.running:
@@ -586,16 +901,21 @@ proc eventReader(args: SubscriberArgs) {.thread.} =
       backoff = min(backoff * 2, 30)
       continue
 
-    # Update the app's process reference for clean shutdown
-    for app in c.apps:
-      if app.appID == appID:
-        app.subscribeProcess = p
-        break
+    # Stamp our PID so the next gateway startup can reap us if we
+    # outlive our parent (SIGTERM races, hung joinThread, etc.).
+    writeSubscriberPid(args.configDir, p.processID)
+
+    # Stamp spawn time for watchdog 4h cycle; reset lastEventAt so
+    # the watchdog doesn't flag a fresh subprocess as stale before
+    # it's had a chance to receive anything.
+    app.subscribeProcess = p
+    app.spawnedAt = epochTime()
+    app.lastEventAt = 0
 
     infoCF("feishu", "Subscriber connected", {"app_id": appID}.toTable)
     backoff = 1  # reset on successful connect
 
-    readEvents(p, c, appID)
+    readEvents(p, c, app)
 
     # Process ended — clean up
     let exitCode = try: p.waitForExit(100) except: -1
@@ -688,6 +1008,12 @@ method start*(c: FeishuChannel) {.async.} =
       errorCF("feishu", "lark-cli not configured for app. Run: nimclaw channel add feishu <APP_ID> <APP_SECRET>", {"app_id": app.appID}.toTable)
       continue
 
+    # Kill any orphan subscriber from a previous gateway that didn't
+    # terminate its lark-cli child (SIGTERM races, hung joinThread).
+    # Must run BEFORE clearing locks so the orphan sees its lock
+    # disappear and doesn't fight the new subscriber for it.
+    reapOrphanSubscriber(configDir, app.appID)
+
     # Clear stale lock files from previous unclean shutdown
     let locksDir = configDir / "locks"
     try:
@@ -700,13 +1026,24 @@ method start*(c: FeishuChannel) {.async.} =
     except OSError: discard
 
     infoCF("feishu", "Starting lark-cli event subscriber", {"app_id": app.appID}.toTable)
-    let subArgs = SubscriberArgs(channel: c, appID: app.appID, larkCliBin: c.larkCliBin, configDir: configDir)
+    let subArgs = SubscriberArgs(channel: c, app: app, larkCliBin: c.larkCliBin, configDir: configDir)
     createThread(app.subscriberThread, eventReader, subArgs)
+
+  # Liveness watchdog — cycles subscribers when Feishu's event stream
+  # goes silently stale. Without this, a dead socket leaves the gateway
+  # accepting no inbound messages for hours while the subprocess sits
+  # blocked in readLine.
+  c.watchdogRunning = true
+  createThread(c.watchdogThread, subscriberWatchdog, c)
 
   infoC("feishu", "Feishu event subscribers started")
 
 method stop*(c: FeishuChannel) {.async.} =
   c.running = false
+  c.watchdogRunning = false
+  # Watchdog polls the flag every second so this join returns within
+  # ~1s worst case.
+  joinThread(c.watchdogThread)
   for app in c.apps:
     if app.subscribeProcess != nil:
       infoCF("feishu", "Stopping lark-cli subscriber", {"app_id": app.appID}.toTable)
@@ -717,6 +1054,12 @@ method stop*(c: FeishuChannel) {.async.} =
           app.subscribeProcess.kill()
         app.subscribeProcess.close()
       except: discard
+    # Remove the PID file only after the process actually died — otherwise
+    # a half-shutdown that orphans the child would leave no PID trace for
+    # the next gateway to reap. The file is idempotent to delete on clean
+    # restart since the recorded PID will no longer exist.
+    let configDir = getNimClawDir() / "channels" / "feishu" / ("lark-cli-" & app.appID)
+    try: removeFile(subscriberPidPath(configDir)) except CatchableError: discard
     joinThread(app.subscriberThread)
 
 method send*(c: FeishuChannel, msg: OutboundMessage) {.async.} =

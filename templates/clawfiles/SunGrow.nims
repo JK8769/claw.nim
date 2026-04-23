@@ -31,6 +31,15 @@ import claw/clawdsl
 
 # ── Organization ──────────────────────────────────────
 org "SunGrow":
+  # `brand` is the customer-facing service name (shown in welcome
+  # messages, status text, etc.). The `org` name above stays as the
+  # internal codename — drives NIMCLAW_DIR, BASE files, git repo.
+  brand "SolarIQ"
+  # `support` points at a Person (declared below) whose identifiers
+  # get rendered in welcome + billing-gate messages as "Contact Jerry
+  # on Feishu". Customers see this when they hit a daily limit, trial
+  # expiry, grace warning, or suspension.
+  support "Jerry"
   description "Solar and energy-storage fleet monitoring."
 
 # ── People ────────────────────────────────────────────

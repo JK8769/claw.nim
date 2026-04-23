@@ -1,6 +1,7 @@
 import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets]
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
 import ../skill_grant
+import ../billing/[subscription as sub_mod, usage as usage_mod]
 import context as agent_context
 import xml_tools
 import ../schema
@@ -51,6 +52,17 @@ type
     sendResponse*: bool
     userRole*: string
     streamIntermediary*: bool
+    botDisplayName*: string  ## Channel-resolved bot display name for
+                              ## THIS chat (per-chat, not per-agent).
+                              ## Threads into the system prompt so the
+                              ## agent introduces itself correctly.
+                              ## Empty → agent uses its internal name.
+    mentionsJson*: string    ## JSON array of Feishu mentions for this
+                              ## message. Rendered in the system prompt
+                              ## as a Mentions block so tools that need
+                              ## @mentioned users' identifiers (e.g.
+                              ## `create_customer_invite.bind_identifiers`)
+                              ## can reference them.
     preloadedGraph*: WorldGraph  ## Optional — if non-nil, runAgentLoop
                                   ## uses it instead of reloading
                                   ## BASE.json. Gateway threads its
@@ -107,6 +119,12 @@ type
     memTool*: UnifiedMemoryTool  ## retained for per-turn sender/trust refresh
     deniedTools*: seq[string]   ## Tool names to exclude
     workstationEnabled*: bool   ## Auto-expose this agent's forged workstation tools
+    skillScope*: seq[string]    ## Skill names from ClawDSL `uses` — at turn time
+                                ## we prefix-match `mcp_<skill>_*` against the
+                                ## live registry. Treats MCP `listTools()` as
+                                ## the source of truth rather than the static
+                                ## tool list SKILL.md / BASE.json shadow-copies
+                                ## (which goes stale on skill refactors).
     # Live state — observable via `/agent <name>` from chat. One entry per
     # in-flight task so concurrent turns (e.g. Jerry + 杰瑞 both on Atlas)
     # each get their own snapshot. Keyed by session_key — same-session
@@ -283,6 +301,38 @@ proc buildToolContext(al: AgentLoop, opts: ProcessOptions, logicalUserID: string
     identity: al.identity
   )
 
+proc trySelfHealHiddenTool(al: AgentLoop, toolName, dispatchKind: string): Option[string] =
+  ## If `toolName` is hidden and not activated this turn, activate it
+  ## (so its schema shows in the next iteration's `tools:` field) and
+  ## return an error-string payload containing the schema inline. The
+  ## LLM reads the schema from the tool result and retries with correct
+  ## params on the next iteration — no find_tools detour.
+  ##
+  ## Returns `none` when the tool should dispatch normally (not hidden,
+  ## or already activated). Called from both JSON and XML dispatch.
+  if al.findTool == nil: return none(string)
+  if not al.tools.isHidden(toolName): return none(string)
+  if toolName in al.findTool.getActivatedSet(): return none(string)
+  let (tool, found) = al.tools.get(toolName)
+  if not found:
+    warnCF("agent", "Tool not found in registry", {"tool": toolName}.toTable)
+    return some("Error: tool '" & toolName & "' is not registered. " &
+                "Call find_tools(query=\"…\") to discover what's available.")
+  al.findTool.activateWithTTL(toolName)
+  let schema = toolToSchema(tool, inferStrategy(al.model))
+  let schemaJson = (%*{
+    "name": schema.function.name,
+    "description": schema.function.description,
+    "parameters": schema.function.parameters
+  }).pretty(2)
+  warnCF("agent", "Auto-activated deferred tool on " & dispatchKind & " direct call",
+         {"tool": toolName}.toTable)
+  some("Error: tool '" & toolName & "' was called without its schema " &
+       "being in your tool list, so your arguments may not match the " &
+       "real parameter names. I've activated it for this and the next " &
+       "turn. Its actual schema is:\n\n" & schemaJson &
+       "\n\nRetry the call with these parameter names.")
+
 proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string, allowedTools: seq[string], snapshot: TaskSnapshot): Future[(string, int, seq[providers_types.Message])] {.async.} =
   ## `allowedTools` is the dispatch-time allowlist for THIS turn (role.grant +
   ## allowed_skills expansion). Passed by value so concurrent turns on the
@@ -336,10 +386,30 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       else:
         let roleLow = opts.userRole.toLowerAscii()
         # Per-agent allowlist takes priority (from ClawDSL uses)
-        if al.allowedTools.len > 0:
+        if al.allowedTools.len > 0 or al.skillScope.len > 0:
           var final: seq[string]
-          for t in al.allowedTools:
-            if t notin al.deniedTools: final.add(t)
+          var seen = initHashSet[string]()
+          template addTool(name: string) =
+            if name notin seen and name notin al.deniedTools:
+              seen.incl(name); final.add(name)
+          for t in al.allowedTools: addTool(t)
+          # Skill-prefix expansion — `uses "sungrow"` in ClawDSL means
+          # "whatever the sungrow skill's MCP server currently exposes."
+          # We match `mcp_<skill>_*` against the live registry each turn
+          # so a skill refactor (new tool names, deprecated ones) takes
+          # effect without a `co update` + BASE.json regeneration. MCP's
+          # `listTools()` is the source of truth; BASE.json's `tools: [...]`
+          # becomes advisory.
+          if al.skillScope.len > 0:
+            for sk in al.skillScope:
+              for t in al.tools.listByPrefix("mcp_" & sk & "_"):
+                addTool(t)
+          # Include tools explicitly activated via `find_tools` this
+          # turn — activation is an explicit gesture and needed as a
+          # last-resort escape hatch when a tool lives outside any
+          # declared skill.
+          if al.findTool != nil:
+            for t in al.findTool.getActivatedSet(): addTool(t)
           al.tools.getDefinitionsFiltered(strategy, final)
         elif roleLow in ["guest", "customer"]:
           al.tools.getDefinitionsFiltered(strategy, @(tools_registry.ExternalAllowedTools))
@@ -347,11 +417,25 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           let activatedSet = if al.findTool != nil: al.findTool.getActivatedSet()
                              else: initHashSet[string]()
           let (defs, hiddenNames) = al.tools.getDefinitionsDeferred(strategy, activatedSet)
-          # Inject taxonomy into system message on first iteration
+          # Inject taxonomy into system message on first iteration.
+          # The banner is blunt because some models otherwise see a
+          # tool listed by name and dispatch it with guessed parameter
+          # names. The tools below have no schemas loaded this turn;
+          # the LLM cannot call them directly.
           if iteration == 1 and hiddenNames.len > 0:
             let taxonomy = al.tools.generateTaxonomy()
             if taxonomy.len > 0 and currentMessages.len > 0 and currentMessages[0].role == "system":
-              currentMessages[0].content.add("\n\n## Additional Tools\nUse `find_tools` to activate tools from these categories:\n" & taxonomy)
+              currentMessages[0].content.add(
+                "\n\n## Additional Tools (schemas NOT loaded)\n\n" &
+                "The tools below are registered but their parameter " &
+                "schemas are not in this turn's tool list. **You cannot " &
+                "call them directly** — if you try, you will guess " &
+                "parameter names and the call will fail.\n\n" &
+                "To use any of these, FIRST call `find_tools` with " &
+                "relevant keywords (e.g. `find_tools(query=\"solar " &
+                "history\")`). That activates the tool's schema for " &
+                "the rest of this turn. Only then dispatch the tool.\n\n" &
+                "Categories:\n" & taxonomy)
               infoCF("agent", "Deferred tool loading", {"core_schemas": $defs.len, "hidden": $hiddenNames.len, "activated": $activatedSet.len}.toTable)
           defs
 
@@ -384,6 +468,16 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     al.liveTokensTotal += tokens
     al.liveTokensInTotal += tokensIn
     al.liveTokensOutTotal += tokensOut
+
+    # Billing accounting — accumulate into the per-customer UTC daily
+    # counter so tomorrow's gate pre-check (`tokensToday >= dailyTokens`)
+    # sees accurate usage. Only track nc:id-shaped users who actually
+    # have a subscription stamped; internal users and legacy guests
+    # have no cap to enforce, so tracking them would just churn files.
+    # This runs per-LLM-iteration so multi-turn tool calls count all
+    # their intermediate calls, not just the final response.
+    if logicalUserID.startsWith("nc:") and loadSubscription(logicalUserID).isSome:
+      discard addTokens(logicalUserID, tokensIn, tokensOut)
     
     var llmMeta = newJObject()
     llmMeta["iteration"] = %iteration
@@ -436,7 +530,12 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         infoCF("agent", "XML Tool call: " & xmlCall.name, {"tool": xmlCall.name, "iteration": $iteration, "role": al.role}.toTable)
         if xmlCall.name == "reply" or xmlCall.name == "message":
           ctx.responseSent = true
-        let result = await al.tools.executeWithContext(xmlCall.name, xmlCall.arguments, toolCtx)
+        var result: string
+        let heal = trySelfHealHiddenTool(al, xmlCall.name, "XML")
+        if heal.isSome:
+          result = heal.get()
+        else:
+          result = await al.tools.executeWithContext(xmlCall.name, xmlCall.arguments, toolCtx)
         xmlResults.add(XmlToolResult(name: xmlCall.name, output: result, success: not result.startsWith("Error:")))
 
       # Format tool results and add as a user message
@@ -616,7 +715,10 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         # not a prompt decoration. A Guest asking the agent to call a
         # high-privilege tool gets a tool-result error, not execution.
         var result: string
-        if allowedTools.len > 0 and tc.name notin allowedTools:
+        let heal = trySelfHealHiddenTool(al, tc.name, "JSON")
+        if heal.isSome:
+          result = heal.get()
+        elif allowedTools.len > 0 and tc.name notin allowedTools:
           warnCF("agent", "Tool refused — not in requester's role.grant",
             {"tool": tc.name, "allowed": allowedTools.join(",")}.toTable)
           result = "Error: tool '" & tc.name & "' is not authorised at the current requester's trust level. Allowed tools are: " & allowedTools.join(", ") & ". If the user needs a higher-privilege action, they must upgrade via redeem_invite or a SuperAdmin must edit BASE.nims."
@@ -703,28 +805,38 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   ## Produce the on-disk session key for this message.
   ##
   ##   system:heartbeat (gateway-synthetic)  → system_heartbeat
-  ##   group chat                            → grp_<channel>_<chatID>
-  ##                                           (one shared session for
-  ##                                           everyone in the room;
-  ##                                           speakers distinguished
-  ##                                           per-message)
+  ##   group chat                            → grp_<channel>_<chatID>_<senderID>
+  ##                                           (per-sender inside the room;
+  ##                                           each @mentioner has their own
+  ##                                           conversation history with the
+  ##                                           bot, so the LLM doesn't
+  ##                                           interleave two participants'
+  ##                                           turns and mix up who's asking)
   ##   DM / unknown                          → key by the sender's nc:id:
   ##     resolved graph entity               → nc_N
   ##     first-time sender                   → add to graph as Guest,
   ##                                           return their fresh nc:N
   ##
-  ## Groups don't yet get their own graph entity (ekGroup) — that's a
-  ## follow-up. For now a channel+chat_id key is stable across turns
-  ## and safely isolates group history from any participant's DMs.
+  ## Earlier design used a single shared session file per room. That
+  ## broke when two users @mentioned the bot in the same group — the
+  ## model saw both speakers' turns in a flat list and answered one
+  ## person using the other's identity/context. Per-sender is strictly
+  ## safer for @mention-triggered responses (groups don't auto-respond
+  ## anyway as of the group-chat policy change).
   if opts.sessionKey.startsWith("system:"):
     return opts.sessionKey.replace(":", "_")
 
-  # Group chats: single shared session file per room.
-  if opts.chatKind == ckGroup and opts.chatID.len > 0:
-    var chat = opts.chatID
-    for c in mitems(chat):
+  proc sanitize(s: string): string =
+    result = s
+    for c in mitems(result):
       if c in {':', '/', '\\', ' ', '\t'}: c = '_'
-    return "grp_" & opts.channel & "_" & chat
+
+  # Group chats: per-(chat, sender) session so each @mentioning user
+  # has an isolated conversation with the bot.
+  if opts.chatKind == ckGroup and opts.chatID.len > 0:
+    let sid = if opts.senderID.len > 0: opts.senderID else: "anon"
+    return "grp_" & opts.channel & "_" &
+           sanitize(opts.chatID) & "_" & sanitize(sid)
   if al.contextBuilder == nil or al.contextBuilder.graph == nil:
     # No graph at all (shouldn't happen in real runs) — degrade safely.
     var sid = opts.senderID
@@ -930,13 +1042,13 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         opts.userRole = $toolRole
     
     if not isKnown:
-      let (legacyID, found) = al.contextBuilder.relations.resolveUser(opts.channel, opts.senderID)
+      let (legacyID, found) = al.contextBuilder.guests.resolveUser(opts.channel, opts.senderID)
       if found:
         logicalUserID = legacyID
         isKnown = true
 
-    if isKnown and opts.userRole == "Guest" and al.contextBuilder.relations.hasKey(logicalUserID):
-      let ident = al.contextBuilder.relations[logicalUserID].identity
+    if isKnown and opts.userRole == "Guest" and al.contextBuilder.guests.hasKey(logicalUserID):
+      let ident = al.contextBuilder.guests[logicalUserID].identity
       # If the string maps to a valid UserRole, pass it; else fallback
       opts.userRole = ident
 
@@ -982,17 +1094,12 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
             if opts.channel == "nkn" and opts.senderID.contains("."):
               kind = ekAI
 
-            var rel = Relationship(
-              name: newID,
-              identity: $parseEnum[UserRole](inv.role, urGuest),
-              trustLevel: 50,
-              etiquette: "",
-              kind: kind,
-              identifiers: initTable[string, seq[string]]()
-            )
-            rel.identifiers[opts.channel] = @[opts.senderID]
-            al.contextBuilder.relations[newID] = rel
-            saveRelations(al.officeDir, al.contextBuilder.relations)
+            al.contextBuilder.guests[newID] = newGuest(
+              opts.channel, opts.senderID,
+              name = newID,
+              identity = $parseEnum[UserRole](inv.role, urGuest),
+              trustLevel = 50, kind = kind)
+            saveGuests(al.officeDir, al.contextBuilder.guests)
             logicalUserID = newID
           
           let modeText = if inv.pinless: "public mode" else: "PIN redemption"
@@ -1020,20 +1127,15 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         if opts.channel == "nkn" and opts.senderID.contains("."):
           kind = ekAI
         
-        let newRel = Relationship(
-          name: logicalUserID,
-          identity: "Guest",
-          trustLevel: 10,
-          etiquette: "Professional guest service protocol.",
-          kind: kind,
-          identifiers: {opts.channel: @[opts.senderID]}.toTable
-        )
-        al.contextBuilder.relations[logicalUserID] = newRel
-        saveRelations(al.officeDir, al.contextBuilder.relations)
+        al.contextBuilder.guests[logicalUserID] = newGuest(
+          opts.channel, opts.senderID,
+          name = logicalUserID, kind = kind,
+          etiquette = "Professional guest service protocol.")
+        saveGuests(al.officeDir, al.contextBuilder.guests)
         infoCF("agent", "Recorded new guest contact", {"id": logicalUserID, "kind": $kind, "channel": opts.channel}.toTable)
       else:
         # Update existing entry if needed (e.g. if identification changed)
-        var rel = al.contextBuilder.relations[logicalUserID]
+        var rel = al.contextBuilder.guests[logicalUserID]
         var changed = false
         if not rel.identifiers.hasKey(opts.channel):
           rel.identifiers[opts.channel] = @[opts.senderID]
@@ -1043,8 +1145,8 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
           changed = true
           
         if changed:
-          al.contextBuilder.relations[logicalUserID] = rel
-          saveRelations(al.officeDir, al.contextBuilder.relations)
+          al.contextBuilder.guests[logicalUserID] = rel
+          saveGuests(al.officeDir, al.contextBuilder.guests)
 
     let targetRecipient = if opts.recipientID != "": opts.recipientID else: al.agentId
 
@@ -1110,11 +1212,21 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
                   "tools_added": $extra.len}.toTable)
           for t in extra: allowedTools.add(t)
 
-    var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient)
+    infoCF("agent", "Resolved sender",
+           {"raw_sender": opts.senderID,
+            "logicalUserID": logicalUserID,
+            "session_key": opts.sessionKey,
+            "chat_kind": $opts.chatKind}.toTable)
+    var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient, opts.botDisplayName, opts.mentionsJson, opts.appID)
 
-    let historyLabel = if logicalUserID != "": logicalUserID else: opts.senderID
+    # Store the user's message in history WITHOUT the nc:id prefix.
+    # With per-sender session keys (see identitySessionKey for group
+    # chats), the session only contains one speaker's turns anyway, so
+    # the prefix is redundant. It also caused the LLM to echo the nc:id
+    # back to the user in replies. `addWithSpeaker` preserves the
+    # speaker's nc:id separately for any tool that cares.
     al.sessions.addWithSpeaker(opts.sessionKey, "user",
-      historyLabel & ": " & opts.userMessage, logicalUserID)
+      opts.userMessage, logicalUserID)
 
     # Immediate feedback: notify bus that bot is "typing"
     al.bus.publishOutbound(OutboundMessage(
@@ -1194,7 +1306,9 @@ proc processMessage*(al: AgentLoop, msg: InboundMessage,
     enableSummary: true,
     sendResponse: false,
     streamIntermediary: channelStreamIntermediary,
-    preloadedGraph: preloadedGraph
+    preloadedGraph: preloadedGraph,
+    botDisplayName: msg.metadata.getOrDefault("bot_display_name", ""),
+    mentionsJson: msg.metadata.getOrDefault("mentions", "")
   ))
 
 proc processDirect*(al: AgentLoop, content, sessionKey: string, senderID: string = "user", channel: string = "cli"): Future[string] {.async.} =
@@ -1341,7 +1455,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
   # --- Tasks & orchestration (unified) ---
   regTagged(newNimclawTool(workspace), ["orchestration", "automation", "messaging"], "assign claim submit tasks send mail to agents")
-  regTagged(newUpdateContactTool(officeDir), ["admin", "contacts", "core"], "update contact information in graph")
+  # update_contact moved to after contextBuilder creation — it needs
+  # the ContextBuilder for Guest-ledger writes.
 
   # --- Filesystem (edit, append) ---
   regTagged(newEditFileTool(workspace), ["filesystem", "data", "core"], "edit files with find and replace")
@@ -1387,6 +1502,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     if na.name.toLowerAscii() == agentName.toLowerAscii():
       contextBuilder.allowedSkills = na.skills
       break
+
+  regTagged(newUpdateContactTool(officeDir, contextBuilder), ["admin", "contacts", "core"], "update contact information in graph or guest ledger")
 
   # --- Messaging (core) ---
   let msgTool = newMessageTool()
@@ -1614,10 +1731,13 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
         al.allowedTools = na.tools
       if na.deny.len > 0:
         al.deniedTools = na.deny
+      if na.skills.len > 0:
+        al.skillScope = na.skills
       al.workstationEnabled = na.workstation
-      if na.tools.len > 0 or na.deny.len > 0 or na.workstation:
+      if na.tools.len > 0 or na.deny.len > 0 or na.workstation or na.skills.len > 0:
         infoCF("agent", "Applied ClawDSL scope",
-          {"agent": agentName, "allowed": $na.tools.len, "denied": $na.deny.len, "workstation": $na.workstation}.toTable)
+          {"agent": agentName, "allowed": $na.tools.len, "denied": $na.deny.len,
+           "skills": na.skills.join(","), "workstation": $na.workstation}.toTable)
       break
 
   # If workstation is enabled, auto-expose forged MCP tools registered under this agent's session key.

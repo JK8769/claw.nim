@@ -1,19 +1,53 @@
+## update_contact — let a user set their display name. Two code paths
+## depending on where the caller lives:
+##
+##   • Customer / Person (post-redeem, has an nc:id in the WorldGraph)
+##     → updates `graph.entities[id].name`, `graph.nameIndex`, and the
+##     BASE.nims `person "…":` header so `co update` preserves it. Every
+##     agent sees the new name on the next turn.
+##
+##   • Guest (unknown contact, not yet invited, lives only in the per-
+##     agent `guests.json` ledger)
+##     → updates `cb.guests[logicalUserID].name` and saves the ledger.
+##     Scoped to the agent the guest is talking to; another agent would
+##     re-establish its own guest record on first contact.
+##
+## Permission:
+##   • Caller can only rename themselves (derived from `t.logicalUserID`
+##     and `t.senderID`; no `target` parameter is exposed).
+##   • Internal-tier users (Staff/Admin/SuperAdmin) can't self-rename
+##     via chat — their name lives in ClawDSL. Operators must edit
+##     BASE.nims or use `claw user edit <nc:id> --name=<new>`.
+##
+## Does NOT touch:
+##   • identity / role / permission (invite redemption owns those)
+##   • other entities or other agents' guest ledgers
+
 import std/[os, json, tables, asyncdispatch, strutils]
 import types
+import ../config
 import ../agent/cortex
-import ../agent/invites
+import ../agent/binding
+import ../agent/context as agent_context
+import ../cli_admin
 
 type
   UpdateContactTool* = ref object of ContextualTool
     officeDir: string
+    contextBuilder*: ContextBuilder  ## for Guest-ledger writes
 
-proc newUpdateContactTool*(officeDir: string): UpdateContactTool =
-  UpdateContactTool(officeDir: officeDir)
+proc newUpdateContactTool*(officeDir: string, cb: ContextBuilder): UpdateContactTool =
+  UpdateContactTool(officeDir: officeDir, contextBuilder: cb)
 
 method name*(t: UpdateContactTool): string = "update_contact"
 
 method description*(t: UpdateContactTool): string =
-  "Updates the name for a contact in your relationship database. Use this when a user introduces themselves or corrects their name. Always use this to remember who someone is if they tell you their name."
+  "Record the user's display name. Call when the user introduces " &
+  "themselves or corrects how you address them (e.g. 'I'm 杰瑞', " &
+  "'my name is Tom'). Updates the shared contact record so every " &
+  "future turn — including other agents' turns — sees the right name. " &
+  "Restricted: you can only update the speaker's own name, not " &
+  "someone else's. Cannot change role or permission via this tool."
 
 method parameters*(t: UpdateContactTool): Table[string, JsonNode] =
   {
@@ -21,78 +55,77 @@ method parameters*(t: UpdateContactTool): Table[string, JsonNode] =
     "properties": %*{
       "name": {
         "type": "string",
-        "description": "The real name of the contact interacting with you (e.g. 'Tom')."
-      },
-      "identity": {
-        "type": "string",
-        "enum": ["Guest", "Customer"],
-        "description": "Optional updated identity. ONLY 'Guest' or 'Customer' is allowed. Other identities must be registered by the admin in BASE.json."
-      },
-      "invitation_code": {
-        "type": "string",
-        "description": "REQUIRED if you are changing their identity to 'Customer'. Ask the user for their 6-character Pin Code invitation."
+        "description": "The user's real/preferred display name (e.g. '杰瑞', 'Tom'). Must be non-empty, 1–80 characters, and contain no double-quote characters."
       }
     },
     "required": %["name"]
   }.toTable
 
+proc renameGuest(t: UpdateContactTool, newName: string): string =
+  ## Guest-ledger branch for callers without an nc:id. Caller is
+  ## guaranteed to have a ContextBuilder (required at construction).
+  let id = t.logicalUserID
+  if t.contextBuilder.guests.hasKey(id):
+    var g = t.contextBuilder.guests[id]
+    let oldName = g.name
+    if oldName == newName:
+      return "Noted — name is already '" & newName & "', no change."
+    g.name = newName
+    t.contextBuilder.guests[id] = g
+    saveGuests(t.officeDir, t.contextBuilder.guests)
+    return "Updated: '" & oldName & "' → '" & newName & "' (guest record)."
+  # Unknown guest (no prior record) — create one with the given name.
+  t.contextBuilder.guests[id] = newGuest(t.channel, t.senderID, name = newName)
+  saveGuests(t.officeDir, t.contextBuilder.guests)
+  "Recorded: you'll be addressed as '" & newName & "' from now on."
+
 method execute*(t: UpdateContactTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("name") or args["name"].kind == JNull:
-    return "Error: name is required"
-    
+    return "Error: name is required."
   let newName = args["name"].getStr().strip()
-  let newIdentity = if args.hasKey("identity") and args["identity"].kind != JNull: args["identity"].getStr().strip() else: ""
-  let inviteCode = if args.hasKey("invitation_code") and args["invitation_code"].kind != JNull: args["invitation_code"].getStr().strip() else: ""
-  
-  if newIdentity != "" and newIdentity notin ["Guest", "Customer"]:
-    return "Error: You cannot change identity to '" & newIdentity & "'. In RELATIONS.json, identities are strictly restricted to 'Guest' or 'Customer'. Higher privileges must be registered by an Administrator in BASE.json."
+  if newName.len == 0:
+    return "Error: name must be non-empty."
+  if newName.len > 80:
+    return "Error: name too long (>80 chars). Use a shorter display name."
+  if '"' in newName:
+    return "Error: name cannot contain a double-quote character."
 
-  var relations = loadRelations(t.officeDir)
-  var (legacyID, _) = relations.resolveUser(t.channel, t.senderID)
-  
-  if legacyID == "":
-    var (graphUserID, _) = relations.resolveUser(t.channel, t.senderID)
-    if graphUserID == "":
-      # Last fallback: search directly
-      for id, rel in relations.pairs:
-        if rel.identifiers.hasKey(t.channel) and t.senderID in rel.identifiers[t.channel]:
-          legacyID = id
-          break
-          
-    if legacyID == "":
-      return "Error: Could not find your contact record to update in RELATIONS.json"
-    
-  # Update relation
-  var rel = relations[legacyID]
-  rel.name = newName
-  
-  if newIdentity != "":
-    if newIdentity == "Customer":
-      if inviteCode == "":
-        return "Error: You must ask the user to provide their invitation code (Pin Code) to upgrade to Customer."
-      
-      let workspace = t.officeDir.parentDir().parentDir()
-      var allInvites = loadInvites(workspace)
-      if not allInvites.hasKey(inviteCode):
-        return "Error: Invalid invitation code. The system refused to change their identity."
-        
-      var inv = allInvites[inviteCode]
-      if t.recipientID != "" and inv.agentName != t.recipientID:
-        return "Error: The Pin Code belongs to a different Employee. You cannot redeem it."
-      if not isValid(inv):
-        return "Error: The Pin Code is expired or exhausted."
-        
-      # Update constraints
-      if inv.maxUses > 0:
-        inv.maxUses -= 1
-        if inv.maxUses == 0:
-          allInvites.del(inviteCode)
-        else:
-          allInvites[inviteCode] = inv
-      saveInvites(workspace, allInvites)
-      
-    rel.identity = newIdentity
-  
-  relations[legacyID] = rel
-  saveRelations(t.officeDir, relations)
-  return "Successfully updated contact to Name: '" & newName & "'"
+  # Guest path — no nc:id means the caller lives in the per-agent
+  # guest ledger, not the graph.
+  if not t.logicalUserID.startsWith("nc:"):
+    return t.renameGuest(newName)
+
+  if t.graph == nil:
+    return "Error: graph not available on this tool context."
+  let id = parseAlias(t.logicalUserID)
+  if uint32(id) == 0 or not t.graph.entities.hasKey(id):
+    return "Error: " & t.logicalUserID & " not found in the graph."
+  var ent = t.graph.entities[id]
+  if ent.kind != ekPerson:
+    return "Error: only Person entities can be renamed via this tool."
+
+  # Internal-tier names live in ClawDSL, not chat. Let operators
+  # handle staff renames via `claw user edit`.
+  if tierFromRoleName(ent.role) == "int":
+    return "Error: internal-tier contacts (role=" & ent.role &
+           ") can't self-rename via chat. Ask the operator to edit " &
+           "BASE.nims or run `claw user edit " & t.logicalUserID &
+           " --name=<new>`."
+
+  let oldName = ent.name
+  if not t.graph.rename(id, newName):
+    return "Noted — name is already '" & newName & "', no change."
+  t.graph.saveWorld()
+
+  # Persist to BASE.nims so `co update` preserves the new name. The
+  # nc:id tag comment inside the person block is the anchor (names
+  # can collide, nc:ids can't).
+  try:
+    persistPersonName(getNimClawDir() / "BASE.nims", t.logicalUserID, newName)
+  except CatchableError as err:
+    stderr.writeLine "update_contact: BASE.nims persist failed for " &
+      t.logicalUserID & " (" & oldName & " → " & newName & "): " &
+      err.msg & " — graph updated; rerun persistence before `co update`."
+
+  return "Updated: '" & oldName & "' → '" & newName & "'. Every agent " &
+         "will address you as '" & newName & "' from now on."

@@ -79,8 +79,16 @@ type
     nknIndex*: Table[string, WorldEntityID]          # NKN address -> ID
     idAliasIndex*: Table[string, WorldEntityID]      # "nc:12" -> ID
 
-  # Legacy types for migration
-  Relationship* = object
+  # GuestContact — per-agent ledger of unknown/Guest-tier contacts
+  # (see guests.json in each office dir). Lives outside the WorldGraph
+  # on purpose: guests are ephemeral, high-cardinality, and per-agent
+  # scoped. Graduating a guest to a Customer (via redeem_invite) moves
+  # them INTO the graph with a stable nc:id; the guests.json entry
+  # becomes stale at that point and can be pruned.
+  #
+  # The legacy file name was `RELATIONS.json` / type `Relationship`;
+  # `loadGuests` migrates on first load.
+  GuestContact* = object
     name*: string
     kind*: EntityKind
     identity*: string
@@ -110,11 +118,49 @@ proc parseUserRole*(s: string, default: UserRole = urGuest): UserRole =
     try: return parseEnum[UserRole](low)
     except: return default
 
-proc loadRelations*(workspace: string): Table[string, Relationship] =
-  let path = workspace / "RELATIONS.json"
-  if not fileExists(path): return initTable[string, Relationship]()
+proc guestsFilePath*(officeDir: string): string =
+  ## Single source of truth for the guest-ledger file path. Prefers
+  ## the new `guests.json`; returns the legacy `RELATIONS.json` only
+  ## if it still exists and the new one hasn't been written yet.
+  ## Callers that write should always use `officeDir / "guests.json"`
+  ## — the migration happens inside `loadGuests` on first read.
+  let newPath = officeDir / "guests.json"
+  if fileExists(newPath): return newPath
+  let legacy = officeDir / "RELATIONS.json"
+  if fileExists(legacy): return legacy
+  newPath
+
+proc newGuest*(channel, senderID: string; name = ""; identity = "Guest";
+               trustLevel = 10; kind = ekPerson; etiquette = ""): GuestContact =
+  ## One-line constructor for the common "register a contact from a
+  ## channel:senderID" shape. `name` defaults to the senderID — callers
+  ## that know the real display name pass it in.
+  let resolvedName = if name.len > 0: name else: senderID
+  result = GuestContact(
+    name: resolvedName, identity: identity, trustLevel: trustLevel,
+    kind: kind, etiquette: etiquette,
+    identifiers: initTable[string, seq[string]]()
+  )
+  if channel.len > 0 and senderID.len > 0:
+    result.identifiers[channel] = @[senderID]
+
+proc loadGuests*(officeDir: string): Table[string, GuestContact] =
+  ## Load the per-agent guest ledger from `<officeDir>/guests.json`.
+  ## One-shot migration: if the legacy `RELATIONS.json` exists and
+  ## `guests.json` doesn't, rename in place before loading. Idempotent
+  ## — subsequent loads find only `guests.json`.
+  let path = officeDir / "guests.json"
+  let legacy = officeDir / "RELATIONS.json"
+  if not fileExists(path) and fileExists(legacy):
+    try: moveFile(legacy, path)
+    except CatchableError as err:
+      echo "Warning: legacy guest-ledger rename failed (",
+           legacy, " → ", path, "): ", err.msg,
+           " — reading in place."
+  let effective = if fileExists(path): path else: legacy
+  if not fileExists(effective): return initTable[string, GuestContact]()
   try:
-    let node = parseFile(path)
+    let node = parseFile(effective)
     for entry in node:
       var idents = initTable[string, seq[string]]()
       if entry.hasKey("identifiers"):
@@ -122,7 +168,7 @@ proc loadRelations*(workspace: string): Table[string, Relationship] =
           var arr: seq[string] = @[]
           for item in v: arr.add(item.getStr())
           idents[k] = arr
-      let rel = Relationship(
+      let g = GuestContact(
         name: entry{"name"}.getStr(entry{"userID"}.getStr("")),
         kind: parseEnum[EntityKind](entry{"kind"}.getStr("Person")),
         identity: entry{"identity"}.getStr(entry{"role"}.getStr("Guest")),
@@ -130,10 +176,9 @@ proc loadRelations*(workspace: string): Table[string, Relationship] =
         etiquette: entry{"etiquette"}.getStr(""),
         identifiers: idents
       )
-      result[rel.name] = rel
+      result[g.name] = g
   except:
-    # Use standard echo for simplicity in this proto
-    echo "Warning: Failed to load RELATIONS.json: ", getCurrentExceptionMsg()
+    echo "Warning: Failed to load ", effective, ": ", getCurrentExceptionMsg()
 
 proc loadMood*(officeDir: string): MoodState =
   # Per-agent mood lives at `<office>/mood.json`. We also honour
@@ -162,16 +207,16 @@ proc loadMood*(officeDir: string): MoodState =
     echo "Warning: Failed to load mood from ", active, ": ", getCurrentExceptionMsg()
     return MoodState(valence: 0.0, arousal: 0.1, archetype: "Assistant")
 
-proc resolveUser*(relations: Table[string, Relationship], channel: string, senderID: string): (string, bool) =
-  ## Scans the relations to find if a senderID on a specific channel maps to a logical user
+proc resolveUser*(guests: Table[string, GuestContact], channel: string, senderID: string): (string, bool) =
+  ## Look up the sender's logical guest ID given (channel, senderID).
   ## Returns (logicalUserID, isKnown).
-  if relations.hasKey(senderID):
+  if guests.hasKey(senderID):
     return (senderID, true)
-    
-  for rel in relations.values:
-    if rel.identifiers.hasKey(channel):
-      if senderID in rel.identifiers[channel]:
-        return (rel.name, true)
+
+  for g in guests.values:
+    if g.identifiers.hasKey(channel):
+      if senderID in g.identifiers[channel]:
+        return (g.name, true)
         
   return (senderID, false) # Not found, treat raw senderID as a Guest
 
@@ -502,6 +547,23 @@ proc saveWorld*(graph: WorldGraph) =
   let graphFile = if graph.filePath != "": graph.filePath else: graph.workspace / "BASE.json"
   writeFile(graphFile, toLD(graph).pretty())
 
+proc rename*(graph: WorldGraph, id: WorldEntityID, newName: string): bool =
+  ## Rename a Person entity and keep `nameIndex` consistent. Returns
+  ## true when the rename applied, false when the entity is missing,
+  ## the name is unchanged, or `newName` is empty. Caller is expected
+  ## to have already validated the name format.
+  if graph == nil or newName.len == 0: return false
+  if not graph.entities.hasKey(id): return false
+  var ent = graph.entities[id]
+  if ent.name == newName: return false
+  let oldName = ent.name
+  ent.name = newName
+  graph.entities[id] = ent
+  if graph.nameIndex.hasKey(oldName) and graph.nameIndex[oldName] == id:
+    graph.nameIndex.del(oldName)
+  graph.nameIndex[newName] = id
+  true
+
 proc migrateToGraph*(workspace: string, agents: seq[string] = @["secretary"]): WorldGraph =
   ## Performs a one-time migration from legacy flat files to the Unified World Graph.
   result = WorldGraph(
@@ -557,9 +619,9 @@ proc migrateToGraph*(workspace: string, agents: seq[string] = @["secretary"]): W
     result.nameIndex[name] = id
     agentMap[name] = id
 
-  # 3. Migrate Relations
-  let relations = loadRelations(workspace)
-  for rel in relations.values:
+  # 3. Migrate legacy guest records into the graph (one-shot).
+  let guests = loadGuests(workspace)
+  for rel in guests.values:
     let id = WorldEntityID(result.nextID)
     result.nextID += 1
     var ent = WorldEntity(
@@ -623,21 +685,21 @@ proc migrateToGraph*(workspace: string, agents: seq[string] = @["secretary"]): W
 
       discard
 
-proc saveRelations*(workspace: string, relations: Table[string, Relationship]) =
-  let path = workspace / "RELATIONS.json"
+proc saveGuests*(officeDir: string, guests: Table[string, GuestContact]) =
+  let path = officeDir / "guests.json"
   var node = newJArray()
-  for rel in relations.values:
-    let jRel = %* {
-      "name": rel.name,
-      "kind": $rel.kind,
-      "identity": rel.identity,
-      "trustLevel": rel.trustLevel,
-      "etiquette": rel.etiquette,
+  for g in guests.values:
+    let jG = %* {
+      "name": g.name,
+      "kind": $g.kind,
+      "identity": g.identity,
+      "trustLevel": g.trustLevel,
+      "etiquette": g.etiquette,
       "identifiers": {}
     }
-    for k, v in rel.identifiers.pairs:
-      jRel["identifiers"][k] = %v
-    node.add(jRel)
+    for k, v in g.identifiers.pairs:
+      jG["identifiers"][k] = %v
+    node.add(jG)
   writeFile(path, node.pretty())
 
 proc saveMood*(officeDir: string, mood: MoodState) =

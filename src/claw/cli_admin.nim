@@ -1,5 +1,7 @@
 import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode, sequtils]
 import config, agent/invites, agent/cortex, agent/binding, libnkn/nkn_bridge, QRgen, utils
+import skill_grant
+import billing/[subscription as sub_mod, usage as usage_mod, welcome as welcome_mod, company as company_mod, plants as plants_mod]
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
 import providers/registry as prov_registry
@@ -1017,10 +1019,21 @@ proc bindTargets*(cfg: Config): string =
     return "  (no channels enabled — configure at least one with `claw channel auth <name>`)"
   lines.join("\n")
 
+proc tierFromRoleName*(label: string): string =
+  ## Name-only heuristic: classify a role/permission label into
+  ## "int"/"ext"/"?". Mirrors clawdsl.nim's tier inference. Callers
+  ## without a Config (e.g. MCP tools) use this; `tierOfRole` wraps
+  ## it with the trust-block lookup for the CLI-side callers.
+  let low = label.toLowerAscii.strip
+  if low.len == 0: return "?"
+  case low:
+  of "superadmin", "admin", "staff", "employee", "member": "int"
+  of "boss", "master", "lead", "customer", "student", "guest": "ext"
+  else: "?"
+
 proc tierOfRole(cfg: Config, label: string): string =
-  ## Classify a role/permission label into "int"/"ext"/"?".
-  ## Declared roles in the trust: block win; otherwise fall back to a
-  ## name heuristic that mirrors clawdsl.nim's tier inference.
+  ## Declared roles in the trust: block win; otherwise fall back to
+  ## the name heuristic.
   let low = label.toLowerAscii.strip
   if low.len == 0: return "?"
   for r in cfg.trust.roles:
@@ -1029,12 +1042,9 @@ proc tierOfRole(cfg: Config, label: string): string =
       if t == "internal": return "int"
       if t == "external": return "ext"
       return "?"
-  case low:
-  of "superadmin", "admin", "staff", "employee", "member": "int"
-  of "boss", "master", "lead", "customer", "student", "guest": "ext"
-  else: "?"
+  tierFromRoleName(low)
 
-proc entityTier(cfg: Config, graph: WorldGraph, ent: WorldEntity): string =
+proc entityTier*(cfg: Config, graph: WorldGraph, ent: WorldEntity): string =
   ## Tier of a person — declared permission if present, else inferred
   ## from whatever relationship role an agent has pinned on them.
   let p = userPermission(ent)
@@ -1115,6 +1125,35 @@ proc removeRefBlocks*(lines: var seq[string], headerPrefix: string, name: string
       inc i
   lines = kept
 
+proc removePersonBlockByNcId*(lines: var seq[string], name, ncId: string): int =
+  ## Delete only the `person "<name>":` block(s) whose body contains a
+  ## `# <ncId>` tag line (written by mintCustomerInvite). Untagged
+  ## blocks are left untouched — call `removeRefBlocks` for those.
+  ## Returns how many blocks were removed.
+  let marker = "person \"" & name & "\":"
+  let tag = "# " & ncId
+  var kept: seq[string]
+  var i = 0
+  while i < lines.len:
+    if lines[i].strip() == marker:
+      let headIndent = leadingSpaces(lines[i])
+      var j = i + 1
+      var hasTag = false
+      while j < lines.len:
+        let l = lines[j]
+        if l.strip().len == 0: inc j; continue
+        if leadingSpaces(l) > headIndent:
+          if l.strip() == tag: hasTag = true
+          inc j; continue
+        break
+      if hasTag:
+        inc result
+        i = j
+        continue
+    kept.add(lines[i])
+    inc i
+  lines = kept
+
 proc cascadeNameRefs(lines: var seq[string], oldName, newName: string): tuple[person, agent, reports, serves: int] =
   ## Rewrite the header `person "<old>":` / `agent "<old>":` and every
   ## name reference inside any agent block's `reportsTo "<old>":` /
@@ -1146,20 +1185,27 @@ type
     agentName*: string
     maxUses*: int
     issuer*: string
-    allowedSkills*: seq[string]
+    allowedSkills*: seq[string]     ## normalized grant strings (via `$SkillGrant`)
+    materialized*: seq[string]      ## `<skill>::<credential>` slots whose member
+                                    ## record was written — surface to the user
 
-proc mintCustomerInvite*(cfg: Config, workspace: string,
+proc mintCustomerInvite*(workspace: string,
                          issuer, customerName, agentName: string,
                          maxUses: int = 1,
-                         allowedSkills: openArray[string] = []): CustomerInviteResult =
+                         allowedSkills: openArray[string] = [],
+                         lang: string = ""): CustomerInviteResult =
   ## Single source of truth for "issue a customer access code". Used by
-  ## both `claw user invite` (CLI) and `/user invite` (slash command).
+  ## `claw user invite` (CLI), `/user invite` (slash command), and the
+  ## `create_customer_invite` MCP tool.
   ##
-  ## Does the full dance: pre-allocate a Customer Person entity, mint a
-  ## code with `targetNcId` wired, persist the `person "X":` block into
-  ## BASE.nims so it survives `co update`, register the serves edge on
-  ## the target agent. Callers format the user-facing output themselves
-  ## (CLI terse, chat with paste templates).
+  ## Does the full dance: validate skill grants, pre-allocate a Customer
+  ## Person entity with an `allowed_skills` custom field, mint a code with
+  ## `targetNcId` wired, persist the `person "X":` block into BASE.nims
+  ## (appending fresh skill lines if the block already exists), register
+  ## the serves edge on the target agent, and materialize per-customer
+  ## member records for any `<skill>::<credential>` grant so the customer
+  ## is immediately usable post-redeem. Callers format the user-facing
+  ## output themselves (CLI terse, chat with paste templates).
   result = CustomerInviteResult(ok: false)
   if customerName.len == 0:
     result.error = "customer name must not be empty"; return
@@ -1167,6 +1213,21 @@ proc mintCustomerInvite*(cfg: Config, workspace: string,
     result.error = "customer name cannot contain a double-quote"; return
   if agentName.len == 0:
     result.error = "agent name must not be empty"; return
+
+  # Parse & validate grants first — a typo here shouldn't land a
+  # half-provisioned customer in the graph. Normalize via `$grant` so
+  # storage (entity custom, BASE.nims) uses one canonical form regardless
+  # of which surface minted the invite.
+  var grants: seq[SkillGrant]
+  var normalized: seq[string]
+  for raw in allowedSkills:
+    let r = raw.strip()
+    if r.len == 0: continue
+    let (ok, g, err) = parseSkillGrant(r)
+    if not ok:
+      result.error = "invalid skill grant '" & raw & "': " & err; return
+    grants.add(g)
+    normalized.add($g)
 
   let graph = loadWorld(workspace)
   if graph == nil:
@@ -1193,9 +1254,9 @@ proc mintCustomerInvite*(cfg: Config, workspace: string,
     identifiers: initTable[string, string](),
     custom: newJObject()
   )
-  if allowedSkills.len > 0:
+  if normalized.len > 0:
     var arr = newJArray()
-    for s in allowedSkills: arr.add(%s)
+    for s in normalized: arr.add(%s)
     ent.custom["allowed_skills"] = arr
   graph.entities[newID] = ent
   graph.nameIndex[customerName] = newID
@@ -1217,48 +1278,127 @@ proc mintCustomerInvite*(cfg: Config, workspace: string,
     code: code, agentName: agentName, customerName: customerName,
     role: "customer", maxUses: maxUses, expiry: 0, pinless: false,
     issuedBy: issuer, createdAt: getTime().toUnix(),
-    usedBy: "", usedAt: 0, targetNcId: alias)
+    usedBy: "", usedAt: 0, targetNcId: alias, lang: lang)
   saveInvites(workspace, invMap)
 
+  # Stamp the language in the customer side-file so it survives
+  # `co update`. Keeping it on both the invite and the file is
+  # defensive — single-use invite rows get deleted on redemption.
+  if lang.len > 0: stampLang(alias, lang)
+
   # Persist the Customer to BASE.nims so `co update` keeps them.
+  # Always insert a FRESH block per invite — never merge by name. Two
+  # customers can legitimately share a display name (李总 #1 and 李总 #2
+  # are different real people); appending to an existing name-matched
+  # block would conflate their grants and, worse, make `user remove`
+  # wipe both blocks when it strips by name. A `# nc:<id>` tag as the
+  # block's first body line lets `user remove` target exactly one.
   let baseNims = getNimClawDir() / "BASE.nims"
   if fileExists(baseNims):
     var bLines = readFile(baseNims).splitLines()
-    var exists = false
-    for l in bLines:
-      if l.strip() == "person \"" & customerName & "\":":
-        exists = true; break
-    if not exists:
-      var insertAt = bLines.len
-      for i, l in bLines:
-        if l.strip().startsWith("build(currentSourcePath"):
-          insertAt = i; break
-      var newBlock = @[
-        "",
-        "person \"" & customerName & "\":",
-        "  permission \"Customer\""
-      ]
-      for s in allowedSkills:
-        newBlock.add("  skill \"" & s & "\"")
-      var merged = bLines[0 ..< insertAt]
-      for l in newBlock: merged.add(l)
-      for i in insertAt ..< bLines.len: merged.add(bLines[i])
-      writeFile(baseNims, merged.join("\n"))
+    var insertAt = bLines.len
+    for i, l in bLines:
+      if l.strip().startsWith("build(currentSourcePath"):
+        insertAt = i; break
+    var newBlock = @[
+      "", "person \"" & customerName & "\":",
+      "  # " & alias,
+      "  permission \"Customer\""
+    ]
+    for s in normalized:
+      newBlock.add("  skill \"" & s & "\"")
+    var merged = bLines[0 ..< insertAt]
+    for l in newBlock: merged.add(l)
+    for i in insertAt ..< bLines.len: merged.add(bLines[i])
+    writeFile(baseNims, merged.join("\n"))
+
+  # Materialize per-skill member records for `<skill>::<credential>`
+  # grants — mirrors the sungrow skill's members/ layout so the customer
+  # is immediately routed to the right account on first tool call.
+  let ncIdSlot = alias.replace(":", "_")
+  var materialized: seq[string]
+  for g in grants:
+    if g.credential.len == 0: continue
+    let membersDir = getNimClawDir() / "support" / g.skill / "members"
+    try:
+      createDir(membersDir)
+      writeFile(membersDir / (ncIdSlot & ".json"),
+                $(%*{"account_id": g.credential}))
+      materialized.add($g)
+    except CatchableError as e:
+      result.error = "failed to write member record for " & $g & ": " & e.msg
+      return
 
   result = CustomerInviteResult(
-    ok: true, code: code, targetNcId: alias, allowedSkills: @allowedSkills,
+    ok: true, code: code, targetNcId: alias,
+    allowedSkills: normalized, materialized: materialized,
     customerName: customerName, agentName: agentName,
     maxUses: maxUses, issuer: issuer)
 
+proc resolveCompanyBrand*(graph: WorldGraph, override = ""): string =
+  ## Thin forwarder — kept for back-compat with call sites in cli_admin
+  ## that predate the billing/company module. New code should call
+  ## `resolveBrand` directly.
+  resolveBrand(graph, override)
+
+proc userSkillSummary*(ent: WorldEntity): string =
+  ## Render `ent.custom.allowed_skills` as a compact cell for `user list`.
+  ## Each grant collapses to `skill:credential` (for `::` form) or
+  ## `skill(account)` (legacy `account@skill`) or just `skill` (unscoped).
+  ## Returns "—" when no grants are declared.
+  if ent.custom == nil or not ent.custom.hasKey("allowed_skills"): return "—"
+  let node = ent.custom["allowed_skills"]
+  if node.kind != JArray or node.len == 0: return "—"
+  var parts: seq[string]
+  for item in node:
+    let raw = item.getStr("").strip()
+    if raw.len == 0: continue
+    let (ok, g, _) = parseSkillGrant(raw)
+    if not ok: parts.add(raw); continue
+    if g.credential.len > 0: parts.add(g.skill & ":" & g.credential)
+    elif g.account.len > 0: parts.add(g.skill & "(" & g.account & ")")
+    else: parts.add(g.skill)
+  if parts.len == 0: "—" else: parts.join(", ")
+
+proc userSubscription*(ncId: string, tier: string): string =
+  ## Compact one-cell summary for `user list`. Internal-tier users are
+  ## "n/a" (subscription doesn't apply). External customers show their
+  ## plan plus remaining-days + a grace-period flag for trials.
+  ##   recycled    — soft-removed (shown under --recycled/--all)
+  ##   trial 23d   — trial, 23 days left
+  ##   trial 2d !  — in the 3-day grace window
+  ##   expired     — past trial, hard-blocked (Phase 3)
+  ##   active      — paid plan, no auto-expiry
+  ##   suspend     — manually suspended
+  ##   —           — external customer without a stamped subscription
+  if isRecycled(ncId): return "recycled"
+  if tier == "int": return "n/a"
+  let subOpt = loadSubscription(ncId)
+  if subOpt.isNone: return "—"
+  let s = subOpt.get()
+  let now = getTime().toUnix
+  case s.plan
+  of pkActive:    "active"
+  of pkSuspended: "suspend"
+  of pkExpired:   "expired"
+  of pkTrial:
+    if now >= s.expires: "expired"
+    else:
+      let d = daysRemaining(s, now)
+      let suffix = if inGracePeriod(s, now): " !" else: ""
+      "trial " & $d & "d" & suffix
+
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|show|trust|edit|rebind|merge|remove|invite|register> [args]\n" &
+    return "Usage: claw user <list|show|trust|edit|rebind|merge|remove|restore|invite|register|subscription> [args]\n" &
            "  list     — table of every user (Person/AI/Service/Unknown).\n" &
            "             flags: --kind=<Person|AI|Unknown|Service>\n" &
            "                    --tier=<int|ext|?>\n" &
            "                    --permission=<role>\n" &
-           "                    --sort=<nc|name|kind|permission|tier|role>\n" &
+           "                    --sort=<nc|name|kind|permission|tier|role|sub|skills>\n" &
            "                    --reverse  --format=<table|json>\n" &
+           "                    --recycled  (show only soft-removed users)\n" &
+           "                    --all       (show everyone including recycled)\n" &
            "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
            "  trust    — edge graph (agent → person) with role + trust per row\n" &
            "  edit     — set a field on a user in BASE.nims (or graph-only)\n" &
@@ -1266,12 +1406,16 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
            "             fields: name, permission, jobTitle, kind\n" &
            "  rebind   — issue a SuperAdmin binding code (for bootstrap or\n" &
            "             lost-device recovery — prints the code)\n" &
-           "  remove   — delete a user from graph + BASE.nims (cascades\n" &
-           "             inbound reportsTo/serves refs). Prefer `merge` if\n" &
-           "             you need to preserve history.\n" &
+           "  remove   — soft remove (default): keeps nc:id, entity, edges,\n" &
+           "             billing history. Recoverable via `restore`. Add\n" &
+           "             --hard to fully delete (original behavior).\n" &
+           "             optional: --reason=\"...\" for audit\n" &
+           "  restore  — undo a soft remove (strips recycled_at flag)\n" &
            "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
            "  invite   — generate a one-time invite code (guest → user promotion)\n" &
            "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
+           "  subscription — plan + token cap per customer (status/activate/\n" &
+           "             extend/suspend/resume/usage). See `user subscription`.\n" &
            "             claw user register                 # everyone qualifying\n" &
            "             claw user register <nc:id> [name]  # one specific, named"
   let subcmd = args[0]
@@ -1298,6 +1442,10 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     var sortKey = "nc"
     var reverse = false
     var format = if asJson: "json" else: "table"
+    # Recycle visibility: default hides soft-removed customers;
+    # `--recycled` shows only them; `--all` shows everyone.
+    type RecycleView = enum rvActive, rvRecycled, rvAll
+    var recycleView = rvActive
     var unparsed: seq[string]
     for a in args[1 .. ^1]:
       if a.startsWith("--kind="):       filterKind = a["--kind=".len .. ^1].toLowerAscii
@@ -1308,14 +1456,17 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       elif a == "--reverse":            reverse = true
       elif a.startsWith("--format="):   format = a["--format=".len .. ^1].toLowerAscii
       elif a == "--json":               format = "json"
+      elif a == "--recycled":           recycleView = rvRecycled
+      elif a == "--all":                recycleView = rvAll
       else: unparsed.add(a)
     if unparsed.len > 0:
       return "Error: unrecognised argument(s): " & unparsed.join(", ") & "\n" &
-             "Flags: --kind=, --tier=, --permission=, --sort=, --reverse, --format=."
+             "Flags: --kind=, --tier=, --permission=, --sort=, --reverse, --format=,\n" &
+             "       --recycled (show only soft-removed), --all (show everyone)."
 
     var ourAgents: HashSet[string]
     for a in cfg.agents.named: ourAgents.incl(a.name)
-    type Row = tuple[ncId, name, kind, perm, tier, relRole, idents: string]
+    type Row = tuple[ncId, name, kind, perm, tier, relRole, sub, skills, idents: string]
     var rows: seq[Row]
     for id, ent in graph.entities.pairs:
       if ent.kind in {ekCorporate, ekInvite}: continue
@@ -1326,6 +1477,11 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       if filterKind.len > 0 and kindStr.toLowerAscii != filterKind: continue
       if filterTier.len > 0 and tierStr != filterTier: continue
       if filterPerm.len > 0 and permStr.toLowerAscii != filterPerm: continue
+      let recycled = isRecycled(toAlias(id))
+      case recycleView:
+      of rvActive:   (if recycled: continue)
+      of rvRecycled: (if not recycled: continue)
+      of rvAll: discard
       var identParts: seq[string]
       for chan, sid in ent.identifiers.pairs:
         var shown = sid
@@ -1338,6 +1494,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         perm: permStr,
         tier: tierStr,
         relRole: userRelRole(graph, id),
+        sub: userSubscription(toAlias(id), tierStr),
+        skills: userSkillSummary(ent),
         idents: (if identParts.len > 0: identParts.join(", ") else: "—")
       ))
 
@@ -1350,6 +1508,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       of "permission", "perm":   cmp(a.perm.toLowerAscii, b.perm.toLowerAscii)
       of "tier":                 cmp(a.tier, b.tier)
       of "role", "rel", "relrole": cmp(a.relRole.toLowerAscii, b.relRole.toLowerAscii)
+      of "sub", "subscription":  cmp(a.sub, b.sub)
+      of "skills", "skill":      cmp(a.skills, b.skills)
       else:                      cmp(parseAlias(a.ncId).uint32, parseAlias(b.ncId).uint32))
     if reverse: rows.reverse()
 
@@ -1360,6 +1520,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                    "kind": r.kind,
                    "permission": r.perm, "tier": r.tier,
                    "relationship_role": r.relRole,
+                   "subscription": r.sub,
+                   "skills": r.skills,
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
@@ -1369,12 +1531,14 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                "register on their first message; our own agents are shown\n" &
                "by `claw agent list`."
       return hint
-    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   IDENTIFIERS\n"
+    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   SUB       SKILLS                    IDENTIFIERS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
       var idents = r.idents
       if idents.len > 35: idents = idents[0 ..< 33] & "…"
+      var skills = r.skills
+      if skills.runeLen > 24: skills = skills[0 ..< 22] & "…"
       let perm = (if r.perm.len > 0: r.perm else: "—")
       let relRole = (if r.relRole.len > 0: r.relRole else: "—")
       res.add(pad(r.ncId, 6) & " " &
@@ -1383,6 +1547,8 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
               pad(perm, 12) & " " &
               pad(r.tier, 5) & " " &
               pad(relRole, 11) & " " &
+              pad(r.sub, 9) & " " &
+              pad(skills, 25) & " " &
               idents & "\n")
     var summary = "\n" & $rows.len & " user(s)"
     if filterKind.len + filterTier.len + filterPerm.len > 0:
@@ -1515,6 +1681,13 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                "  (first-contact guest — classify with `user edit " & alias &
                " kind Person|AI|Service`)"
              else: "") & "\n")
+    let recMeta = loadRecycleMeta(alias)
+    if recMeta.isSome:
+      let m = recMeta.get()
+      res.add("  RECYCLED:    " & fromUnix(m.at).utc.format("yyyy-MM-dd HH:mm 'UTC'"))
+      if m.by.len > 0: res.add(" by " & m.by)
+      if m.reason.len > 0: res.add(" — " & m.reason)
+      res.add("\n               (restore with `claw user restore " & alias & "`)\n")
     res.add("  tier:        " & entityTier(cfg, graph, ent) & "\n")
     if ent.role.len > 0:
       res.add("  permission:  " & ent.role & "\n")
@@ -1899,15 +2072,36 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     return lines.join("\n")
 
   if subcmd == "remove" or subcmd == "delete":
-    # Delete a user from the graph AND, if declared, from BASE.nims.
-    # Cascades to `reportsTo "<name>":` / `serves "<name>":` sub-blocks
-    # in any agent so `co update` doesn't resurrect the reference.
-    if args.len < 2:
-      return "Usage: claw user remove <nc:id>\n" &
-             "Deletes the entity from BASE.json and strips its `person`\n" &
-             "block plus any inbound reportsTo/serves refs from BASE.nims.\n" &
-             "Use `merge` instead to preserve memory/sessions."
-    let alias = args[1]
+    # Two-level remove:
+    #   soft (default)  — stamp `recycled_at` on the customer side file,
+    #                     keep nc:id + graph entity + BASE.nims + edges.
+    #                     Customer is blocked from the agent but can be
+    #                     restored with `user restore <nc:id>`. Billing
+    #                     history (subscription, usage) is preserved.
+    #   hard (--hard)   — the original path: delete entity, strip BASE.nims,
+    #                     wipe member + usage + customer files. nc:id freed
+    #                     for reuse by the next allocator. No undo.
+    # Parse positional + flags.
+    var positional: seq[string]
+    var hard = false
+    var reason = ""
+    for a in args[1 .. ^1]:
+      if a == "--hard": hard = true
+      elif a.startsWith("--reason="): reason = a["--reason=".len .. ^1].strip()
+      else: positional.add(a)
+    if positional.len < 1:
+      return "Usage:\n" &
+             "  claw user remove <nc:id>             # soft — recoverable\n" &
+             "  claw user remove <nc:id> --hard      # hard — permanent delete\n\n" &
+             "Soft remove preserves the nc:id, graph entity, BASE.nims block,\n" &
+             "edges, subscription, and usage history. Only the customer side-file's\n" &
+             "`recycled_at` flag is set — the gate then refuses messages with a\n" &
+             "'account deactivated' reply. Restore with `claw user restore <nc:id>`.\n\n" &
+             "Hard remove does the full delete: entity + DSL + member records +\n" &
+             "billing history, and the nc:id slot is freed. No undo.\n\n" &
+             "Optional: `--reason=\"cancelled by billing\"` is stamped on the\n" &
+             "recycle metadata (soft) or logged (hard) for the audit trail."
+    let alias = positional[0]
     if not alias.startsWith("nc:"):
       return "Error: give an nc:id (e.g. nc:5)."
     let id = parseAlias(alias)
@@ -1922,6 +2116,28 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
           return "Error: " & alias & " is a declared Agent (\"" & ent.name &
                  "\"). Use `claw agent remove " & ent.name & "` instead."
     let name = ent.name
+
+    # ─── Soft remove ─────────────────────────────────────────────────
+    if not hard:
+      if isRecycled(alias):
+        return alias & " (" & name & ") is already recycled. Use " &
+               "`claw user restore " & alias & "` to undo, or " &
+               "`claw user remove " & alias & " --hard` to purge permanently."
+      # nc:id is implicitly the caller when invoked via the gateway's
+      # /user slash path; for CLI we don't have a caller context, so
+      # record "cli" as the actor. Operators with audit requirements
+      # should pass `--reason=`.
+      markRecycled(alias, "cli", reason)
+      var res = "Soft-removed " & alias & " (" & name & ").\n" &
+                "  nc:id, graph entity, BASE.nims block, edges — kept.\n" &
+                "  Customer-facing: gate replies \"account deactivated\".\n" &
+                "  Billing history: preserved.\n" &
+                "  Restore with: claw user restore " & alias
+      if reason.len > 0:
+        res.add("\n  reason: " & reason)
+      return res
+
+    # ─── Hard remove (original delete path) ──────────────────────────
     # 1. Drop from graph: delete entity + strip any other entity's
     #    outbound edges that point at it.
     var g = graph
@@ -1948,18 +2164,47 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     g.saveWorld()
 
     # 2. Strip BASE.nims — the person block + any inbound reportsTo/serves
-    #    sub-blocks in agent declarations.
+    #    sub-blocks in agent declarations. Prefer nc:id-tagged removal
+    #    (set by mintCustomerInvite) so two customers sharing a display
+    #    name can be independently removed. Fall back to name-match only
+    #    if no tagged block was found (legacy blocks written before the
+    #    tag convention, like hand-declared entries in BASE.nims).
     let baseNims = getNimClawDir() / "BASE.nims"
     var removedPerson = 0
     var removedReports = 0
     var removedServes = 0
     if fileExists(baseNims):
       var lines = readFile(baseNims).splitLines()
-      removedPerson = removeRefBlocks(lines, "person", name)
+      removedPerson = removePersonBlockByNcId(lines, name, alias)
+      if removedPerson == 0:
+        removedPerson = removeRefBlocks(lines, "person", name)
       removedReports = removeRefBlocks(lines, "reportsTo", name)
       removedServes = removeRefBlocks(lines, "serves", name)
       if removedPerson + removedReports + removedServes > 0:
         writeFile(baseNims, lines.join("\n"))
+
+    # 3. Wipe per-skill member records (the `<nc_id>.json` files written
+    #    by mintCustomerInvite for `<skill>::<credential>` grants). Scan
+    #    every `support/*/members/` dir — skill-name-agnostic and safe to
+    #    run even for customers who had no credential-scoped grants.
+    let supportDir = getNimClawDir() / "support"
+    let slot = alias.replace(":", "_") & ".json"
+    var removedMembers: seq[string]
+    if dirExists(supportDir):
+      for kind, skillDir in walkDir(supportDir):
+        if kind != pcDir: continue
+        let memberFile = skillDir / "members" / slot
+        if fileExists(memberFile):
+          try:
+            removeFile(memberFile)
+            removedMembers.add(skillDir.lastPathPart)
+          except CatchableError: discard
+
+    # 4. Wipe billing usage counter — symmetric with member records.
+    clearUsage(alias)
+
+    # 5. Wipe per-customer billing state (subscription + lang).
+    clearCustomerFile(alias)
 
     var res = "Removed " & alias & " (" & name & ") from the graph.\n"
     if removedPerson + removedReports + removedServes > 0:
@@ -1971,6 +2216,42 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       res.add("cleaned DSL.")
     else:
       res.add("(No BASE.nims declaration found — graph-only removal.)")
+    if removedMembers.len > 0:
+      res.add("\nSkill member records wiped: " & removedMembers.join(", "))
+    return res
+
+  if subcmd == "restore":
+    # Undo a soft remove — strip the recycle flag from the customer
+    # side-file. Graph entity, BASE.nims, and edges were never touched
+    # by the soft-remove path, so restore is a single-file edit.
+    if args.len < 2:
+      return "Usage: claw user restore <nc:id>\n" &
+             "Undoes a soft remove (`claw user remove <nc:id>` without\n" &
+             "--hard). Graph entity, BASE.nims block, and billing history\n" &
+             "were preserved during soft-remove, so restore just clears\n" &
+             "the `recycled_at` flag on the customer's billing state."
+    let alias = args[1]
+    if not alias.startsWith("nc:"):
+      return "Error: give an nc:id (e.g. nc:5)."
+    let metaOpt = loadRecycleMeta(alias)
+    if metaOpt.isNone:
+      if uint32(parseAlias(alias)) > 0 and graph.entities.hasKey(parseAlias(alias)):
+        return alias & " is not recycled — nothing to restore."
+      return "Error: " & alias & " not found or has no customer state. " &
+             "Hard-deleted entries cannot be restored."
+    unmarkRecycled(alias)
+    let entName =
+      if graph.entities.hasKey(parseAlias(alias)):
+        graph.entities[parseAlias(alias)].name
+      else: "?"
+    let m = metaOpt.get()
+    var res = "Restored " & alias & " (" & entName & ").\n" &
+              "  was recycled: " & fromUnix(m.at).utc.format("yyyy-MM-dd HH:mm 'UTC'") &
+              " by " & (if m.by.len > 0: m.by else: "?")
+    if m.reason.len > 0: res.add(" (reason: " & m.reason & ")")
+    res.add("\n  subscription + usage history — untouched\n" &
+            "  next message from this customer: gate uses the normal\n" &
+            "  subscription check again.")
     return res
 
   if subcmd == "rebind":
@@ -2153,15 +2434,21 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     if args.len < 2:
       return "Usage:\n" &
              "  claw user invite list\n" &
-             "  claw user invite <issuer-nc:id> [<role>] [<uses>] [<agent>] [<customer>]\n\n" &
-             "Positional defaults: role=customer, uses=1, agent=<company default>.\n" &
-             "Roles follow the trust DSL: guest, customer, staff, boss, master.\n" &
-             "Issuer is stamped on the invite so `user invite list` shows who minted it.\n\n" &
+             "  claw user invite <issuer-nc:id> [<uses>] [<agent>] [<customer>] \\\n" &
+             "                   [--skill=<grant>]... [--skills=<g1,g2,…>]\n\n" &
+             "Positional defaults: uses=1, agent=<company default>.\n" &
+             "Issuer is stamped so `user invite list` shows who minted it.\n\n" &
+             "Skill grants (repeatable):\n" &
+             "  --skill=sungrow                 unscoped, uses skill's default creds\n" &
+             "  --skill=sungrow::acme-solar     credential-scoped — materializes a\n" &
+             "                                  member record so the customer is\n" &
+             "                                  ready to use acme-solar on redeem\n" &
+             "  --skill=account@sungrow         legacy account-prefix syntax\n\n" &
              "Examples:\n" &
-             "  claw user invite nc:3                    # customer, 1 use\n" &
-             "  claw user invite nc:3 boss               # boss role, 1 use\n" &
-             "  claw user invite nc:3 staff 5            # staff role, 5 uses\n" &
-             "  claw user invite nc:3 customer 1 Lexi Alice"
+             "  claw user invite nc:3                                    # 1 use, no skills\n" &
+             "  claw user invite nc:3 5                                  # 5 uses\n" &
+             "  claw user invite nc:3 1 Atlas LiZong \\\n" &
+             "                   --skill=sungrow::acme-solar             # credential-scoped"
 
     # Sub-sub-command: `user invite list`
     if args[1] == "list":
@@ -2219,15 +2506,28 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     if uint32(issuerID) == 0 or not graph.entities.hasKey(issuerID):
       return "Error: issuer " & issuerAlias & " not found in graph."
 
-    # Positional args: [uses] [agent] [customer]
-    # (The `role` arg was dropped — invite is now always customer-tier;
-    # `mintCustomerInvite` pre-allocates an ekPerson + permission=Customer.)
     var uses = 1
     var positional: seq[string]
-    for a in args[2 .. ^1]: positional.add(a)
+    var allowedSkills: seq[string]
+    var inviteLang = ""
+    for a in args[2 .. ^1]:
+      if a.startsWith("--skill="):
+        let g = a["--skill=".len .. ^1].strip()
+        if g.len > 0: allowedSkills.add(g)
+      elif a.startsWith("--skills="):
+        for s in a["--skills=".len .. ^1].split(','):
+          let s2 = s.strip()
+          if s2.len > 0: allowedSkills.add(s2)
+      elif a.startsWith("--lang="):
+        inviteLang = a["--lang=".len .. ^1].strip()
+      else:
+        positional.add(a)
     if positional.len >= 1:
       try: uses = parseInt(positional[0])
-      except: discard
+      except ValueError:
+        return "Error: <uses> must be an integer, got '" & positional[0] &
+               "'. The `[role]` positional was removed in an earlier " &
+               "refactor — see `claw user invite` for the current syntax."
     let agentName =
       if positional.len >= 2: positional[1]
       elif cfg.agents.named.len > 0: cfg.agents.named[0].name
@@ -2235,19 +2535,255 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     let customer =
       if positional.len >= 3: positional[2] else: "Customer-" & issuerAlias.replace(":", "_")
     let workspace = cfg.workspacePath()
-    let inv = mintCustomerInvite(cfg, workspace, issuerAlias, customer,
-                                  agentName, uses)
+    let inv = mintCustomerInvite(workspace, issuerAlias, customer,
+                                  agentName, uses, allowedSkills, inviteLang)
     if not inv.ok:
       return "Error: " & inv.error
     result = "Invite created: " & inv.targetNcId & "/" & inv.code & "\n" &
              "  customer: " & inv.customerName & "\n" &
              "  agent:    " & inv.agentName & "\n" &
              "  uses:     " & $inv.maxUses & "\n" &
-             "  issuer:   " & inv.issuer & "\n\n" &
-             "The customer redeems by sending the bundled string (or just\n" &
-             "the code) to any channel routing to '" & inv.agentName &
-             "'. The gateway authenticates pre-LLM."
+             "  issuer:   " & inv.issuer & "\n"
+    if inv.allowedSkills.len > 0:
+      result.add("  skills:   " & inv.allowedSkills.join(", ") & "\n")
+    if inv.materialized.len > 0:
+      result.add("  routed:   " & inv.materialized.join(", ") & "\n")
+    if inviteLang.len > 0:
+      result.add("  lang:     " & inviteLang & "\n")
+
+    # Clean, shareable block. The operator forwards one line to the
+    # customer; the `nc:X/CODE` bundled form stays above for operator
+    # records. Language-aware so Chinese customers get Chinese prompts.
+    let brand = resolveCompanyBrand(graph)
+    let shareLine = inviteCodeMessage(brand, inv.code, inviteLang)
+    result.add("\n────────── Forward to the customer ──────────\n")
+    result.add(shareLine & "\n")
+    result.add("──────────────────────────────────────────────\n\n")
+    result.add("The customer sends that line (or just the code) to any\n" &
+               "channel routing to '" & inv.agentName & "'. The gateway\n" &
+               "authenticates pre-LLM and replies with the welcome message\n" &
+               "in their language.")
     return
+
+  # ── subscription ──────────────────────────────────────────────────
+  # claw user subscription <subcmd> <nc:id> [flags]
+  #   status   — show plan, dates, today's usage
+  #   activate — stamp a trial/active plan on the entity; returns the
+  #              language-aware welcome text for the operator to share
+  #   extend   — push `expires` out by --days=N
+  #   suspend  — flip plan to suspended, optional --reason
+  #   resume   — flip a suspended plan back to its stored kind
+  #              (default: trial if still within expiry, else active)
+  #   usage    — today's token counter with % of cap
+  # Flags: --plan=trial|active  --days=<n>  --tokens=<n>
+  #        --reason=<txt>  --lang=<code>  --company=<name>  --agent=<name>
+  if subcmd == "subscription":
+    if args.len < 2:
+      return "Usage:\n" &
+             "  claw user subscription status   <nc:id>\n" &
+             "  claw user subscription activate <nc:id> [--plan=trial|active] \\\n" &
+             "                                   [--days=<n>] [--tokens=<n>] \\\n" &
+             "                                   [--lang=en|zh] [--company=<name>] \\\n" &
+             "                                   [--agent=<name>]\n" &
+             "  claw user subscription extend   <nc:id> --days=<n>\n" &
+             "  claw user subscription suspend  <nc:id> [--reason=<txt>]\n" &
+             "  claw user subscription resume   <nc:id>\n" &
+             "  claw user subscription usage    <nc:id>\n" &
+             "  claw user subscription clear    <nc:id>\n\n" &
+             "Defaults at `activate`: plan=trial, days=30, tokens=200000.\n" &
+             "Activation prints a language-aware welcome message for the\n" &
+             "operator to share with the customer. Use `clear` to undo a\n" &
+             "mis-activation; prefer `suspend` for normal pauses."
+    let action = args[1]
+    if args.len < 3:
+      return "Error: `subscription " & action & "` requires an nc:id."
+    let alias = args[2]
+    if not alias.startsWith("nc:"):
+      return "Error: give an nc:id (e.g. nc:5)."
+    let id = parseAlias(alias)
+    if uint32(id) == 0 or not graph.entities.hasKey(id):
+      return "Error: " & alias & " not found in graph."
+    let ent = graph.entities[id]
+    let tier = entityTier(cfg, graph, ent)
+    if tier == "int":
+      return "Error: " & alias & " (" & ent.name & ") is internal — " &
+             "subscriptions only apply to external customers."
+
+    # Parse flags common to multiple actions.
+    var planOverride = ""
+    var days = -1
+    var tokens = -1
+    var reason = ""
+    var lang = ""
+    var companyName = ""
+    var agentOverride = ""
+    for a in args[3 .. ^1]:
+      if a.startsWith("--plan="):    planOverride = a["--plan=".len .. ^1].strip()
+      elif a.startsWith("--days="):
+        try: days = parseInt(a["--days=".len .. ^1].strip())
+        except ValueError:
+          return "Error: --days= must be an integer."
+      elif a.startsWith("--tokens="):
+        try: tokens = parseInt(a["--tokens=".len .. ^1].strip())
+        except ValueError:
+          return "Error: --tokens= must be an integer."
+      elif a.startsWith("--reason="): reason = a["--reason=".len .. ^1].strip()
+      elif a.startsWith("--lang="):   lang = a["--lang=".len .. ^1].strip()
+      elif a.startsWith("--company="):companyName = a["--company=".len .. ^1].strip()
+      elif a.startsWith("--agent="):  agentOverride = a["--agent=".len .. ^1].strip()
+      else:
+        return "Error: unknown flag '" & a & "'."
+
+    let now = getTime().toUnix
+
+    case action:
+    of "status":
+      let subOpt = loadSubscription(alias)
+      if subOpt.isNone:
+        return alias & " (" & ent.name & ") has no subscription.\n" &
+               "Run `claw user subscription activate " & alias & "` to start a trial."
+      let s = subOpt.get()
+      let u = loadUsage(alias)
+      let used = tokensToday(u)
+      let pct =
+        if s.dailyTokens > 0: (used * 100) div s.dailyTokens else: 0
+      var msg = alias & "  " & ent.name & "\n"
+      msg.add("  plan:        " & $s.plan & "\n")
+      msg.add("  started:     " & fromUnix(s.startedAt).utc.format("yyyy-MM-dd") & "\n")
+      if s.plan == pkTrial or s.plan == pkActive:
+        let d = daysRemaining(s, now)
+        let grace = if inGracePeriod(s, now): " (grace)" else: ""
+        msg.add("  expires:     " & fromUnix(s.expires).utc.format("yyyy-MM-dd") &
+                " (" & $d & " days left" & grace & ")\n")
+      if s.plan == pkSuspended and s.suspendReason.len > 0:
+        msg.add("  reason:      " & s.suspendReason & "\n")
+      msg.add("  daily cap:   " & $s.dailyTokens & " tokens\n")
+      msg.add("  today:       " & $used & " tokens (" & $pct & "% used)\n")
+      msg.add("  language:    " & loadLang(alias) & "\n")
+      return msg
+
+    of "activate":
+      # Build the subscription. Plan override → pkActive (paid) otherwise trial.
+      var sub = defaultTrial(now)
+      if planOverride == "active":
+        sub.plan = pkActive
+      elif planOverride.len > 0 and planOverride != "trial":
+        return "Error: --plan= must be 'trial' or 'active'."
+      if days > 0: sub.expires = now + days.int64 * 86_400
+      if tokens > 0: sub.dailyTokens = tokens
+      stampSubscription(alias, sub)
+
+      # Stamp language if specified. If not, keep whatever was there.
+      if lang.len > 0: stampLang(alias, lang)
+      let effectiveLang = loadLang(alias, fallback = "en")
+
+      # Resolve agent name: explicit flag > first `serves` edge > first
+      # declared agent > "your agent".
+      var agentName = agentOverride
+      if agentName.len == 0:
+        for otherID, other in graph.entities.pairs:
+          if other.kind != ekAI: continue
+          for lk in other.serves:
+            if lk.targetID == id: agentName = other.name; break
+          if agentName.len > 0: break
+      if agentName.len == 0 and cfg.agents.named.len > 0:
+        agentName = cfg.agents.named[0].name
+      if agentName.len == 0: agentName = "your agent"
+
+      let effectiveCompany = resolveCompanyBrand(graph, companyName)
+
+      let ctx = WelcomeContext(
+        customerName: ent.name, agentName: agentName,
+        lang: effectiveLang, sub: sub, companyName: effectiveCompany,
+        contact: resolveSupportContact(graph),
+        plantNames: fetchPlantNames(alias)
+      )
+      var msg = "Subscription activated for " & alias & " (" & ent.name & ").\n"
+      msg.add("  plan:     " & $sub.plan & "\n")
+      msg.add("  expires:  " & fromUnix(sub.expires).utc.format("yyyy-MM-dd") & "\n")
+      msg.add("  daily:    " & $sub.dailyTokens & " tokens\n")
+      msg.add("  language: " & effectiveLang & "\n")
+      msg.add("\n────────── Welcome message (share with customer) ──────────\n\n")
+      msg.add(welcomeMessage(ctx))
+      msg.add("\n\n────────────────────────────────────────────────────────────")
+      return msg
+
+    of "extend":
+      if days <= 0:
+        return "Error: `extend` needs --days=<positive integer>."
+      let subOpt = loadSubscription(alias)
+      if subOpt.isNone:
+        return "Error: " & alias & " has no subscription to extend. " &
+               "Use `activate` first."
+      var s = subOpt.get()
+      # Base extension off max(now, expires) so extending an already-
+      # expired plan starts the clock fresh, not in the past.
+      let base = max(now, s.expires)
+      s.expires = base + days.int64 * 86_400
+      if s.plan == pkExpired: s.plan = pkTrial  # gift them another trial window
+      stampSubscription(alias, s)
+      return "Extended " & alias & " by " & $days & " days. " &
+             "New expiry: " & fromUnix(s.expires).utc.format("yyyy-MM-dd") & "."
+
+    of "suspend":
+      let subOpt = loadSubscription(alias)
+      if subOpt.isNone:
+        return "Error: " & alias & " has no subscription. `activate` first."
+      var s = subOpt.get()
+      if s.plan == pkSuspended:
+        return alias & " is already suspended" &
+               (if s.suspendReason.len > 0: " (reason: " & s.suspendReason & ")." else: ".")
+      s.plan = pkSuspended
+      s.suspendReason = reason
+      stampSubscription(alias, s)
+      var msg = "Suspended " & alias & " (" & ent.name & ")."
+      if reason.len > 0: msg.add(" Reason: " & reason)
+      return msg
+
+    of "resume":
+      let subOpt = loadSubscription(alias)
+      if subOpt.isNone:
+        return "Error: " & alias & " has no subscription. `activate` first."
+      var s = subOpt.get()
+      if s.plan != pkSuspended:
+        return alias & " is not suspended — plan is " & $s.plan & "."
+      # Default: trial if still within expiry, else active.
+      s.plan =
+        if now < s.expires: pkTrial
+        else: pkActive
+      s.suspendReason = ""
+      stampSubscription(alias, s)
+      return "Resumed " & alias & " — plan is now " & $s.plan & "."
+
+    of "usage":
+      let u = loadUsage(alias)
+      let used = tokensToday(u)
+      var msg = alias & " usage (" & u.day & " UTC)\n"
+      msg.add("  prompt tokens:  " & $u.tokensIn & "\n")
+      msg.add("  output tokens:  " & $u.tokensOut & "\n")
+      msg.add("  total:          " & $used & "\n")
+      let subOpt = loadSubscription(alias)
+      if subOpt.isSome:
+        let s = subOpt.get()
+        let pct =
+          if s.dailyTokens > 0: (used * 100) div s.dailyTokens else: 0
+        msg.add("  cap:            " & $s.dailyTokens & " (" & $pct & "% used)\n")
+      return msg
+
+    of "clear":
+      # Remove the subscription entirely — back to "no plan". Prefer
+      # `suspend` in production (keeps an audit trail via suspend_reason);
+      # `clear` is for undo when a subscription was mis-activated.
+      if loadSubscription(alias).isNone:
+        return alias & " has no subscription — nothing to clear."
+      clearSubscription(alias)
+      clearUsage(alias)
+      return "Cleared subscription for " & alias & " (" & ent.name &
+             "). Usage counter also wiped."
+
+    else:
+      return "Error: unknown subscription action '" & action & "'. " &
+             "Try: status, activate, extend, suspend, resume, usage, clear."
 
   return "Unknown user command: " & subcmd
 

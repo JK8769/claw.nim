@@ -7,6 +7,7 @@ import ../config
 import memory
 import xml_tools
 import cortex
+import ../billing/subscription as sub_mod
 
 type
   Memorandum* = object
@@ -31,7 +32,7 @@ type
     skillsLoader*: SkillsLoader
     memory*: MemoryStore
     tools*: ToolRegistry
-    relations*: Table[string, Relationship]
+    guests*: Table[string, GuestContact]  ## per-agent Guest-tier ledger (see cortex.nim)
     graph*: WorldGraph
     mood*: MoodState
     agentsConfig*: seq[NamedAgentConfig]
@@ -123,7 +124,7 @@ proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq
     projectWorkspace: projectWorkspace,
     skillsLoader: newSkillsLoader(workspace, projectCompetencies, companySkillsDir, foundationSkillsDir, openClawExtensionsDir, workstationSkills),
     memory: newMemoryStore(workspace),
-    relations: loadRelations(workspace),
+    guests: loadGuests(workspace),
     graph: cortex.loadWorld(projectWorkspace),
     mood: loadMood(workspace),
     agentsConfig: agents,
@@ -159,8 +160,8 @@ proc resolveRequesterRole*(cb: ContextBuilder, userID, recipientID, channel: str
     of "master", "admin": return "master"
     else:
       if r.len > 0: return r
-  if cb.relations.hasKey(userID):
-    return cb.relations[userID].identity.toLowerAscii
+  if cb.guests.hasKey(userID):
+    return cb.guests[userID].identity.toLowerAscii
   return "guest"
 
 proc resolveRequesterTrust*(cb: ContextBuilder, userID, recipientID, channel: string): int =
@@ -199,8 +200,8 @@ proc resolveRequesterTrust*(cb: ContextBuilder, userID, recipientID, channel: st
       return 100
 
   # Legacy Relationship fallback
-  if cb.relations.hasKey(userID):
-    return cb.relations[userID].trustLevel
+  if cb.guests.hasKey(userID):
+    return cb.guests[userID].trustLevel
   return 10
 
 proc findTrustRole*(trust: TrustConfig, roleName: string): Option[TrustRoleConfig] =
@@ -295,8 +296,16 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
          blocks.join("\n\n")
 
 proc buildToolsSection(cb: ContextBuilder): string =
+  ## In deferred mode (registry has hidden tools), lists only tools
+  ## whose JSON schemas are in the current request's `tools:` field.
+  ## Hidden tools appear under a separate "## Additional Tools" banner
+  ## added by the agent loop so the LLM knows to activate them via
+  ## `find_tools` first. Listing them here without schemas trains the
+  ## LLM to guess parameter names.
   if cb.tools == nil: return ""
-  let summaries = cb.tools.getSummaries()
+  let summaries =
+    if cb.tools.hasHiddenTools(): cb.tools.getSummariesEager()
+    else: cb.tools.getSummaries()
   if summaries.len == 0: return ""
 
   var sb = "## Available Tools\n\n"
@@ -308,7 +317,11 @@ proc buildToolsSection(cb: ContextBuilder): string =
 
 proc buildToolsSection(cb: ContextBuilder, allowed: seq[string]): string =
   if cb.tools == nil: return ""
-  let summaries = cb.tools.getSummariesFiltered(allowed)
+  let summaries =
+    if cb.tools.hasHiddenTools():
+      cb.tools.getSummariesEagerFiltered(allowed)
+    else:
+      cb.tools.getSummariesFiltered(allowed)
   if summaries.len == 0: return ""
 
   var sb = "## Available Tools\n\n"
@@ -414,14 +427,14 @@ proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string
       
       foundInGraph = true
 
-  # 2. Legacy Relationship logic fallback
+  # Guest-ledger fallback when the sender isn't in the graph
   if not foundInGraph:
-    let rel = if cb.relations.hasKey(userID):
-        cb.relations[userID]
+    let rel = if cb.guests.hasKey(userID):
+        cb.guests[userID]
       else:
-        Relationship(name: userID, identity: $urGuest, trustLevel: 10, etiquette: "Be formal and protective.", kind: ekUnknown)
+        GuestContact(name: userID, identity: $urGuest, trustLevel: 10, etiquette: "Be formal and protective.", kind: ekUnknown)
 
-    sb.add("## User Relationship (Legacy)\n")
+    sb.add("## Guest Record\n")
     sb.add("- Identity: " & rel.identity & "\n")
     sb.add("- Trust Level: " & $rel.trustLevel & "/100\n")
     if rel.etiquette != "":
@@ -550,7 +563,7 @@ proc loadBootstrapFiles(cb: ContextBuilder, customIdentityPrompt: Option[string]
     if fileExists(idPath):
       result.add("## IDENTITY.md\n\n" & readFile(idPath) & "\n\n")
 
-proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools: bool = false, recipientID: string = "", channel: string = "social"): string =
+proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools: bool = false, recipientID: string = "", channel: string = "social", botDisplayName: string = ""): string =
   var parts: seq[string] = @[]
   
   # Check for named agent override
@@ -585,9 +598,9 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
         let identStr = targetEnt.custom["identity"].getStr()
         if identStr != "":
           targetIdentity = identStr
-    elif cb.relations.hasKey(userID):
+    elif cb.guests.hasKey(userID):
       # External relations simplify to Guest/Customer
-      let r = cb.relations[userID]
+      let r = cb.guests[userID]
       targetIdentity = r.identity
 
   # Tool access gate. If the company declared a `trust:` block, use the
@@ -623,6 +636,19 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
 
       if not personaFound and ent.profile != "":
         parts.add("## IDENTITY\n\n" & ent.profile)
+
+      # Per-turn display name (ephemeral, from the channel's per-chat
+      # cache — e.g. the Feishu bot surfaces as "小金" in this specific
+      # group). Nothing persisted; different chats can supply different
+      # names. Empty → agent uses its internal config name, fine for
+      # 1:1 DMs and non-Feishu channels.
+      if botDisplayName.len > 0 and botDisplayName != recipientID:
+        parts.add("## Display Name\n\n" &
+          "You are known to this chat's participants as **" &
+          botDisplayName & "**. Introduce yourself and sign your " &
+          "messages with this name, not your internal name `" &
+          recipientID & "`. The internal name is for operator tooling " &
+          "only and shouldn't leak to customers.")
 
   let bootstrapContent = cb.loadBootstrapFiles(customPrompt)
   if bootstrapContent != "":
@@ -704,27 +730,128 @@ $1""".format(skillsSummary))
 
   return parts.join("\n\n---\n\n")
 
-proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_types.Message], summary: string, currentMessage: string, channel, chatID: string, useXmlTools: bool = false, recipientID: string = ""): seq[providers_types.Message] =
-  var systemPrompt = cb.buildSystemPrompt(userID, useXmlTools, recipientID, channel)
+proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_types.Message], summary: string, currentMessage: string, channel, chatID: string, useXmlTools: bool = false, recipientID: string = "", botDisplayName: string = "", mentionsJson: string = "", appID: string = ""): seq[providers_types.Message] =
+  var systemPrompt = cb.buildSystemPrompt(userID, useXmlTools, recipientID, channel, botDisplayName)
   if channel != "" and chatID != "":
-    # Resolve nc:id → human-readable label (name + role) by looking up
-    # the entity in the graph. Without this, the LLM just sees the raw
-    # nc:id and has no way to call the user by name or understand their
-    # trust tier. Falls back to "Guest (raw-id)" if the id doesn't
-    # resolve to an entity.
-    var displayID = userID
+    # Customer-friendly display name (no nc:id, no role label) is the
+    # ONLY name the LLM should use when talking to the user. Internal
+    # routing metadata goes into a clearly-marked operator-only block
+    # so the agent has the info for tool calls / audit but won't echo
+    # it back to the user by accident.
+    var displayName = userID
+    var userRole = ""
     if userID.startsWith("nc:") and cb.graph != nil:
       let entID = parseAlias(userID)
       if uint32(entID) > 0 and cb.graph.entities.hasKey(entID):
         let ent = cb.graph.entities[entID]
-        var bits: seq[string] = @[]
-        if ent.name.len > 0: bits.add(ent.name)
-        bits.add(userID)
-        if ent.role.len > 0: bits.add("role=" & ent.role)
-        displayID = bits.join(" · ")
+        if ent.name.len > 0: displayName = ent.name
+        userRole = ent.role
     elif not userID.startsWith("nc:"):
-      displayID = "Guest (" & userID & ")"
-    systemPrompt.add("\n\n## Current Session\nChannel: $1\nChat ID: $2\nInbound User: $3\nResolved Identity: $4".format(channel, chatID, userID, displayID))
+      displayName = "Guest"
+    systemPrompt.add("\n\n## Current Session\n")
+    systemPrompt.add("You are talking to: **" & displayName & "**\n\n")
+    systemPrompt.add("<internal-routing-metadata kind=\"operator-only\">\n" &
+                     "  nc_id: " & userID & "\n" &
+                     "  channel: " & channel & "\n" &
+                     (if appID.len > 0: "  app_id: " & appID & "\n" else: "") &
+                     "  chat_id: " & chatID & "\n" &
+                     (if userRole.len > 0: "  role: " & userRole & "\n" else: "") &
+                     "</internal-routing-metadata>\n\n" &
+                     "**Rule**: NEVER include nc:id, chat_id, app_id, or " &
+                     "permission labels in your reply to the user. Address " &
+                     "them by display name only (" & displayName & "). Those " &
+                     "fields exist for tool routing and audit, not for the chat.")
+
+    # Mentions block — rendered when the current message has @mentions
+    # (typical in group chats). Gives the agent structured per-mention
+    # info so tools like `create_customer_invite` can pull open_id /
+    # union_id for an @mentioned customer.
+    if mentionsJson.len > 0:
+      try:
+        let mentions = parseJson(mentionsJson)
+        if mentions.kind == JArray and mentions.len > 0:
+          var block0 = "\n\n## Mentions (this message)\n\n"
+          block0.add("This message @-mentioned the following " &
+                     "participants. Use these for tool calls that need " &
+                     "the mentioned user's Feishu identifiers (e.g. " &
+                     "`create_customer_invite.bind_identifiers`).\n\n")
+          for m in mentions:
+            if m.kind != JObject: continue
+            let name = m{"name"}.getStr("").strip()
+            let idObj = m{"id"}
+            let openId =
+              if idObj != nil and idObj.kind == JObject:
+                idObj{"open_id"}.getStr("")
+              else: ""
+            let unionId =
+              if idObj != nil and idObj.kind == JObject:
+                idObj{"union_id"}.getStr("")
+              else: ""
+            let userIdInner =
+              if idObj != nil and idObj.kind == JObject:
+                idObj{"user_id"}.getStr("")
+              else: ""
+            let isBot = userIdInner.len == 0
+            block0.add("- **" & name & "**" &
+                       (if isBot: " (bot — probably you)" else: " (human)") &
+                       "\n")
+            block0.add("    open_id:  " & openId & "\n")
+            if unionId.len > 0:
+              block0.add("    union_id: " & unionId & "\n")
+            if userIdInner.len > 0:
+              block0.add("    user_id:  " & userIdInner & "\n")
+          block0.add("\nTo link an @mentioned user's identifiers into a " &
+                     "tool call (e.g. `create_customer_invite." &
+                     "bind_identifiers`), use the `open_id` / `union_id` " &
+                     "values shown above. The tool derives the Feishu " &
+                     "channel_key internally — you don't need to construct it.")
+          systemPrompt.add(block0)
+      except CatchableError as err:
+        # Malformed mentionsJson drops the Mentions block silently from
+        # the LLM's view — log so an operator can debug mis-shaped
+        # Feishu webhooks rather than wonder why the agent can't see
+        # @mentions it should have.
+        stderr.writeLine "context: mentions block skipped: " & err.msg
+
+    # Known Entities block — a lookup table Atlas can pattern-match
+    # against BEFORE minting invites. If an @mentioned user's open_id
+    # already appears here, they're already a customer and inviting
+    # would duplicate. This prevents the class of mis-invites where
+    # Feishu's display-name drift (e.g. placeholder names like
+    # `用户255941`) causes the LLM to think it's seeing a new person.
+    if cb.graph != nil:
+      var knownRows: seq[string]
+      for id, ent in cb.graph.entities.pairs:
+        if ent.kind != ekPerson: continue
+        let alias = toAlias(id)
+        var feishuIDs: seq[string]
+        for k, v in ent.identifiers.pairs:
+          if k.startsWith("feishu:"):
+            feishuIDs.add(k & "=" & v)
+        if feishuIDs.len == 0 and ent.identifiers.len == 0: continue
+        let recycleTag =
+          if isRecycled(alias): " [recycled]" else: ""
+        if feishuIDs.len > 0:
+          knownRows.add("- **" & ent.name & "** " & alias & recycleTag &
+                        " · " & feishuIDs.join(" · "))
+        else:
+          # Other channel identifiers, summarize as keys only
+          var keys: seq[string]
+          for k, _ in ent.identifiers.pairs: keys.add(k)
+          if keys.len > 0:
+            knownRows.add("- **" & ent.name & "** " & alias & recycleTag &
+                          " · channels: " & keys.join(", "))
+      if knownRows.len > 0:
+        systemPrompt.add("\n\n## Known Entities\n\n")
+        systemPrompt.add("Existing Person entities with registered " &
+                         "identifiers. Before calling `create_customer_invite`, " &
+                         "check if the @mentioned user's `open_id` appears in " &
+                         "this list — if yes, they're already registered and " &
+                         "you should NOT invite them again. Tell the operator " &
+                         "the existing nc:id and suggest `restore` (if " &
+                         "[recycled]) or `subscription activate` (if they " &
+                         "just need a plan).\n\n")
+        systemPrompt.add(knownRows.join("\n"))
 
   if summary != "":
     systemPrompt.add("\n\n## Summary of Previous Conversation\n\n" & summary)

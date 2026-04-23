@@ -240,6 +240,23 @@ proc getSummaries*(r: ToolRegistry): seq[string] =
     let tool = r.tools[k]
     result.add("- `" & k & "` - " & tool.description())
 
+proc hasHiddenTools*(r: ToolRegistry): bool =
+  acquire(r.lock)
+  defer: release(r.lock)
+  r.hiddenTools.len > 0
+
+proc listByPrefix*(r: ToolRegistry, prefix: string): seq[string] =
+  ## Registered tool names starting with `prefix` (case-insensitive).
+  ## Used by skill-scope resolution: `mcp_<skill>_*` pulls every tool
+  ## the skill's MCP server currently exposes straight from the live
+  ## registry, no cached tool list required.
+  let lower = prefix.toLowerAscii
+  if lower.len == 0: return
+  acquire(r.lock)
+  defer: release(r.lock)
+  for k in r.tools.keys:
+    if k.toLowerAscii.startsWith(lower): result.add(k)
+
 proc searchTools*(r: ToolRegistry, keywords: seq[string]): seq[tuple[name, description: string]] =
   ## Search tools by keywords. Scoring priorities:
   ## name (7) > primary tag (5, decays to 2) > searchHint (3) > description (1).
@@ -320,6 +337,7 @@ proc getSummariesFiltered*(r: ToolRegistry, allowed: seq[string]): seq[string] =
     if allowedSet.contains(k):
       result.add("- `" & k & "` - " & r.tools[k].description())
 
+
 proc toolToSchema*(tool: Tool, strategy: CleaningStrategy): ToolDefinition =
   let rawParams = %*(tool.parameters())
   # Ensure parameters have "type": "object" wrapper — required by strict providers (DeepSeek, OpenAI)
@@ -365,6 +383,34 @@ proc isWrappedInternal(r: ToolRegistry, name: string): bool =
   for expanded, prefix in r.prefixAliases.pairs:
     if tl.startsWith(prefix & "_"): return true
   return false
+
+proc getSummariesEager*(r: ToolRegistry, activated: HashSet[string] = initHashSet[string]()): seq[string] =
+  ## Summaries for tools whose schemas are actually loaded for the LLM
+  ## in deferred mode: non-hidden tools + tools the LLM has activated via
+  ## `find_tools`. Hidden-but-not-activated tools go through the taxonomy
+  ## block (see `generateTaxonomy`) rather than the main "Available
+  ## Tools" list, so the LLM isn't tempted to call them with guessed
+  ## parameters before their schema is loaded.
+  acquire(r.lock)
+  defer: release(r.lock)
+  for k in r.sortedKeys():
+    if r.isWrappedInternal(k): continue
+    if k in r.hiddenTools and k notin activated: continue
+    result.add("- `" & k & "` - " & r.tools[k].description())
+
+proc getSummariesEagerFiltered*(r: ToolRegistry, allowed: seq[string],
+                                activated: HashSet[string] = initHashSet[string]()): seq[string] =
+  ## Same as `getSummariesFiltered` but also drops hidden-not-activated
+  ## tools. For deferred-mode agents that also have a ClawDSL scope.
+  var allowedSet = initHashSet[string]()
+  for a in allowed:
+    allowedSet.incl(sanitizeToolName(a))
+  acquire(r.lock)
+  defer: release(r.lock)
+  for k in r.sortedKeys():
+    if not allowedSet.contains(k): continue
+    if k in r.hiddenTools and k notin activated: continue
+    result.add("- `" & k & "` - " & r.tools[k].description())
 
 proc getDefinitionsDeferred*(r: ToolRegistry, strategy: CleaningStrategy, activated: HashSet[string] = initHashSet[string]()): tuple[definitions: seq[ToolDefinition], hiddenNames: seq[string]] =
   ## Returns full schemas for core (non-hidden) + activated tools,

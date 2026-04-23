@@ -44,11 +44,11 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
   if not isValid(inv):
     return "Error: This Pin Code is expired or has reached its max uses."
     
-  # It's valid! Add to relations.
-  var relations = loadRelations(workspace)
-  let (logicalUID, _) = relations.resolveUser(t.channel, t.senderID)
+  # It's valid! Add to guest ledger.
+  var guests = loadGuests(workspace)
+  let (logicalUID, _) = guests.resolveUser(t.channel, t.senderID)
 
-  # Create or update relationship entry
+  # Create or update guest entry
   var newID = logicalUID
   if logicalUID == t.senderID:
     # New user: generate a professional ID using their name and a snippet of the code
@@ -69,7 +69,7 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
       initTrust = r.trustMin
       break
 
-  var rel = Relationship(
+  var rel = GuestContact(
     name: newID,
     identity: $parseEnum[UserRole](inv.role, urGuest),
     trustLevel: initTrust,
@@ -79,8 +79,8 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
   )
   
   # Copy existing identifiers if we are updating an existing logical user
-  if relations.hasKey(newID):
-    rel = relations[newID]
+  if guests.hasKey(newID):
+    rel = guests[newID]
     rel.identity = $parseEnum[UserRole](inv.role, urGuest)
   
   # Add this current channel/senderID to their identifiers
@@ -89,8 +89,8 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
   if t.senderID notin rel.identifiers[t.channel]:
     rel.identifiers[t.channel].add(t.senderID)
     
-  relations[newID] = rel
-  saveRelations(workspace, relations)
+  guests[newID] = rel
+  saveGuests(workspace, guests)
 
   # Also promote the redeemer in the unified graph so `user list` and
   # the runtime trust-gate both reflect the new role/trust. Find the

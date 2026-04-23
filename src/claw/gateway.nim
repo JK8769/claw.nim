@@ -5,6 +5,7 @@
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
 import curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
+import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
 import providers/http, providers/types as providers_types, protocol
@@ -592,37 +593,20 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     var maxUses = 1
     if parts.len >= 4:
       try: maxUses = parseInt(parts[3])
-      except: discard
-    let inv = mintCustomerInvite(cfg[], workspace, issuer, customerName,
-                                  agentName, maxUses, allowedSkills)
+      except ValueError:
+        return "Error: <uses> must be an integer, got '" & parts[3] &
+               "'. Usage: `/invite <customer> [<agent>] [<uses>] " &
+               "[--skill=<grant>]...`."
+    let inv = mintCustomerInvite(workspace, issuer, customerName,
+                                  agentName, maxUses, allowedSkills, targetLang)
     if not inv.ok:
       return "Error: " & inv.error
-    # Feishu spam filter tolerates natural sentences better than bare
-    # codes; give the SuperAdmin three paste-ready options at different
-    # verbosity levels — intercept matches on substring.
-    var paste1 = "Hi — my access code is " & inv.code &
-                 ", please activate. Thanks!"
-    var paste2 = inv.customerName & " here. My invite code: " & inv.code & "."
-    let paste3 = inv.targetNcId & "/" & inv.code   # never translate — structural
-    # Translate the two natural-sentence templates into the customer's
-    # language (when specified), so the SuperAdmin can copy-paste
-    # directly. paste3 stays as-is — it's a machine string, not prose.
-    # The code value must survive translation unchanged: use a
-    # placeholder then swap back in.
-    if targetLang.len > 0 and targetLang.toLowerAscii notin ["en", "en-us"]:
-      let placeholder = "§§CODE§§"
-      proc tr(src, lang: string): Future[string] {.async.} =
-        let srcHidden = src.replace(inv.code, placeholder)
-        let res = await maybeTranslate(cfg, srcHidden, "", lang)
-        # maybeTranslate appends translation to src; keep only the
-        # translated tail (after the first \n\n).
-        let sep = res.find("\n\n")
-        let tail = if sep >= 0: res[sep + 2 .. ^1] else: res
-        return tail.replace(placeholder, inv.code)
-      try:
-        paste1 = await tr(paste1, targetLang)
-        paste2 = await tr(paste2, targetLang)
-      except: discard
+    # One clean, shareable line. Hand-authored per language — no runtime
+    # translation, no Feishu spam-filter gymnastics. Operator forwards
+    # this single line to the customer; the customer pastes it back as
+    # their first message and the gateway intercept matches on substring.
+    let brand = resolveCompanyBrand(g)
+    let shareLine = inviteCodeMessage(brand, inv.code, targetLang)
     return "**Customer invite created**\n\n" &
            codeBlock("Customer: " & inv.customerName & " (" & inv.targetNcId & ")\n" &
                      "Agent:    " & inv.agentName & "\n" &
@@ -631,15 +615,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                         "\nSkills:   " & inv.allowedSkills.join(", ")
                       else: "") &
                      (if targetLang.len > 0: "\nLanguage: " & targetLang else: "")) & "\n\n" &
-           "**Share one of these with the customer** (Feishu may block\n" &
-           "bare codes — wrapping in a sentence usually passes):\n\n" &
-           codeBlock(paste1) & "\n" &
-           codeBlock(paste2) & "\n" &
-           codeBlock(paste3) & "\n\n" &
-           "The customer DMs their chosen text to any channel routing " &
-           "to " & inv.agentName & ". Gateway authenticates pre-LLM — " &
-           "substring match, so any message containing `" & inv.code &
-           "` works."
+           "**Forward this to the customer:**\n\n" &
+           codeBlock(shareLine) & "\n" &
+           "They DM it to any channel routing to " & inv.agentName &
+           ". Gateway authenticates pre-LLM and replies with a welcome\n" &
+           "message in " & (if targetLang.len > 0: targetLang else: "their language") & "."
 
   elif cmd == "/help" or cmd.startsWith("/help "):
     # Entry gate confirms SuperAdmin, so show everything (no 🔒 filter).
@@ -1296,7 +1276,8 @@ Options:
                          recipient, office: string,
                          cMsg: InboundMessage,
                          graph: WorldGraph,
-                         prevTail: Future[void]): Future[void] =
+                         prevTail: Future[void],
+                         bannerPrefix: string = ""): Future[void] =
     result = (proc() {.async.} =
       try:
         if prevTail != nil and not prevTail.finished:
@@ -1305,7 +1286,15 @@ Options:
         if r != "":
           var fMeta = initTable[string, string]()
           fMeta["final"] = "true"
-          msgBus.publishOutbound(newOutbound(channel, recipient, chatID, r,
+          let finalText =
+            if bannerPrefix.len > 0: bannerPrefix & r else: r
+          # Thread the response under the inbound message so group-chat
+          # replies show up nested under the @mention that triggered
+          # them. Same threading as the agent's own `reply` tool does,
+          # keeping both publish paths consistent.
+          let replyTo = cMsg.metadata.getOrDefault("message_id", "")
+          msgBus.publishOutbound(newOutbound(channel, recipient, chatID, finalText,
+                                             replyTo = replyTo,
                                              appID = appID, metadata = fMeta))
           statusEmitter.emitChannelMsg(channel, "out", recipient)
       except Exception as e:
@@ -1437,13 +1426,49 @@ Options:
                   else:
                     invMap[matchedKey] = inv
                   saveInvites(workspace, invMap)
-                  let enReply = "\u{2713} Welcome, " & ent.name & ". You're " &
-                                "authenticated as a Customer (" & inv.targetNcId &
-                                "). Ask me anything — I'm here to help."
-                  response = await maybeTranslate(cfg, enReply, plainContent)
+
+                  # Auto-activate a 30-day trial if no subscription has
+                  # been stamped (operator could have pre-stamped an
+                  # `active` plan for paid customers — don't clobber).
+                  let now = getTime().toUnix
+                  if loadSubscription(inv.targetNcId).isNone:
+                    stampSubscription(inv.targetNcId, defaultTrial(now))
+
+                  # Language: invite's `lang` wins (operator chose at mint
+                  # time), then customer's stored lang, then "en" fallback.
+                  # Stored in the same per-customer file as the subscription
+                  # so `co update` can't wipe either.
+                  if inv.lang.len > 0 and loadLang(inv.targetNcId, "") != inv.lang:
+                    stampLang(inv.targetNcId, inv.lang)
+                  let ent3 = g.entities.getOrDefault(targetID)
+                  let effLang = loadLang(inv.targetNcId, "en")
+
+                  # Brand + support contact via the shared resolvers.
+                  let brand = resolveBrand(g)
+                  let contact = resolveSupportContact(g)
+
+                  # Reload the subscription we just stamped so the welcome
+                  # block shows the right dates.
+                  let freshSub = loadSubscription(inv.targetNcId)
+                  let subForWelcome =
+                    if freshSub.isSome: freshSub.get() else: defaultTrial(now)
+
+                  let ctx = WelcomeContext(
+                    customerName: ent3.name,
+                    agentName: inv.agentName,
+                    lang: effLang,
+                    sub: subForWelcome,
+                    companyName: brand,
+                    contact: contact,
+                    plantNames: fetchPlantNames(inv.targetNcId)
+                  )
+                  # Welcome text is hand-authored per language — skip
+                  # maybeTranslate (which is for one-off English strings).
+                  response = welcomeMessage(ctx)
                   stderr.writeLine "claw: customer-invite redeemed " &
                                    inv.targetNcId & " via " & channelKey &
-                                   " ← " & msg.sender_id
+                                   " ← " & msg.sender_id & " [lang=" &
+                                   effLang & "]"
 
         # Invite-only first-contact gate. A sender whose (channelKey,
         # senderID) doesn't match any entity in the graph (nor any
@@ -1487,49 +1512,107 @@ Options:
               if refusalByLang.hasKey(lang): refusalByLang[lang]
               else: refusalByLang["en"] & "\n\n" & refusalByLang["zh"]
 
-        # Group-chat response policy: reply iff @mention OR the sender
-        # has a `reportsTo`/`serves` relationship with this agent (in
-        # either direction). Otherwise stay silent — avoids the group-
-        # chat firehose without needing require_mention=true.
-        var shouldRespond = true
-        if msg.chat_kind == ckGroup and response == "":
-          let agentName = recipient
-          let mentioned = ("@" & agentName.toLowerAscii) in plainContent.toLowerAscii
-          if not mentioned:
-            let g = msgGraph
-            let channelKey =
+        # Subscription gate — runs AFTER auth (we know who this nc:id
+        # is) but BEFORE the agent loop (so no LLM tokens burned on
+        # blocked customers). Skipped for internal users and for
+        # paths that already set `response` (invite-redeem, refusal).
+        # On block: `response` gets a canned, language-aware message
+        # with brand + reason + support contact.
+        # On grace: `response` stays empty, but `banner` is set so the
+        # session task prepends it to the agent's reply.
+        var banner = ""
+        if response == "":
+          let g3 = msgGraph
+          if g3 != nil:
+            let channelKey3 =
               if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
                 msg.channel & ":" & msg.metadata["app_id"]
               else: msg.channel
-            var senderID = WorldEntityID(0)
-            let (rid, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+            var entID = WorldEntityID(0)
+            let (rid, _) = g3.resolveUserGraph(channelKey3, msg.sender_id)
             if uint32(rid) > 0:
-              senderID = rid
+              entID = rid
             elif msg.channel == "feishu":
-              let unionID = msg.metadata.getOrDefault("union_id", "")
-              if unionID.len > 0:
-                let (uid, _) = g.resolveUserGraph("feishu:union", unionID)
-                if uint32(uid) > 0: senderID = uid
-              if uint32(senderID) == 0:
-                let userID = msg.metadata.getOrDefault("user_id", "")
-                if userID.len > 0:
-                  let (uid, _) = g.resolveUserGraph("feishu:user", userID)
-                  if uint32(uid) > 0: senderID = uid
-            var hasRel = false
-            if uint32(senderID) > 0 and g.nameIndex.hasKey(agentName):
-              let aID = g.nameIndex[agentName]
-              if g.entities.hasKey(aID):
-                let agentEnt = g.entities[aID]
-                for lk in agentEnt.reportsTo:
-                  if lk.targetID == senderID: hasRel = true; break
-                if not hasRel:
-                  for lk in agentEnt.serves:
-                    if lk.targetID == senderID: hasRel = true; break
-            if not hasRel:
-              shouldRespond = false
-              infoCF("claw", "Group-chat silent (no mention, no relationship)",
-                     {"agent": agentName, "sender": msg.sender_id,
-                      "chat": msg.chat_id}.toTable)
+              let uid = msg.metadata.getOrDefault("union_id", "")
+              if uid.len > 0:
+                let (x, _) = g3.resolveUserGraph("feishu:union", uid)
+                if uint32(x) > 0: entID = x
+              if uint32(entID) == 0:
+                let usid = msg.metadata.getOrDefault("user_id", "")
+                if usid.len > 0:
+                  let (x, _) = g3.resolveUserGraph("feishu:user", usid)
+                  if uint32(x) > 0: entID = x
+            if uint32(entID) > 0 and g3.entities.hasKey(entID):
+              let ent = g3.entities[entID]
+              # Internal users bypass the gate entirely.
+              let tier = entityTier(cfg[], g3, ent)
+              if tier == "ext":
+                let ncId = toAlias(entID)
+                let gr = subscriptionGate(g3, ncId, getTime().toUnix)
+                let brand = resolveBrand(g3)
+                let contact = resolveSupportContact(g3)
+                let lang = loadLang(ncId, "en")
+                case gr.decision
+                of gdBlockNoPlan:
+                  response = msgNoPlan(brand, contact, lang)
+                of gdBlockRecycled:
+                  response = msgRecycled(brand, contact, lang)
+                of gdBlockSuspended:
+                  let reason = if gr.sub.isSome: gr.sub.get().suspendReason else: ""
+                  response = msgSuspended(brand, reason, contact, lang)
+                of gdBlockExpired:
+                  let expiresUnix = if gr.sub.isSome: gr.sub.get().expires else: 0'i64
+                  response = msgExpired(brand, expiresUnix, contact, lang)
+                of gdBlockDailyLimit:
+                  let cap = if gr.sub.isSome: gr.sub.get().dailyTokens else: 0
+                  response = msgDailyLimit(brand, cap, gr.tokensToday,
+                                            getTime().toUnix, contact, lang)
+                of gdAllowWithWarning:
+                  if gr.shouldWarnNow:
+                    banner = bannerGraceWarning(brand, gr.daysRemaining,
+                                                 contact, lang)
+                    markWarned(ncId)
+                of gdAllow:
+                  discard
+                if response != "":
+                  stderr.writeLine "claw: gate blocked " & ncId &
+                                   " [" & $gr.decision & "]"
+
+        # Group-chat response policy: reply iff @mention OR the sender
+        # is in this agent's `serves` list (i.e. an explicit customer).
+        # `reportsTo` is deliberately NOT a trigger — in multi-agent
+        # deployments, multiple agents typically reportsTo the same boss
+        # (e.g. Lexi + Atlas both reportsTo Jerry). Treating reportsTo
+        # as an auto-response trigger would make EVERY agent try to
+        # answer every boss message → cross-talk. Bosses @mention the
+        # specific agent they want; 1:1 DMs bypass this filter entirely.
+        var shouldRespond = true
+        if msg.chat_kind == ckGroup and response == "":
+          # Group chat policy: respond IFF @mentioned. No auto-response
+          # for anyone — not even the agent's declared customers. A
+          # group is a shared space where any participant might speak
+          # to each other or to the group at large; the bot shouldn't
+          # barge in without being named. Customers who want a reply
+          # either @mention the bot, or DM it (1:1 DMs bypass this
+          # filter entirely — `msg.chat_kind != ckGroup` there).
+          let agentName = recipient
+          let lcContent = plainContent.toLowerAscii
+          # Match the canonical agent name, OR (for Feishu) the per-chat
+          # bot display name stamped into metadata by the channel's
+          # mention-discovery cache. Real Feishu @mentions with a
+          # `@_user_N` placeholder were already rewritten to
+          # `@<agentName>` by feishu.nim; the display-name check mops
+          # up the literal-copy-paste case (`@小金 你好` typed as text).
+          var mentioned = ("@" & agentName.toLowerAscii) in lcContent
+          if not mentioned:
+            let bName = msg.metadata.getOrDefault("bot_display_name", "")
+            if bName.len > 0 and ("@" & bName.toLowerAscii) in lcContent:
+              mentioned = true
+          if not mentioned:
+            shouldRespond = false
+            infoCF("claw", "Group-chat silent (no @mention)",
+                   {"agent": agentName, "sender": msg.sender_id,
+                    "chat": msg.chat_id}.toTable)
         if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
             # Fast path: system commands run in a spawned task so they
@@ -1577,7 +1660,8 @@ Options:
               office = officeKey,
               cMsg = msg,
               graph = msgGraph,
-              prevTail = prevTail)
+              prevTail = prevTail,
+              bannerPrefix = banner)
             sessionTails[chainKey] = newTail
             # Schedule self-cleanup — drop the tail entry when this task
             # finishes, guarded by identity so a newer chained task isn't

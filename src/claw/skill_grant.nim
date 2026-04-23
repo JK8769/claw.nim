@@ -45,15 +45,22 @@ proc parseSkillGrant*(s: string): tuple[ok: bool, grant: SkillGrant, error: stri
     credential = raw[dd + 2 .. ^1].strip()
     if credential.len == 0:
       return (false, SkillGrant(), "credential after '::' cannot be empty")
+    if '@' in skill or '@' in credential:
+      return (false, SkillGrant(), "'@' not allowed in skill::credential form")
   else:
+    if ':' in raw:
+      return (false, SkillGrant(),
+              "stray ':' — did you mean '::' for credential-scoped grants?")
     # Legacy `account@skill` syntax.
     skill = raw
     let at = raw.find('@')
+    if at == 0:
+      return (false, SkillGrant(), "grant cannot start with @")
+    if at == raw.len - 1:
+      return (false, SkillGrant(), "grant cannot end with @")
     if at > 0:
       account = raw[0 ..< at].strip()
       skill = raw[at + 1 .. ^1].strip()
-    elif at == 0:
-      return (false, SkillGrant(), "grant cannot start with @")
 
   if skill.len == 0:
     return (false, SkillGrant(), "missing skill name")

@@ -19,6 +19,11 @@ type
                          ## onto THIS entity instead of minting a fresh one.
                          ## Lets `create_customer_invite` hand out an
                          ## `nc:X/CODE` string the SuperAdmin can pre-share.
+    lang*: string        ## Customer's preferred language ("en", "zh", "zh-CN").
+                         ## Stamped on the entity at redemption and used to
+                         ## pick the localized welcome message. Empty =
+                         ## operator didn't specify; redeem falls back to
+                         ## entity's existing lang or "en".
 
 proc loadInvites*(workspace: string): Table[string, InviteConstraint] =
   let path = workspace / "INVITES.json"
@@ -38,7 +43,8 @@ proc loadInvites*(workspace: string): Table[string, InviteConstraint] =
         createdAt: entry{"createdAt"}.getBiggestInt(0),
         usedBy: entry{"usedBy"}.getStr(""),
         usedAt: entry{"usedAt"}.getBiggestInt(0),
-        targetNcId: entry{"targetNcId"}.getStr("")
+        targetNcId: entry{"targetNcId"}.getStr(""),
+        lang: entry{"lang"}.getStr("")
       )
       if inv.code != "":
         result[inv.code] = inv
@@ -61,7 +67,8 @@ proc saveInvites*(workspace: string, invites: Table[string, InviteConstraint]) =
       "createdAt": inv.createdAt,
       "usedBy": inv.usedBy,
       "usedAt": inv.usedAt,
-      "targetNcId": inv.targetNcId
+      "targetNcId": inv.targetNcId,
+      "lang": inv.lang
     })
   writeFile(path, node.pretty())
 
