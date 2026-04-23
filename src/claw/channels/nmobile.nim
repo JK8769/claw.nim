@@ -5,6 +5,9 @@ import ../bus, ../bus_types, ../config, ../logger
 import ../agent/cortex as cortex_mod
 import ../libnkn/nkn_bridge
 import ../version
+import ../billing/company as company_mod
+import nimcrypto/hash
+import nimcrypto/sha2
 
 type
   PeerInfo = object
@@ -460,6 +463,115 @@ proc genPayload(c: NMobileChannel, contentType, content: string, msgId: string, 
   if options.len > 0:
     result["options"] = options
 
+# ── Contact-profile advertisement ───────────────────────────────────
+# Each sub-client (main-line, lexi.<pub>, atlas.<pub>, …) has its own
+# contact card: distinct name, jobTitle, avatar, profile version.
+# When a peer first saves our address they pull the card via
+# `contact:profile` with requestType=header/full, and we answer here.
+
+proc profileDisplayName(c: NMobileChannel, clientAddr: string): string =
+  ## Name advertised on this sub-client's contact card. Agent clients
+  ## use the agent's name; the bare-pubkey main-line uses the company
+  ## brand resolved from the graph.
+  let agentName = c.activeClients.getOrDefault(clientAddr, "")
+  if agentName.len > 0: return agentName
+  try:
+    let g = loadWorld(getNimClawDir() / "workspace")
+    if g != nil:
+      let brand = resolveBrand(g)
+      if brand.len > 0: return brand
+  except CatchableError: discard
+  result = extractFilename(getNimClawDir())
+
+proc profileSubtitle(c: NMobileChannel, clientAddr: string): string =
+  ## Second-line label — usually the agent's jobTitle from the graph.
+  ## Populates `last_name` in the card's content block since most nMobile
+  ## UIs only render `first_name` prominently, and `last_name` reads as
+  ## a subtitle.
+  let agentName = c.activeClients.getOrDefault(clientAddr, "")
+  if agentName.len == 0: return ""
+  try:
+    let g = loadWorld(getNimClawDir() / "workspace")
+    if g != nil and g.nameIndex.hasKey(agentName):
+      let ent = g.entities[g.nameIndex[agentName]]
+      if ent.kind == ekAI: return ent.jobTitle
+  except CatchableError: discard
+  return ""
+
+proc profileAvatarPath(c: NMobileChannel, clientAddr: string): string =
+  ## Resolve the avatar file for this sub-client. Agent clients look
+  ## under `workspace/offices/<agent>/avatar.{jpg,png,webp}`; the main-
+  ## line client looks at `workspace/avatar.*`. Empty if none authored.
+  let agentName = c.activeClients.getOrDefault(clientAddr, "")
+  let baseDir =
+    if agentName.len > 0:
+      getNimClawDir() / "workspace" / "offices" / agentName.toLowerAscii
+    else:
+      getNimClawDir() / "workspace"
+  for ext in ["jpg", "jpeg", "png", "webp"]:
+    let p = baseDir / ("avatar." & ext)
+    if fileExists(p): return p
+  return ""
+
+proc profileVersionFor(c: NMobileChannel, clientAddr: string): string =
+  ## Deterministic profile version: hash of (name + subtitle + avatar
+  ## bytes). Stable across gateway restarts — peers re-pull only when
+  ## one of those inputs actually changes. 8-4-4-4-12 shape to look
+  ## UUID-ish, though nmobile only compares it for equality.
+  var ctx: sha256
+  ctx.init()
+  ctx.update(c.profileDisplayName(clientAddr))
+  ctx.update(c.profileSubtitle(clientAddr))
+  let avatarPath = c.profileAvatarPath(clientAddr)
+  if avatarPath.len > 0:
+    try: ctx.update(readFile(avatarPath))
+    except CatchableError: discard
+  let hex = $ctx.finish()
+  if hex.len >= 32:
+    return hex[0..7] & "-" & hex[8..11] & "-" & hex[12..15] & "-" &
+           hex[16..19] & "-" & hex[20..31]
+  return hex
+
+proc sendContactProfile(c: NMobileChannel, clientAddr, dest,
+                        responseType: string, includeContent: bool) =
+  ## Emit a `contact:profile` response. `responseType = "header"` carries
+  ## just the version (the peer pings with requestType=header on every
+  ## message to detect drift); `responseType = "full"` carries the card
+  ## content (requested by the peer when it notices a version mismatch).
+  ## Keyed on nmobile's getContactProfileResponse{Header,Full} in
+  ## lib/schema/message.dart:1238-1267.
+  let payload = c.genPayload("contact:profile", "", genUUID())
+  payload.delete("content")  # responses don't carry top-level content
+  payload["responseType"] = %responseType
+  payload["version"] = %c.profileVersionFor(clientAddr)
+  if includeContent:
+    var content = newJObject()
+    let displayName = c.profileDisplayName(clientAddr)
+    let subtitle = c.profileSubtitle(clientAddr)
+    if displayName.len > 0:
+      content["first_name"] = %displayName
+      content["last_name"] = %subtitle
+      content["name"] = %displayName
+    let avatarPath = c.profileAvatarPath(clientAddr)
+    if avatarPath.len > 0:
+      try:
+        let bytes = readFile(avatarPath)
+        let ext = avatarPath.splitFile.ext.strip(chars = {'.'})
+        content["avatar"] = %*{
+          "type": "base64",
+          "data": base64.encode(bytes),
+          "ext": ext
+        }
+      except CatchableError: discard
+    payload["content"] = content
+  let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
+  discard c.bridge.sendNKNMessage(clientAddr, dest, $payload,
+                                   maxHoldingSeconds = ttl, noReply = true)
+  infoCF("nmobile", "Sent contact:profile response",
+         {"dest": dest, "clientAddr": clientAddr,
+          "responseType": responseType,
+          "displayName": c.profileDisplayName(clientAddr)}.toTable)
+
 proc drainInbox(c: NMobileChannel): seq[NknQueueItem] =
   acquire(c.inboxLock)
   result = move(c.inbox)
@@ -800,39 +912,47 @@ proc poll(c: NMobileChannel) {.async.} =
               # removed continue
 
             of "contact", "contact:profile":
-              # Peer's contact card — capture the display name so logs
-              # and outbound metadata can reference a human label instead
-              # of a bare pubkey. nMobile's schema nests name fields in
-              # `content`; top-level `version` is the profile version.
-              # See nmobile's `getContactProfileResponseFull`
-              # (lib/schema/message.dart:1247-1267).
-              if j.hasKey("version") and j["version"].kind == JString:
-                let pv = j["version"].getStr()
-                if pv.len > 0 and info.profileVersion != pv:
-                  info.profileVersion = pv
-                  infoChanged = true
-              if j.hasKey("content") and j["content"].kind == JObject:
-                let content = j["content"]
-                var newName = ""
-                # Precedence: explicit `name` wins (that's what the peer
-                # chose to display); else first_name [+ last_name].
-                if content.hasKey("name") and content["name"].kind == JString:
-                  newName = content["name"].getStr()
-                elif content.hasKey("first_name") and content["first_name"].kind == JString:
-                  newName = content["first_name"].getStr()
-                  if content.hasKey("last_name") and content["last_name"].kind == JString:
-                    let ln = content["last_name"].getStr()
-                    if ln.len > 0: newName.add(" " & ln)
-                newName = newName.strip()
-                if newName.len > 0 and info.displayName != newName:
-                  info.displayName = newName
-                  infoChanged = true
-                  infoCF("nmobile", "Captured peer displayName",
-                         {"src": src, "displayName": newName,
-                          "contentType": contentType}.toTable)
-              debugCF("nmobile", "Contact handshake absorbed",
-                      {"src": src, "type": contentType,
-                       "id": j.safeGetStr("id")}.toTable)
+              # Dual-purpose message type: `requestType` present → peer
+              # is asking for OUR card; `responseType` present → peer
+              # is sending THEIR card. See nmobile's
+              # getContactProfileRequest / getContactProfileResponse*
+              # at lib/schema/message.dart:1228-1267.
+              let requestType = j.getOrDefault("requestType").getStr()
+              if requestType.len > 0:
+                # Header request is a drift check (peer only wants our
+                # version); full request means "send me the card".
+                let includeContent = requestType == "full"
+                c.sendContactProfile(clientAddr, src,
+                                      responseType = requestType,
+                                      includeContent = includeContent)
+              else:
+                # This is a response (or a legacy `contact` push) —
+                # treat as the peer advertising their own card.
+                if j.hasKey("version") and j["version"].kind == JString:
+                  let pv = j["version"].getStr()
+                  if pv.len > 0 and info.profileVersion != pv:
+                    info.profileVersion = pv
+                    infoChanged = true
+                if j.hasKey("content") and j["content"].kind == JObject:
+                  let content = j["content"]
+                  var newName = ""
+                  if content.hasKey("name") and content["name"].kind == JString:
+                    newName = content["name"].getStr()
+                  elif content.hasKey("first_name") and content["first_name"].kind == JString:
+                    newName = content["first_name"].getStr()
+                    if content.hasKey("last_name") and content["last_name"].kind == JString:
+                      let ln = content["last_name"].getStr()
+                      if ln.len > 0: newName.add(" " & ln)
+                  newName = newName.strip()
+                  if newName.len > 0 and info.displayName != newName:
+                    info.displayName = newName
+                    infoChanged = true
+                    infoCF("nmobile", "Captured peer displayName",
+                           {"src": src, "displayName": newName,
+                            "contentType": contentType}.toTable)
+                debugCF("nmobile", "Contact response absorbed",
+                        {"src": src, "type": contentType,
+                         "id": j.safeGetStr("id")}.toTable)
 
             of "device:request":
               # Peer asking for our device info so their state machine
