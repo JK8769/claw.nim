@@ -343,29 +343,31 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
     else:
       if allowedTools.len > 0: cb.buildToolsSection(allowedTools) else: cb.buildToolsSection()
 
-  # Banner: the framework is `nimclaw`, but the agent speaking is this
-  # specific named persona. Leaking "nimclaw" into the LLM's self-intro
-  # makes Lexi (or Atlas, etc.) identify as the framework — wrong.
-  let name = if agentName.len > 0: agentName else: "a helpful AI assistant"
+  # Framework-level context only. WHO this agent is comes from the
+  # graph-sourced IDENTITY section further down; the banner must stay
+  # name-free so "nimclaw" (the framework) never leaks into an agent's
+  # self-description and so agents with no graph identity don't get
+  # stuck parroting a hardcoded placeholder.
+  discard agentName  # reserved for future banner variants
 
-  return """# $1
+  return """# Runtime Context
 
-You are $1. The `SOUL` and `IDENTITY` sections below elaborate who that means; ground every reply in them rather than in generic framework defaults.
+You are an AI agent in a nimclaw runtime. The `IDENTITY` section below declares who you are — grounded in the company's world-graph, it is the single source of truth for your name, role, and reporting lines. The `SOUL` section declares how you behave. Read both before your first reply and stay consistent with them.
 
 ## Current Time
-$2
+$1
 
 ## Runtime
-$3
+$2
 
 ## Workspace
-Your office is at: $4
+Your office is at: $3
 - Memory (past, searchable JSONL): use the `memory` tool — do NOT write to files directly
-- Sessions (present): $4/sessions
-- Notes (future): $4/notes
-- Skills: $4/skills/{skill-name}/SKILL.md
+- Sessions (present): $3/sessions
+- Notes (future): $3/notes
+- Skills: $3/skills/{skill-name}/SKILL.md
 
-$5
+$4
 
 ## Important Rules
 
@@ -375,7 +377,7 @@ $5
 
 3. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
 
-4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(name, now, runtime, workspacePath, toolsSection)
+4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(now, runtime, workspacePath, toolsSection)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
@@ -628,21 +630,38 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID))
   parts.add(socialSection)
 
-  # Add Soul/Identity from Graph if available
+  # Graph-sourced self-identity. IDENTITY declares WHO (name, role,
+  # reporting lines) and is synthesized from the graph entity so the
+  # agent's self-identification can never drift from organisational
+  # truth. SOUL declares HOW (values, temperament) and must be
+  # name-free — any persona-specific phrasing belongs in IDENTITY.
   if cb.graph != nil and recipientID != "" and cb.graph.nameIndex.hasKey(recipientID):
     let ent = cb.graph.entities[cb.graph.nameIndex[recipientID]]
     if ent.kind == ekAI:
-      if ent.soul != "": parts.add("## SOUL\n\n" & ent.soul)
-
+      var idBlock = "- **Name**: " & ent.name
+      if ent.jobTitle != "":
+        idBlock.add("\n- **Role**: " & ent.jobTitle)
+      if ent.role != "":
+        idBlock.add("\n- **Permissions**: " & ent.role)
+      # reportsTo lines are the agent's chain — stamp target names by
+      # resolving the IDs in the graph rather than leaking raw IDs.
+      if ent.reportsTo.len > 0:
+        var mgrs: seq[string] = @[]
+        for r in ent.reportsTo:
+          if cb.graph.entities.hasKey(r.targetID):
+            mgrs.add(cb.graph.entities[r.targetID].name)
+        if mgrs.len > 0:
+          idBlock.add("\n- **Reports to**: " & mgrs.join(", "))
       var personaFound = false
       if ent.custom != nil and ent.custom.hasKey("personas"):
         let pNode = ent.custom["personas"]
         if pNode.kind == JObject and pNode.hasKey(targetIdentity):
-          parts.add("## IDENTITY (" & targetIdentity & ")\n\n" & pNode[targetIdentity].getStr())
+          idBlock.add("\n\n" & pNode[targetIdentity].getStr())
           personaFound = true
-
       if not personaFound and ent.profile != "":
-        parts.add("## IDENTITY\n\n" & ent.profile)
+        idBlock.add("\n\n" & ent.profile)
+      parts.add("## IDENTITY\n\n" & idBlock)
+      if ent.soul != "": parts.add("## SOUL\n\n" & ent.soul)
 
       # Per-turn display name (ephemeral, from the channel's per-chat
       # cache — e.g. the Feishu bot surfaces as "小金" in this specific

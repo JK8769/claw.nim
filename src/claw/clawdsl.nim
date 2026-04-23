@@ -651,10 +651,14 @@ proc buildGraph(spec: ClawSpec): JsonNode =
       "kind": "AI",
       "name": a.name,
     }
-    # Soul from profile
+    # Soul from profile. Stored name-free — the graph's `name` field
+    # plus the IDENTITY block at prompt-build time are the single source
+    # of identity. Wrapping the soul with "# <agent>'s Soul" embedded
+    # the name inside the values text, leaking framework-authored
+    # phrasing into the agent's self-identification.
     if a.profile != "" and hasProfile(a.profile):
       let prof = getProfile(a.profile)
-      entity["soul"] = %("# " & a.name & "'s Soul\n" & prof.soul)
+      entity["soul"] = %prof.soul
       if a.jobTitle == "":
         entity["jobTitle"] = %prof.jobTitle
     if a.jobTitle != "":
