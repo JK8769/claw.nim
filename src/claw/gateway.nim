@@ -1293,10 +1293,15 @@ Options:
           # them. Same threading as the agent's own `reply` tool does,
           # keeping both publish paths consistent.
           let replyTo = cMsg.metadata.getOrDefault("message_id", "")
-          msgBus.publishOutbound(newOutbound(channel, recipient, chatID, finalText,
+          # Outbound sender_agent mirrors the inbound recipient_id (empty
+          # = main-line). `recipient` is the office routing key with a
+          # "Lexi" fallback — using it as sender_agent would make main-
+          # line conversations reply out through lexi.<pub>.
+          let outSender = cMsg.recipient_id
+          msgBus.publishOutbound(newOutbound(channel, outSender, chatID, finalText,
                                              replyTo = replyTo,
                                              appID = appID, metadata = fMeta))
-          statusEmitter.emitChannelMsg(channel, "out", recipient)
+          statusEmitter.emitChannelMsg(channel, "out", outSender)
       except Exception as e:
         errorCF("claw", "Session task error",
                 {"error": e.msg, "session": sessionKey}.toTable)
@@ -1659,7 +1664,6 @@ Options:
             # with an in-flight agent run is safe.
             let cMsg = msg
             let cPlain = plainContent
-            let cRecipient = recipient
             let cOffice = officeKey
             asyncCheck (proc() {.async.} =
               try:
@@ -1670,11 +1674,15 @@ Options:
                   var fMeta = initTable[string, string]()
                   fMeta["final"] = "true"
                   let appID = cMsg.metadata.getOrDefault("app_id", "")
-                  msgBus.publishOutbound(newOutbound(cMsg.channel, cRecipient,
+                  # Mirror inbound recipient_id, not the "Lexi" office
+                  # fallback — a main-line /cmds reply must stay on the
+                  # main-line contact thread.
+                  let cOutSender = cMsg.recipient_id
+                  msgBus.publishOutbound(newOutbound(cMsg.channel, cOutSender,
                                                      cMsg.chat_id, r,
                                                      appID = appID,
                                                      metadata = fMeta))
-                  statusEmitter.emitChannelMsg(cMsg.channel, "out", cRecipient)
+                  statusEmitter.emitChannelMsg(cMsg.channel, "out", cOutSender)
               except Exception as e:
                 errorCF("claw", "System-command fast-path error",
                         {"error": e.msg}.toTable)
