@@ -1026,12 +1026,22 @@ method send*(c: NMobileChannel, msg: OutboundMessage) {.async.} =
   
   let dest = msg.chat_id
   
-  var senderAddr = c.clientAddrs[0]
+  # Route the reply out through the sub-client whose role matches — a
+  # DM to lexi.<pub> must leave via lexi.<pub> so the customer's thread
+  # stays under the Lexi contact. Bind/default replies have no
+  # sender_agent → send from the main-line (bare-pubkey) client so they
+  # stay under the "company main line" contact, not whichever sub-client
+  # happened to be spawned first.
+  var senderAddr = ""
   if msg.sender_agent.len > 0:
     for addr, name in c.activeClients.pairs:
       if name == msg.sender_agent:
-        senderAddr = addr
-        break
+        senderAddr = addr; break
+  else:
+    for addr, name in c.activeClients.pairs:
+      if name == "":
+        senderAddr = addr; break
+  if senderAddr.len == 0: senderAddr = c.clientAddrs[0]
 
   if msg.kind == Typing:
     # Handle typing/thinking feedback for nMobile
