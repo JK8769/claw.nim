@@ -2,6 +2,7 @@ import std/[asyncdispatch, json, strutils, random, times, tables, os, options, a
 import base
 import ../crypto_gcm
 import ../bus, ../bus_types, ../config, ../logger
+import ../agent/cortex as cortex_mod
 import ../libnkn/nkn_bridge
 
 type
@@ -14,10 +15,15 @@ type
   NknQueueItem = tuple[clientAddr, src, data: string]
 
   NMobileChannel* = ref object of BaseChannel
-    walletJson: string
-    password: string
-    identifier: string
-    agentIdentifiers: Table[string, string]
+    # Identity — new (seed-centric) fields take priority; legacy fields
+    # kept so existing encrypted-wallet deployments still boot until the
+    # operator re-auths. See `authNmobileChannel`.
+    seed: string                               ## raw 64-char hex if present
+    identifiers: seq[(string, string)]         ## (sub-client, agentName) pairs
+    walletJson: string                         ## legacy fallback
+    password: string                           ## legacy fallback
+    identifier: string                         ## legacy single-identifier
+    agentIdentifiers: Table[string, string]    ## legacy agent→identifier map
     clientAddrs: seq[string]
     activeClients: Table[string, string]
     fcmKey: string
@@ -314,26 +320,41 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
   except:
     discard
   
+  # Identity resolution: prefer the DSL `channel "nmobile": identifier` list
+  # (seed-centric model). Fall back to the legacy NamedAgentConfig.
+  # nkn_identifier scatter + implicit name-as-identifier only when the new
+  # block is empty (a deployment that hasn't re-run `claw channel auth`
+  # under the new model).
+  var idPairs: seq[(string, string)] = @[]
   var agentMap = initTable[string, string]()
-  for a in cfg.agents.named:
-    # Only AI Entities use NKN extensions. 
-    # Humans (Principals/Staff) use Master Addresses and are skipped here.
-    if a.entity == "Human":
-      infoCF("nmobile", "Skipping NKN extension for Human entity", {"name": a.name}.toTable)
-      continue
-      
-    if a.nkn_identifier.isSome and a.nkn_identifier.get().len > 0:
-      agentMap[a.name] = a.nkn_identifier.get()
-    else:
-      agentMap[a.name] = a.name # Use agent name as default identifier
-      
+  if ncfg.identifiers.len > 0:
+    for idCfg in ncfg.identifiers:
+      let enabled = options.isSome(idCfg.enabled) and options.get(idCfg.enabled)
+      let explicit = options.isSome(idCfg.enabled)
+      if explicit and not enabled: continue
+      if idCfg.identifier.len == 0: continue
+      idPairs.add((idCfg.identifier, idCfg.agent))
+      if idCfg.agent.len > 0: agentMap[idCfg.agent] = idCfg.identifier
+  else:
+    for a in cfg.agents.named:
+      if a.entity == "Human":
+        infoCF("nmobile", "Skipping NKN extension for Human entity",
+               {"name": a.name}.toTable)
+        continue
+      let id = if a.nkn_identifier.isSome and a.nkn_identifier.get().len > 0:
+                 a.nkn_identifier.get()
+               else: a.name
+      agentMap[a.name] = id
+      idPairs.add((id, a.name))
+
   result = NMobileChannel(
     bus: base.bus,
     name: base.name,
     allowList: base.allowList,
     running: false,
+    seed: expandEnv(ncfg.seed),
+    identifiers: idPairs,
     walletJson: block:
-      # Resolve wallet: check nkn-cli-{addr} dirs, then legacy path, then config value
       let nmobileDir = appData / "channels" / "nmobile"
       let legacyWallet = nmobileDir / "wallet.json"
       if ncfg.wallet_json.len == 0 and fileExists(legacyWallet):
@@ -342,7 +363,7 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
         readFile(ncfg.wallet_json)
       else:
         ncfg.wallet_json,
-    password: ncfg.password,
+    password: expandEnv(ncfg.password),
     identifier: ncfg.identifier,
     agentIdentifiers: agentMap,
     clientAddrs: newSeq[string](),
@@ -784,93 +805,97 @@ method start*(c: NMobileChannel) {.async.} =
   randomize()
   infoC("nmobile", "Starting NMobile channel...")
   try:
-    if c.walletJson.len == 0:
-      errorC("nmobile", "Failed to start NMobile channel: wallet_json is empty in config")
+    let seedMode = c.seed.len > 0
+    if not seedMode and c.walletJson.len == 0:
+      errorC("nmobile", "Failed to start NMobile channel: neither seed (NKN_WALLET_SEED) nor wallet_json is configured — run `claw channel auth nmobile`.")
       return
 
-    # Start the NKN bridge subprocess
     let onMsg = proc(clientAddr, src, data: string) {.gcsafe.} =
       acquire(c.inboxLock)
       c.inbox.add((clientAddr, src, data))
       release(c.inboxLock)
     c.bridge = newNknBridge(onMsg)
 
-    # Resolve NKN address early to set up per-address directory
+    # Resolve base pubkey early (no client open) to set up per-address dir.
     let nmobileDir = getNimClawDir() / "channels" / "nmobile"
-    let (nknAddr, addrErr) = c.bridge.getNKNAddress(c.walletJson, c.password, c.identifier)
+    let (nknAddr, addrErr) =
+      if seedMode: c.bridge.getAddressFromSeed(c.seed, "")
+      else: c.bridge.getNKNAddress(c.walletJson, c.password, c.identifier)
     if addrErr.len == 0 and nknAddr.len > 0:
       c.nknAddress = nknAddr
       let addrDir = nmobileDir / nknAddr
       c.baseDir = addrDir
       try:
         createDir(addrDir)
-        # Save wallet to address dir
-        if not fileExists(addrDir / "wallet.json"):
+        if not seedMode and not fileExists(addrDir / "wallet.json"):
           writeFile(addrDir / "wallet.json", c.walletJson)
-        # Migrate from legacy nkn-cli-<short> dir
         let addrShort = if nknAddr.len > 16: nknAddr[0..<16] else: nknAddr
         let legacyDir = nmobileDir / "nkn-cli-" & addrShort
         if dirExists(legacyDir):
-          # Migrate peers
           let legacyPeers = legacyDir / "peers.json"
           if fileExists(legacyPeers) and not fileExists(addrDir / "peers.json"):
             copyFile(legacyPeers, addrDir / "peers.json")
-          # Migrate wallet
           let legacyWallet = legacyDir / "wallet.json"
-          if fileExists(legacyWallet) and not fileExists(addrDir / "wallet.json"):
+          if not seedMode and fileExists(legacyWallet) and
+             not fileExists(addrDir / "wallet.json"):
             copyFile(legacyWallet, addrDir / "wallet.json")
-          infoCF("nmobile", "Migrated from legacy dir", {"from": "nkn-cli-" & addrShort, "to": nknAddr}.toTable)
-        # Peers file at address level (shared across extensions)
+          infoCF("nmobile", "Migrated from legacy dir",
+                 {"from": "nkn-cli-" & addrShort, "to": nknAddr}.toTable)
         let perAddrPeers = addrDir / "peers.json"
         if not fileExists(perAddrPeers) and fileExists(c.peersFile):
           copyFile(c.peersFile, perAddrPeers)
         c.peersFile = perAddrPeers
-        # Default cacheDir (overridden per-extension in message handling)
-        let defaultExt = if c.identifier.len > 0: c.identifier else: "_default"
+        let defaultExt =
+          if c.identifiers.len > 0: c.identifiers[0][0]
+          elif c.identifier.len > 0: c.identifier
+          else: "_default"
         c.cacheDir = addrDir / defaultExt / "cache"
         createDir(c.cacheDir)
         infoCF("nmobile", "Using per-address dir", {"dir": nknAddr}.toTable)
       except:
-        discard  # Fall back to legacy paths
+        discard
 
-    var identifiersToStart: seq[tuple[id, name: string]] = @[]
-    if c.identifier.len > 0:
-      identifiersToStart.add((c.identifier, ""))
-    for name, id in c.agentIdentifiers.pairs:
-      identifiersToStart.add((id, name))
+    # Build the client list. New DSL → `c.identifiers` (authoritative).
+    # Legacy → reconstruct from `c.identifier` + `c.agentIdentifiers`.
+    var identifiersToStart: seq[(string, string)] = @[]
+    if c.identifiers.len > 0:
+      identifiersToStart = c.identifiers
+    else:
+      if c.identifier.len > 0:
+        identifiersToStart.add((c.identifier, ""))
+      for name, id in c.agentIdentifiers.pairs:
+        identifiersToStart.add((id, name))
+      if identifiersToStart.len == 0:
+        identifiersToStart.add(("", ""))
 
-    if identifiersToStart.len == 0:
-      identifiersToStart.add(("", ""))
-
-    for (id, name) in identifiersToStart:
-      let (clientAddrRes, err) = c.bridge.createNKNClient(
-        c.walletJson,
-        c.password,
-        id,
-        c.numSubClients,
-        c.originalClient
-      )
+    for (id, agent) in identifiersToStart:
+      let (clientAddrRes, err) =
+        if seedMode:
+          c.bridge.createClientFromSeed(c.seed, id, c.numSubClients, c.originalClient)
+        else:
+          c.bridge.createNKNClient(c.walletJson, c.password, id,
+                                    c.numSubClients, c.originalClient)
       if err.len > 0:
-        errorCF("nmobile", "Failed to create NKN client", {"error": err, "identifier": id}.toTable)
+        errorCF("nmobile", "Failed to create NKN client",
+                {"error": err, "identifier": id}.toTable)
         continue
-
       c.clientAddrs.add(clientAddrRes)
-      c.activeClients[clientAddrRes] = name
+      c.activeClients[clientAddrRes] = agent
       if c.botDeviceId == "":
         c.botDeviceId = getBotDeviceId(clientAddrRes)
-      infoCF("nmobile", "NMobile client connected", {"address": clientAddrRes, "deviceId": c.botDeviceId, "agent": name}.toTable)
+      infoCF("nmobile", "NMobile client connected",
+             {"address": clientAddrRes, "deviceId": c.botDeviceId,
+              "agent": agent}.toTable)
 
     if c.clientAddrs.len == 0:
       errorC("nmobile", "Failed to start any NMobile sub-clients")
       return
 
     c.running = true
-
-    # Proactive online greeting removed.
-
     discard poll(c)
   except Exception as e:
-    errorCF("nmobile", "Failed to start NMobile channel", {"error": e.msg}.toTable)
+    errorCF("nmobile", "Failed to start NMobile channel",
+            {"error": e.msg}.toTable)
 
 method stop*(c: NMobileChannel) {.async.} =
   c.running = false
