@@ -814,6 +814,7 @@ const
   NknClientMaxAgeSec = 14_400   ## 4h blind cycle cap (same as feishu).
   NknClientStaleSec  = 900      ## 15min silent → treat as dead.
   NknWatchdogTickSec = 60       ## Scan cadence.
+  NknDefaultNumSubClients = 4   ## nkn-sdk-go refuses NewMultiClient with 0.
 
 proc nkyYellowBook*(cfg: Config, lang = "en"): string =
   ## Build a "phone directory" of agent NKN addresses — printed to a
@@ -967,13 +968,15 @@ method start*(c: NMobileChannel) {.async.} =
       # so gateway's default-recipient path handles it.
       toSpawn.add(("", ""))
 
+    let numSub =
+      if c.numSubClients > 0: c.numSubClients else: NknDefaultNumSubClients
     for (id, agent) in toSpawn:
       let (clientAddrRes, err) =
         if seedMode:
-          c.bridge.createClientFromSeed(c.seed, id, c.numSubClients, c.originalClient)
+          c.bridge.createClientFromSeed(c.seed, id, numSub, c.originalClient)
         else:
           c.bridge.createNKNClient(c.walletJson, c.password, id,
-                                    c.numSubClients, c.originalClient)
+                                    numSub, c.originalClient)
       if err.len > 0:
         errorCF("nmobile", "Failed to create NKN client",
                 {"error": err, "identifier": id}.toTable)

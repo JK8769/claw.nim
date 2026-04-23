@@ -17,6 +17,10 @@ type
     nextId: Atomic[int]
     onMessage*: NknMessageCallback
     running*: bool
+    readerThread: Thread[(NknBridge,)]  ## kept as a field so the
+                                         ## handle outlives createThread
+                                         ## — stack-allocating triggers
+                                         ## SIGILL on ARM64.
 
 proc findBridgeBinary(): string =
   # Look in channels/bin/nkn-cli, next to executable, then on PATH
@@ -106,9 +110,7 @@ proc newNknBridge*(onMessage: NknMessageCallback = nil): NknBridge =
   initLock(b.writerLock)
   initLock(b.pendingLock)
 
-  var t: Thread[(NknBridge,)]
-  createThread(t, readerLoop, (b,))
-
+  createThread(b.readerThread, readerLoop, (b,))
   return b
 
 proc stop*(b: NknBridge) =

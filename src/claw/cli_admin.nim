@@ -18,6 +18,63 @@ proc isBootstrapFile*(name: string): bool =
     if name == f: return true
   return false
 
+proc stampNmobileAddressesIntoGraph(companyDir: string): string =
+  ## Post-process BASE.json after `nim e` finishes, stamping each declared
+  ## nmobile identifier onto its routed graph entity. Runs here (compiled
+  ## Nim) rather than in `buildGraph` because NimScript can't spawn the
+  ## `nkn-cli` subprocess we need for pubkey derivation.
+  ##
+  ## Silently a no-op when the channel isn't enabled or the seed env isn't
+  ## set — pre-auth `co update` just leaves identifiers unstamped, and the
+  ## next run after `claw channel auth nmobile` fills them in.
+  let jsonPath = companyDir / "BASE.json"
+  if not fileExists(jsonPath): return ""
+  var base: JsonNode
+  try: base = parseJson(readFile(jsonPath))
+  except CatchableError as err:
+    return "BASE.json parse failed: " & err.msg
+  let ch = base{"config"}{"channels"}{"nmobile"}
+  if ch == nil or ch.kind != JObject: return ""
+  if not ch{"enabled"}.getBool(false): return ""
+  let seed = expandEnv(ch{"seed"}.getStr(""))
+  if seed.len == 0: return ""
+  if not base.hasKey("@graph") or base["@graph"].kind != JArray: return ""
+  let bridge =
+    try: newNknBridge()
+    except CatchableError as err:
+      return "nkn-cli unavailable: " & err.msg
+  defer: bridge.stop()
+  # (targetEntityName, nknAddr) — bare pubkey goes on the Corporate
+  # entity, each sub-identifier goes on the entity it routes to.
+  var stamps: seq[(string, string)] = @[]
+  let (companyAddr, companyErr) = bridge.getAddressFromSeed(seed, "")
+  if companyErr.len > 0 or companyAddr.len == 0:
+    return "derive pubkey failed: " & companyErr
+  for ent in base["@graph"]:
+    if ent.kind == JObject and ent{"kind"}.getStr() == "Corporate":
+      stamps.add((ent{"name"}.getStr(), companyAddr))
+      break
+  if ch.hasKey("identifiers") and ch["identifiers"].kind == JArray:
+    for idCfg in ch["identifiers"]:
+      if idCfg.kind != JObject: continue
+      let sub = idCfg{"identifier"}.getStr()
+      let target = idCfg{"agent"}.getStr()
+      if sub.len == 0 or target.len == 0: continue
+      let (fullAddr, err) = bridge.getAddressFromSeed(seed, sub)
+      if err.len == 0 and fullAddr.len > 0:
+        stamps.add((target, fullAddr))
+  let arr = base["@graph"]
+  for (target, nknAddr) in stamps:
+    for i in 0 ..< arr.len:
+      if arr[i].kind != JObject: continue
+      if arr[i]{"name"}.getStr() != target: continue
+      if not arr[i].hasKey("identifiers") or arr[i]["identifiers"].kind != JObject:
+        arr[i]["identifiers"] = newJObject()
+      arr[i]["identifiers"]["nmobile"] = %nknAddr
+      break
+  writeFile(jsonPath, pretty(base, 2))
+  ""
+
 proc rebuildBaseJson*(companyDir: string): tuple[ok: bool, output: string] =
   ## Execute BASE.nims via NimScript to regenerate BASE.json for this company.
   ## Used both by the CLI (`claw co update`) and the gateway (`/restart`,
@@ -42,7 +99,13 @@ proc rebuildBaseJson*(companyDir: string): tuple[ok: bool, output: string] =
     cmd &= " --path:" & quoteShell(srcPath)
   cmd &= " " & quoteShell(scriptPath)
   let (output, exitCode) = execCmdEx(cmd)
-  return (exitCode == 0, output)
+  if exitCode != 0: return (false, output)
+  # Post-process: stamp NKN addresses (needs nkn-cli subprocess, which
+  # NimScript can't spawn — has to run here in the compiled CLI path).
+  let stampErr = stampNmobileAddressesIntoGraph(companyDir)
+  if stampErr.len > 0:
+    return (true, output & "\nWarning: nmobile stamping: " & stampErr)
+  (true, output)
 
 proc runCompetenciesCommand*(workspace, globalRoot: string, args: seq[string]): string
 

@@ -120,7 +120,10 @@ func handleCreateClientFromSeed(id string, params json.RawMessage) {
 		NumSubClients  int    `json:"num_sub_clients"`
 		OriginalClient bool   `json:"original_client"`
 	}
-	json.Unmarshal(params, &p)
+	if err := json.Unmarshal(params, &p); err != nil {
+		sendJSON(Response{ID: id, Error: "bad params json: " + err.Error()})
+		return
+	}
 
 	seed, err := hex.DecodeString(p.SeedHex)
 	if err != nil {
@@ -129,13 +132,13 @@ func handleCreateClientFromSeed(id string, params json.RawMessage) {
 	}
 	account, err := nkn.NewAccount(seed)
 	if err != nil {
-		sendJSON(Response{ID: id, Error: err.Error()})
+		sendJSON(Response{ID: id, Error: "NewAccount: " + err.Error()})
 		return
 	}
 
 	client, err := nkn.NewMultiClient(account, p.Identifier, p.NumSubClients, p.OriginalClient, nil)
 	if err != nil {
-		sendJSON(Response{ID: id, Error: err.Error()})
+		sendJSON(Response{ID: id, Error: "NewMultiClient: " + err.Error()})
 		return
 	}
 
