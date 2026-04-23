@@ -10,6 +10,23 @@ import nimcrypto/hash
 import nimcrypto/sha2
 
 type
+  PieceBuffer = object
+    ## Collects Reed-Solomon-chunked `nknOnePiece` fragments of a single
+    ## media message until enough data pieces arrive to reassemble. nmobile
+    ## sends `total + parity` pieces per file; we only need the `total`
+    ## data pieces (indices 0..total-1) for a simple concat — RS decode of
+    ## parity is unnecessary in the common case where the relay delivers
+    ## everything. Buffers older than ~60s are dropped by a periodic sweep.
+    startedAt: float
+    total, parity: int
+    bytesLength: int              ## base64-string length of original file
+    parentType: string            ## "media" for nmobile images
+    fileExt: string               ## sender's hint; we verify via magic bytes
+    agentName: string             ## routing target captured at first piece
+    clientAddr: string            ## sub-client that received piece 0
+    src: string                   ## peer address
+    pieces: Table[int, string]    ## piece_index → raw chunk bytes
+
   PeerInfo = object
     deviceId: string
     profileVersion: string
@@ -52,6 +69,7 @@ type
     telegramPushChatId: Option[string]
     peers: Table[string, PeerInfo]
     seenMessages: Table[string, float] # messageId -> timestamp
+    pieceBuffers: Table[string, PieceBuffer] # msgId -> accumulator
     pendingNotifications: Table[string, OutboundMessage] # LLM messageId -> Pending Telegram notification
     lastReadMsgId: string # ID of the last sent message that can be cleared by an empty read receipt
     peersFile: string
@@ -400,6 +418,7 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
     telegramPushChatId: ncfg.telegram_push_chat_id,
     peers: initTable[string, PeerInfo](),
     seenMessages: initTable[string, float](),
+    pieceBuffers: initTable[string, PieceBuffer](),
     pendingNotifications: initTable[string, OutboundMessage](),
     peersFile: appData / "channels" / "nmobile" / "peers.json",  # Migrated to per-addr dir in start()
     cacheDir: appData / "channels" / "nmobile" / "cache",  # Migrated to per-addr dir in start()
@@ -571,6 +590,102 @@ proc sendContactProfile(c: NMobileChannel, clientAddr, dest,
          {"dest": dest, "clientAddr": clientAddr,
           "responseType": responseType,
           "displayName": c.profileDisplayName(clientAddr)}.toTable)
+
+# ── nknOnePiece reassembly ──────────────────────────────────────────
+# nmobile chunks photos (and other media) with Reed-Solomon FEC:
+# total data pieces + parity pieces, any `total` of which reconstruct
+# the original. The sender always emits all pieces; we only need to
+# wait for the `total` data pieces (indices 0..total-1) and concat —
+# no RS decode required in the common case. If data pieces go missing
+# and only parity arrives, reassembly fails; we'd need to plumb in a
+# Reed-Solomon library for that. Not shipped: for now we wait for all
+# data pieces and drop the buffer on timeout.
+
+const PieceBufferTtlSec = 60.0
+
+proc extFromMagic(bytes: string): string =
+  if bytes.len >= 3 and bytes[0].uint8 == 0xFF and bytes[1].uint8 == 0xD8 and
+     bytes[2].uint8 == 0xFF: return ".jpg"
+  if bytes.len >= 8 and bytes[0].uint8 == 0x89 and bytes[1].uint8 == 0x50 and
+     bytes[2].uint8 == 0x4E and bytes[3].uint8 == 0x47: return ".png"
+  if bytes.len >= 6 and bytes[0].uint8 == 0x47 and bytes[1].uint8 == 0x49 and
+     bytes[2].uint8 == 0x46: return ".gif"
+  if bytes.len >= 12 and bytes[0].uint8 == 0x52 and bytes[1].uint8 == 0x49 and
+     bytes[2].uint8 == 0x46 and bytes[3].uint8 == 0x46: return ".webp"
+  return ""
+
+proc sweepPieceBuffers(c: NMobileChannel) =
+  ## Drop half-assembled buffers once they've aged past the TTL. Called
+  ## cheaply on every inbound piece rather than on a dedicated timer.
+  let now = epochTime()
+  var stale: seq[string] = @[]
+  for k, buf in c.pieceBuffers.pairs:
+    if now - buf.startedAt > PieceBufferTtlSec: stale.add(k)
+  for k in stale:
+    let buf = c.pieceBuffers[k]
+    infoCF("nmobile", "Dropped stale piece buffer",
+           {"msgId": k, "pieces": $buf.pieces.len, "needed": $buf.total,
+            "ageSec": $int(now - buf.startedAt)}.toTable)
+    c.pieceBuffers.del(k)
+
+proc tryAssemblePiece(c: NMobileChannel, msgId: string): bool =
+  ## Return true when enough data pieces (indices 0..total-1) have
+  ## arrived and the media has been reassembled + handed to the agent.
+  ## Buffer is consumed on success.
+  if not c.pieceBuffers.hasKey(msgId): return false
+  let buf = c.pieceBuffers[msgId]
+  # Need every data-index present; parity pieces are ignored in this
+  # non-RS path because a single missing data piece would require
+  # Reed-Solomon recovery which we haven't wired up.
+  for i in 0 ..< buf.total:
+    if not buf.pieces.hasKey(i): return false
+  var base64Data = newStringOfCap(buf.bytesLength + 16)
+  for i in 0 ..< buf.total:
+    base64Data.add(buf.pieces[i])
+  # Trim to the exact length the sender declared — RS padding may
+  # occasionally produce a last-piece overshoot of a few bytes.
+  if base64Data.len > buf.bytesLength:
+    base64Data.setLen(buf.bytesLength)
+  var fileBytes = ""
+  try:
+    fileBytes = base64.decode(base64Data)
+  except CatchableError as err:
+    errorCF("nmobile", "Piece reassembly: base64 decode failed",
+            {"msgId": msgId, "error": err.msg}.toTable)
+    c.pieceBuffers.del(msgId)
+    return true  # consumed, even though failed — avoid retrying
+  var ext = extFromMagic(fileBytes)
+  if ext.len == 0 and buf.fileExt.len > 0:
+    ext = "." & buf.fileExt.strip(chars = {'.'})
+  let isImage = ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+  let mediaDir = c.mediaCacheDir(buf.clientAddr)
+  try: createDir(mediaDir)
+  except CatchableError: discard
+  let outPath = mediaDir / safeFileName(msgId) & ext
+  try:
+    writeFile(outPath, fileBytes)
+  except CatchableError as err:
+    errorCF("nmobile", "Piece reassembly: write failed",
+            {"msgId": msgId, "path": outPath, "error": err.msg}.toTable)
+    c.pieceBuffers.del(msgId)
+    return true
+  infoCF("nmobile", "Piece reassembly success",
+         {"msgId": msgId, "path": outPath,
+          "bytes": $fileBytes.len, "isImage": $isImage,
+          "pieces": $buf.total}.toTable)
+  var md = initTable[string, string]()
+  md["content_type"] = if isImage: "piece_image" else: "piece_file"
+  md["msg_id"] = msgId
+  md["cache_path"] = outPath
+  md["cache_bytes"] = $fileBytes.len
+  let agentMsg =
+    if isImage: "[image: " & outPath & "]"
+    else: "User sent a file via nMobile. Path: " & outPath & ". Bytes: " &
+          $fileBytes.len & "."
+  c.handleMessage(buf.src, buf.src, agentMsg, metadata = md,
+                   recipientID = buf.agentName)
+  c.pieceBuffers.del(msgId)
+  return true
 
 proc drainInbox(c: NMobileChannel): seq[NknQueueItem] =
   acquire(c.inboxLock)
@@ -986,6 +1101,72 @@ proc poll(c: NMobileChannel) {.async.} =
               debugCF("nmobile", "Protocol handshake absorbed",
                       {"src": src, "type": contentType,
                        "id": j.safeGetStr("id")}.toTable)
+
+            of "nknOnePiece":
+              # Reed-Solomon-chunked media (most commonly a photo).
+              # Accumulate pieces keyed by `id`; deliver the reassembled
+              # file once all data pieces arrive. Don't send the decline
+              # autoreply and don't wake the agent for individual pieces
+              # — the sender already committed to the upload and seeing
+              # "I can't open this" mid-stream caused nmobile to abort
+              # the send before later pieces arrived.
+              c.sweepPieceBuffers()
+              let mid = j.safeGetStr("id")
+              let opts = if j.hasKey("options") and j["options"].kind == JObject: j["options"]
+                         else: newJObject()
+              let pieceIndex = opts{"piece_index"}.getInt(-1)
+              let pieceTotal = opts{"piece_total"}.getInt(0)
+              let pieceParity = opts{"piece_parity"}.getInt(0)
+              let pieceBytesLen = opts{"piece_bytes_length"}.getInt(0)
+              if mid.len == 0 or pieceIndex < 0 or pieceTotal <= 0:
+                errorCF("nmobile", "nknOnePiece: missing required options",
+                        {"src": src, "msgId": mid,
+                         "options": $opts}.toTable)
+              else:
+                # Decode this piece's base64 content into the buffer.
+                var content = ""
+                if j.hasKey("content") and j["content"].kind == JString:
+                  try: content = base64.decode(j["content"].getStr())
+                  except CatchableError as err:
+                    errorCF("nmobile", "nknOnePiece: piece base64 decode failed",
+                            {"src": src, "msgId": mid,
+                             "index": $pieceIndex, "error": err.msg}.toTable)
+                if not c.pieceBuffers.hasKey(mid):
+                  c.pieceBuffers[mid] = PieceBuffer(
+                    startedAt: epochTime(),
+                    total: pieceTotal,
+                    parity: pieceParity,
+                    bytesLength: pieceBytesLen,
+                    parentType: opts{"piece_parent_type"}.getStr(),
+                    fileExt: opts{"fileExt"}.getStr(),
+                    agentName: agentName,
+                    clientAddr: clientAddr,
+                    src: src,
+                    pieces: initTable[int, string]()
+                  )
+                # Use withValue-style pattern: fetch the buffer, modify,
+                # write back — Nim's `Table` values are copies on access.
+                var buf = c.pieceBuffers[mid]
+                buf.pieces[pieceIndex] = content
+                c.pieceBuffers[mid] = buf
+                infoCF("nmobile", "nknOnePiece received",
+                       {"src": src, "msgId": mid, "agent": agentName,
+                        "index": $pieceIndex, "total": $pieceTotal,
+                        "parity": $pieceParity,
+                        "have": $(buf.pieces.len)}.toTable)
+                # Ack the piece so the sender doesn't retransmit.
+                let ackPayload = c.genPayload("receipt", "", genUUID(),
+                                              replyToId = mid)
+                var ackOpts = newJObject()
+                ackOpts["push"] = %true
+                if info.profileVersion.len > 0:
+                  ackOpts["profileVersion"] = %info.profileVersion
+                ackPayload["options"] = ackOpts
+                let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
+                discard c.bridge.sendNKNMessage(clientAddr, src, $ackPayload,
+                                                 maxHoldingSeconds = ttl,
+                                                 noReply = true)
+                discard c.tryAssemblePiece(mid)
 
             else:
               infoChanged = true
