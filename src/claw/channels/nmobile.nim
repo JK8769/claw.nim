@@ -513,9 +513,15 @@ proc poll(c: NMobileChannel) {.async.} =
                 infoChanged = true
   
             case contentType
-            of "text":
+            of "text", "textExtension":
+              # textExtension is plain text + options (burn-after,
+              # profileVersion). nmobile promotes outbound text to
+              # textExtension when options are attached; we treat both
+              # identically on receive. See nmobile
+              # lib/schema/message.dart:145 (isText covers both).
               finalData = j["content"].getStr()
-              var textFields = {"src": src, "agent": agentName, "msg": finalData}.toTable
+              var textFields = {"src": src, "agent": agentName, "msg": finalData,
+                                "kind": contentType}.toTable
               if info.displayName.len > 0: textFields["from"] = info.displayName
               infoCF("nmobile", "Text message received", textFields)
               
@@ -1127,23 +1133,26 @@ method send*(c: NMobileChannel, msg: OutboundMessage) {.async.} =
           {"sender_agent": msg.sender_agent, "senderAddr": senderAddr,
            "dest": msg.chat_id}.toTable)
 
-  var data = msg.content
-  if data.len > 0:
-    # Force nMobile to use Markdown renderer even if mentions are present
-    # Wrapped in a comment to hide it from the user
-    data &= "\n\n<!-- &status=approve -->"
+  let data = msg.content
   infoC("nmobile", "Sending message to " & dest)
-  
+
   let msgId = genUUID()
   let info = c.peers.getOrDefault(dest)
-  
-  # Prepare options
+
+  # textExtension is the proper wire type for text carrying options
+  # (markdown flag, profileVersion, push, burn-after-read). nmobile and
+  # dchat both auto-promote plain `text` → `textExtension` whenever
+  # options are attached (chat-service.ts:549-553, message.dart:145),
+  # so matching them here means phones render markdown and show proper
+  # delivery indicators without the old `<!-- &status=approve -->`
+  # HTML-comment trick.
   let options = newJObject()
   options["push"] = %true
+  options["isMarkdown"] = %true
   if info.profileVersion.len > 0:
     options["profileVersion"] = %info.profileVersion
 
-  let payload = c.genPayload("text", data, msgId, options = options)
+  let payload = c.genPayload("textExtension", data, msgId, options = options)
   
   # Diagnostic Log
   debugCF("nmobile", "OUTBOUND PAYLOAD", {"dest": dest, "msgId": msgId, "json": $payload}.toTable)
