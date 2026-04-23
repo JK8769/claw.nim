@@ -331,7 +331,9 @@ proc buildToolsSection(cb: ContextBuilder, allowed: seq[string]): string =
     sb.add(s & "\n")
   return sb
 
-proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false, allowedTools: seq[string] = @[]): string =
+proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
+                 allowedTools: seq[string] = @[],
+                 agentName: string = ""): string =
   let now = now().format("yyyy-MM-dd HH:mm (dddd) zzz")
   let workspacePath = absolutePath(cb.workspace)
   let runtime = hostOS & " " & hostCPU & ", Nim " & NimVersion
@@ -341,24 +343,29 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false, allowedTools: se
     else:
       if allowedTools.len > 0: cb.buildToolsSection(allowedTools) else: cb.buildToolsSection()
 
-  return """# nimclaw
+  # Banner: the framework is `nimclaw`, but the agent speaking is this
+  # specific named persona. Leaking "nimclaw" into the LLM's self-intro
+  # makes Lexi (or Atlas, etc.) identify as the framework — wrong.
+  let name = if agentName.len > 0: agentName else: "a helpful AI assistant"
 
-You are nimclaw, a helpful AI assistant.
+  return """# $1
+
+You are $1. The `SOUL` and `IDENTITY` sections below elaborate who that means; ground every reply in them rather than in generic framework defaults.
 
 ## Current Time
-$1
-
-## Runtime
 $2
 
-## Workspace
-Your office is at: $3
-- Memory (past, searchable JSONL): use the `memory` tool — do NOT write to files directly
-- Sessions (present): $3/sessions
-- Notes (future): $3/notes
-- Skills: $3/skills/{skill-name}/SKILL.md
+## Runtime
+$3
 
-$4
+## Workspace
+Your office is at: $4
+- Memory (past, searchable JSONL): use the `memory` tool — do NOT write to files directly
+- Sessions (present): $4/sessions
+- Notes (future): $4/notes
+- Skills: $4/skills/{skill-name}/SKILL.md
+
+$5
 
 ## Important Rules
 
@@ -368,7 +375,7 @@ $4
 
 3. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
 
-4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(now, runtime, workspacePath, toolsSection)
+4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(name, now, runtime, workspacePath, toolsSection)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
@@ -618,7 +625,7 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   elif identLow in ["guest", "customer"]:
     allowedTools = @["reply", "forward", "redeem_invite", "update_contact"]
 
-  parts.add(cb.getIdentity(useXmlTools, allowedTools))
+  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID))
   parts.add(socialSection)
 
   # Add Soul/Identity from Graph if available
