@@ -28,6 +28,8 @@ type
     identity*: string      ## Staff, Agent, User
     jobTitle*: string
     profile*: string       ## Profile name from AGENT_PROFILES
+    soul*: string          ## Authored values/temperament — overrides the
+                           ## profile preset's soul when non-empty.
     maxDepth*: int
     temperature*: float
     reportsTo*: seq[ClawRelation]
@@ -246,6 +248,11 @@ template agent*(agentName: string, body: untyped) =
       a.jobTitle = jt
     template profile(prof: string) {.used.} =
       a.profile = prof
+    template soul(s: string) {.used.} =
+      # Dedent common leading whitespace so `soul """ ... """` blocks
+      # authored inside an indented DSL keep clean multi-line text
+      # instead of carrying the block's indent into the graph.
+      a.soul = s.unindent().strip()
     template maxDepth(d: int) {.used.} =
       a.maxDepth = d
     template temperature(t: float) {.used.} =
@@ -651,16 +658,17 @@ proc buildGraph(spec: ClawSpec): JsonNode =
       "kind": "AI",
       "name": a.name,
     }
-    # Soul from profile. Stored name-free — the graph's `name` field
-    # plus the IDENTITY block at prompt-build time are the single source
-    # of identity. Wrapping the soul with "# <agent>'s Soul" embedded
-    # the name inside the values text, leaking framework-authored
-    # phrasing into the agent's self-identification.
-    if a.profile != "" and hasProfile(a.profile):
-      let prof = getProfile(a.profile)
-      entity["soul"] = %prof.soul
-      if a.jobTitle == "":
-        entity["jobTitle"] = %prof.jobTitle
+    # Soul resolution: authored `soul "..."` on the agent wins, then
+    # the profile preset's default, then empty. Stored name-free — the
+    # graph's `name` field plus the IDENTITY block at prompt-build time
+    # are the single source of identity; SOUL is just values text.
+    if a.soul != "":
+      entity["soul"] = %a.soul
+    elif a.profile != "" and hasProfile(a.profile):
+      entity["soul"] = %getProfile(a.profile).soul
+    # jobTitle fallback from the preset applies regardless of soul source.
+    if a.jobTitle == "" and a.profile != "" and hasProfile(a.profile):
+      entity["jobTitle"] = %getProfile(a.profile).jobTitle
     if a.jobTitle != "":
       entity["jobTitle"] = %a.jobTitle
     if a.model != "":
@@ -1006,14 +1014,25 @@ proc buildBaseJson(spec: ClawSpec, workspace: string): JsonNode =
 
 # ── Installers ────────────────────────────────────────────────────
 
-proc installProfile(profileName, officeDir: string) =
-  ## Install profile files (SOUL.md, IDENTITY.md) into an agent's office.
-  if not hasProfile(profileName): return
-  let prof = getProfile(profileName)
+proc installAgentSoul(a: ClawAgent, officeDir: string) =
+  ## Keep the agent's office SOUL.md in sync with the single source of
+  ## truth (BASE.nims). If the agent declared `soul "..."`, that's what
+  ## lands in SOUL.md; otherwise fall back to the profile preset.
+  ## SOUL.md is a read-only artifact from the DSL's perspective — hand
+  ## edits get overwritten on the next `co update`, matching how the
+  ## rest of the office workspace is regenerated.
+  let resolved =
+    if a.soul != "": a.soul
+    elif a.profile != "" and hasProfile(a.profile): getProfile(a.profile).soul
+    else: ""
+  if resolved == "": return
   let soulPath = officeDir / "SOUL.md"
-  if not fileExists(soulPath):
-    writeFile(soulPath, prof.soul)
-    echo "  + Installed profile: " & soulPath
+  let current =
+    if fileExists(soulPath): readFile(soulPath).strip()
+    else: ""
+  if current == resolved.strip(): return
+  writeFile(soulPath, resolved)
+  echo "  + SOUL.md synced from BASE.nims: " & soulPath
 
 proc readFoundationRegistry(): JsonNode =
   ## Read res/foundation.json — declares what auto-mirrors into each company's
@@ -1739,10 +1758,11 @@ proc build*(s: var ClawSpec) =
   # 2. Scaffold workspace
   scaffoldWorkspace(s, workspace)
 
-  # 3. Install profiles
+  # 3. Sync SOUL.md from BASE.nims (authored `soul "..."` wins, preset
+  # is the fallback). Runs for every agent, not just ones with a
+  # profile preset, so agents with pure-authored souls still get a file.
   for a in s.agents:
-    if a.profile != "":
-      installProfile(a.profile, workspace / "offices" / a.name.toLowerAscii)
+    installAgentSoul(a, workspace / "offices" / a.name.toLowerAscii)
 
   # 4. Install Tier 2 skills into the company lab.
   #    Tier 1 (foundation) skills declared in ClawDSL are resolved against
