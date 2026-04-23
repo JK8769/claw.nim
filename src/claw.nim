@@ -43,6 +43,7 @@ Usage:
   claw user invite [<args>...] [--skill=<g>]... [--skills=<list>] [--lang=<l>]
   claw user subscription [<args>...] [--plan=<p>] [--days=<n>] [--tokens=<n>] [--reason=<r>] [--lang=<l>] [--company=<c>] [--agent=<a>]
   claw user remove [<args>...] [--hard] [--reason=<r>]
+  claw user rebind [<args>...] [--keep]
   claw user <cmd> [<args>...]
   claw role <cmd> [<args>...]
   claw agent list
@@ -1541,6 +1542,13 @@ when isMainModule:
       if args["--lang"]:    userArgs.add("--lang=" & $args["--lang"])
       if args["--company"]: userArgs.add("--company=" & $args["--company"])
       if args["--agent"]:   userArgs.add("--agent=" & $args["--agent"])
+      echo runUserCommand(cfg, userArgs)
+    elif args["rebind"] and not args["<cmd>"]:
+      # `user rebind [<args>...] [--keep]` — docopt otherwise rejects
+      # `--keep` as an unknown top-level option. Re-encode positionally.
+      userArgs.add("rebind")
+      for a in @(args["<args>"]): userArgs.add(a)
+      if args["--keep"]: userArgs.add("--keep")
       echo runUserCommand(cfg, userArgs)
     else:
       for a in @(args["<args>"]): userArgs.add(a)

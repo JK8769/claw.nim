@@ -762,22 +762,23 @@ proc poll(c: NMobileChannel) {.async.} =
               c.savePeers()
   
             if deliverToAgent:
-              infoC("nmobile", "Received " & contentType & " from " & src & " for " & (if agentName == "": "extension [Unassigned]" else: agentName))
-              if agentName == "":
-                infoC("nmobile", "Dropping message directed to unassigned extension")
-              else:
-                var md = initTable[string, string]()
-                md["content_type"] = contentType
-                if j.hasKey("id"): md["msg_id"] = j["id"].getStr()
-                if j.hasKey("options") and j["options"].kind == JObject:
-                  if j["options"].hasKey("fileType"): md["file_type"] = j["options"]["fileType"].getStr()
-                  if j["options"].hasKey("fileName"): md["file_name"] = j["options"]["fileName"].getStr()
-                if ipfsCidForMsg.len > 0:
-                  md["ipfs_cid"] = ipfsCidForMsg
-                if cachedPathForMsg.len > 0:
-                  md["ipfs_cache_path"] = cachedPathForMsg
-                  md["ipfs_cache_bytes"] = $cachedBytesForMsg
-                c.handleMessage(src, src, finalData, metadata = md, recipientID = agentName)
+              let destLabel = if agentName == "": "main-line (bind / default)" else: agentName
+              infoC("nmobile", "Received " & contentType & " from " & src & " for " & destLabel)
+              var md = initTable[string, string]()
+              md["content_type"] = contentType
+              if j.hasKey("id"): md["msg_id"] = j["id"].getStr()
+              if j.hasKey("options") and j["options"].kind == JObject:
+                if j["options"].hasKey("fileType"): md["file_type"] = j["options"]["fileType"].getStr()
+                if j["options"].hasKey("fileName"): md["file_name"] = j["options"]["fileName"].getStr()
+              if ipfsCidForMsg.len > 0:
+                md["ipfs_cid"] = ipfsCidForMsg
+              if cachedPathForMsg.len > 0:
+                md["ipfs_cache_path"] = cachedPathForMsg
+                md["ipfs_cache_bytes"] = $cachedBytesForMsg
+              # Empty agentName = bare-pubkey (main-line) client: gateway's
+              # default-recipient path runs the pre-LLM bind intercept, so
+              # forward with recipientID="" rather than dropping.
+              c.handleMessage(src, src, finalData, metadata = md, recipientID = agentName)
           except Exception as e:
             # Normal binary or plain text, use as-is or log error
             debugCF("nmobile", "Failed to parse JSON message, treating as raw", {"src": src, "error": e.msg}.toTable)

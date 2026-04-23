@@ -1368,6 +1368,12 @@ Options:
             let en = "\u{2713} Bound to " & b.targetName & " (" & b.targetNcId &
                      ", SuperAdmin). You're now authenticated on this channel."
             response = await maybeTranslate(cfg, en, plainContent)
+            # nMobile binds get a yellow book so the newly-bound SuperAdmin
+            # can save each agent's extension directly — matches what a
+            # customer sees after redeeming an invite through this channel.
+            if msg.channel == "nmobile":
+              response.add(nmobile_channel.nkyYellowBook(
+                cfg[], loadLang(b.targetNcId, "en")))
             break bindCheck
         # Customer-invite intercept — parses `nc:X/CODE` (or bare code)
         # and, if it matches a pending invite with a pre-allocated target,
