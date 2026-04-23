@@ -166,3 +166,47 @@ proc sendNKNMessage*(b: NknBridge, clientAddr, destAddr, message: string, maxHol
 proc closeNKNClient*(b: NknBridge, clientAddr: string): (string, string) =
   let resp = b.sendRequest("close_client", %*{"client_addr": clientAddr})
   (resp.getOrDefault("result").getStr(), resp.getOrDefault("error").getStr())
+
+# --- Seed-centric API — the preferred path for claw's nmobile channel. ---
+# The seed (32-byte Ed25519) IS the NKN identity. No password layer, no
+# encrypted wallet file — the seed lives in `.env` alongside other secrets
+# and the wallet-file indirection is skipped entirely.
+
+proc generateSeed*(b: NknBridge): (string, string) =
+  ## Fresh random seed for a brand-new NKN identity.
+  let resp = b.sendRequest("generate_seed", newJObject())
+  (resp.getOrDefault("result").getStr(), resp.getOrDefault("error").getStr())
+
+proc extractSeed*(b: NknBridge, walletJson, password: string): (string, string) =
+  ## Decrypt an existing encrypted wallet (e.g. exported from the nMobile
+  ## app) once to recover its seed, so it can be persisted in `.env` and
+  ## the wallet file discarded.
+  let resp = b.sendRequest("extract_seed", %*{
+    "wallet_json": walletJson,
+    "password": password
+  })
+  (resp.getOrDefault("result").getStr(), resp.getOrDefault("error").getStr())
+
+proc createClientFromSeed*(b: NknBridge, seedHex, identifier: string,
+                           numSubClients: int = 4, originalClient: bool = false):
+                           (string, string) =
+  ## Open a sub-client on `<identifier>.<pubkey>`. Same seed can back
+  ## many identifiers — the phone-line-plus-extension model.
+  let resp = b.sendRequest("create_client_from_seed", %*{
+    "seed_hex": seedHex,
+    "identifier": identifier,
+    "num_sub_clients": numSubClients,
+    "original_client": originalClient
+  })
+  (resp.getOrDefault("result").getStr(), resp.getOrDefault("error").getStr())
+
+proc getAddressFromSeed*(b: NknBridge, seedHex, identifier: string):
+                        (string, string) =
+  ## Compute the public `identifier.<pubkey>` address without opening a
+  ## client. Used by `co update` to stamp graph entities with their
+  ## full NKN address.
+  let resp = b.sendRequest("get_address_from_seed", %*{
+    "seed_hex": seedHex,
+    "identifier": identifier
+  })
+  (resp.getOrDefault("result").getStr(), resp.getOrDefault("error").getStr())

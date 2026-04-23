@@ -299,6 +299,20 @@ template channel*(chKind: string, body: untyped) =
       ## this app. Messages on this app_id land in `agentName`'s office.
       ch.fields.add((key: "app", val: appId))
       ch.fields.add((key: "app_agent:" & appId, val: agentName))
+    template identifier(sub, agentName: string) {.used.} =
+      ## nmobile identifier → agent. `<sub>.<pubkey>` routes inbound to
+      ## the named agent. Same seed backs many identifiers (phone-line
+      ## + extension model).
+      ch.fields.add((key: "identifier", val: sub))
+      ch.fields.add((key: "identifier_agent:" & sub, val: agentName))
+    template seed(envRef: string) {.used.} =
+      ## Bind the NKN seed to an env-var reference, e.g. `seed
+      ## "${NKN_WALLET_SEED}"`. The raw seed itself lives in .env.
+      ch.fields.add((key: "seed", val: envRef))
+    template numSubClients(n: int) {.used.} =
+      ch.fields.add((key: "numSubClients", val: $n))
+    template originalClient(b: bool) {.used.} =
+      ch.fields.add((key: "originalClient", val: $b))
     template appId(id: string) {.used.} =
       ch.fields.add((key: "appId", val: id))
     template appSecret(s: string) {.used.} =
@@ -721,7 +735,7 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
     "maixcam": {"enabled": false, "host": "0.0.0.0", "port": 18790, "allow_from": []},
     "qq": {"enabled": false, "app_id": "", "app_secret": "", "allow_from": []},
     "dingtalk": {"enabled": false, "client_id": "", "client_secret": "", "allow_from": []},
-    "nmobile": {"enabled": false, "stream_intermediary": false, "allow_from": []},
+    "nmobile": {"enabled": false, "stream_intermediary": false, "seed": "", "identifiers": [], "allow_from": []},
   }
   for ch in spec.channels:
     let k = ch.kind.toLowerAscii
@@ -738,6 +752,18 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
         if not result[k].hasKey("apps") or result[k]["apps"].kind != JArray:
           result[k]["apps"] = newJArray()
         result[k]["apps"].add(%*{"enabled": true, "app_id": f.val, "agent": ""})
+      of "identifier":
+        # nmobile identifiers array. `identifier_agent:<sub>` fields
+        # resolve in the post-loop pass, same pattern as Feishu apps.
+        if not result[k].hasKey("identifiers") or result[k]["identifiers"].kind != JArray:
+          result[k]["identifiers"] = newJArray()
+        result[k]["identifiers"].add(%*{"enabled": true, "identifier": f.val, "agent": ""})
+      of "seed":
+        # Preserve the env-ref verbatim. `loadConfig`'s expandEnv pass
+        # substitutes ${NKN_WALLET_SEED} at runtime.
+        result[k]["seed"] = %f.val
+      of "numSubClients": result[k]["num_sub_clients"] = %parseInt(f.val)
+      of "originalClient": result[k]["original_client"] = %parseBool(f.val)
       of "appId": result[k]["app_id"] = %f.val
       of "appSecret": result[k]["app_secret"] = %f.val
       of "clientId": result[k]["client_id"] = %f.val
@@ -760,6 +786,13 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
             for i in 0 ..< result[k]["apps"].len:
               if result[k]["apps"][i]{"app_id"}.getStr() == targetAppID:
                 result[k]["apps"][i]["agent"] = %f.val
+                break
+        elif f.key.startsWith("identifier_agent:"):
+          let targetSub = f.key["identifier_agent:".len .. ^1]
+          if result[k].hasKey("identifiers") and result[k]["identifiers"].kind == JArray:
+            for i in 0 ..< result[k]["identifiers"].len:
+              if result[k]["identifiers"][i]{"identifier"}.getStr() == targetSub:
+                result[k]["identifiers"][i]["agent"] = %f.val
                 break
         else:
           result[k][f.key] = %f.val

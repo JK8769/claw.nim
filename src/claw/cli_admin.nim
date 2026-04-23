@@ -656,97 +656,175 @@ proc authFeishuChannel*(cfg: var Config, args: seq[string]): string =
   res.add("\nRestart the gateway to connect.")
   return res
 
-proc addNMobileChannel(cfg: var Config, args: seq[string]): string =
-  ## Setup an nMobile/NKN channel.
-  ## Usage: nimclaw channel add nmobile [wallet.json path]
-  ##   If no wallet path given, generates a new wallet.
+proc slugForIdentifier(agentName: string): string =
+  ## Lowercase ASCII-safe sub-client name. NKN's sub-client identifier
+  ## is UTF-8-legal but operators read addresses in logs, dashboards,
+  ## and paste buffers — keep it predictable.
+  for c in agentName:
+    if c in {'a'..'z', '0'..'9'}: result.add(c)
+    elif c in {'A'..'Z'}: result.add(chr(ord(c) + 32))
 
-  # Start nkn-cli bridge for wallet operations
+proc writeEnvVar(envFile, key, value: string) =
+  ## Upsert `KEY=VALUE` in `.env`, preserving other lines.
+  var kept: seq[string] = @[]
+  if fileExists(envFile):
+    for line in readFile(envFile).splitLines():
+      if line.startsWith(key & "="): continue
+      if line.strip().len > 0: kept.add(line)
+  kept.add(key & "=" & value)
+  writeFile(envFile, kept.join("\n") & "\n")
+
+proc authNmobileChannel*(cfg: var Config, args: seq[string]): string =
+  ## Setup an nMobile (NKN comm) channel using the seed-centric model.
+  ## Usage:
+  ##   claw channel auth nmobile                       # new random seed
+  ##   claw channel auth nmobile <wallet.json>         # import + extract seed
+  ##   claw channel auth nmobile --seed=<hex>          # paste existing seed
+  ##   claw channel auth nmobile --identifier=<sub> --agent=<Name>
+  ##                                                   # add one mapping
+  ##
+  ## The seed IS the NKN identity (no coins — comm-only). Stored in
+  ## .env as NKN_WALLET_SEED. Identifier ↔ agent mapping goes into
+  ## BASE.nims `channel "nmobile":` block. No wallet file on disk.
+
   let bridge = newNknBridge(proc(c, s, d: string) = discard)
   defer: bridge.stop()
 
-  var walletJson = ""
-  var password = ""
+  # Flag parsing — --identifier= / --agent= / --seed= / positional wallet.
+  var walletPath = ""
+  var newIdentifier = ""
+  var newAgent = ""
+  var explicitSeed = ""
+  for a in args:
+    if a.startsWith("--identifier="):
+      newIdentifier = a["--identifier=".len .. ^1]
+    elif a.startsWith("--agent="):
+      newAgent = a["--agent=".len .. ^1]
+    elif a.startsWith("--seed="):
+      explicitSeed = a["--seed=".len .. ^1]
+    elif walletPath.len == 0 and not a.startsWith("-"):
+      walletPath = a
 
-  if args.len > 0 and fileExists(args[0]):
-    # Import existing wallet
-    walletJson = readFile(args[0])
-    echo "Imported wallet from: ", args[0]
-    stdout.write "Wallet password: "
-    password = readMaskedInput("")
-  elif cfg.channels.nmobile.wallet_json.len > 0 and cfg.channels.nmobile.wallet_json.startsWith("{"):
-    # Already configured in BASE.json
-    walletJson = cfg.channels.nmobile.wallet_json
-    password = expandEnv(cfg.channels.nmobile.password)
-    echo "Using existing wallet from config."
-  else:
-    # Generate new wallet
-    echo "No wallet found. Generating a new NKN wallet..."
-    stdout.write "Set wallet password: "
-    password = readMaskedInput("")
-    if password.len == 0:
-      return "Cancelled. Password is required."
-    let (wJson, wErr) = bridge.getWallet(password)
-    if wErr.len > 0:
-      return "Error generating wallet: " & wErr
-    walletJson = wJson
-    echo "Wallet generated."
-
-  # Resolve address
-  let identifier = if cfg.channels.nmobile.identifier.len > 0: cfg.channels.nmobile.identifier else: "Master"
-  let (nknAddr, addrErr) = bridge.getNKNAddress(walletJson, password, identifier)
-  if addrErr.len > 0:
-    return "Error resolving NKN address: " & addrErr & "\nCheck your wallet password."
-
-  echo "NKN Address: ", nknAddr
-
-  # Create channel directory: .claw/channels/nmobile/<address>/
-  let nmobileDir = getNimClawDir() / "channels" / "nmobile"
-  let addrDir = nmobileDir / nknAddr
-  createDir(addrDir)
-
-  # Save wallet to address dir
-  let walletPath = addrDir / "wallet.json"
-  writeFile(walletPath, walletJson)
-  echo "Wallet saved to: ", walletPath
-
-  # Create default extension dir
-  let extDir = addrDir / identifier
-  createDir(extDir / "cache" / "media")
-
-  # Store password in .env
   let envFile = getNimClawDir() / ".env"
-  var envLines: seq[string] = @[]
-  if fileExists(envFile):
-    for line in readFile(envFile).splitLines():
-      if not line.startsWith("NKN_WALLET_PASSWORD="):
-        if line.strip().len > 0: envLines.add(line)
-  envLines.add("NKN_WALLET_PASSWORD=" & password)
-  writeFile(envFile, envLines.join("\n") & "\n")
-  echo "Password stored in .env as NKN_WALLET_PASSWORD"
 
-  # Update config
-  cfg.channels.nmobile.enabled = true
-  cfg.channels.nmobile.wallet_json = walletJson
-  cfg.channels.nmobile.password = "${NKN_WALLET_PASSWORD}"
-  cfg.channels.nmobile.identifier = identifier
+  # Find existing seed (from env or an earlier run). Fresh auth only
+  # regenerates if nothing is in place; re-auth preserves identity.
+  var seedHex = expandEnv(cfg.channels.nmobile.seed)
+  if seedHex.len == 0:
+    # Fallback: look in .env directly.
+    if fileExists(envFile):
+      for line in readFile(envFile).splitLines():
+        if line.startsWith("NKN_WALLET_SEED="):
+          seedHex = line["NKN_WALLET_SEED=".len .. ^1]; break
 
-  # Save to graph (BASE.json) — update the nmobile section
-  let graphFile = getConfigPath()
-  if fileExists(graphFile):
-    var base = parseFile(graphFile)
-    if base.hasKey("config") and base["config"].hasKey("channels"):
-      base["config"]["channels"]["nmobile"]["enabled"] = %true
-      base["config"]["channels"]["nmobile"]["wallet_json"] = %walletJson
-      base["config"]["channels"]["nmobile"]["password"] = %"${NKN_WALLET_PASSWORD}"
-      base["config"]["channels"]["nmobile"]["identifier"] = %identifier
-      writeFile(graphFile, base.pretty(2))
+  # Identifier-only mode: seed must already exist. Append a new mapping.
+  let identifierOnly = newIdentifier.len > 0 and walletPath.len == 0 and
+                        explicitSeed.len == 0
+  if identifierOnly and seedHex.len == 0:
+    return "No existing NKN seed — run `claw channel auth nmobile` once " &
+           "to create one before binding more identifiers."
 
-  return "nMobile channel enabled.\n" &
-         "  Address: " & nknAddr & "\n" &
-         "  Identifier: " & identifier & "\n" &
-         "  Wallet: " & walletPath & "\n" &
-         "Restart the gateway to connect."
+  if not identifierOnly:
+    if explicitSeed.len > 0:
+      # Validate by deriving a pubkey.
+      let (_, err) = bridge.getAddressFromSeed(explicitSeed, "")
+      if err.len > 0:
+        return "Invalid seed: " & err
+      seedHex = explicitSeed
+      echo "Using supplied seed."
+    elif walletPath.len > 0:
+      if not fileExists(walletPath):
+        return "Error: wallet file not found at " & walletPath
+      let walletJson = readFile(walletPath)
+      stdout.write "Wallet password: "
+      let password = readMaskedInput("")
+      let (extracted, err) = bridge.extractSeed(walletJson, password)
+      if err.len > 0:
+        return "Failed to decrypt wallet: " & err & "\nWrong password?"
+      seedHex = extracted
+      echo "Seed extracted from ", walletPath, "."
+    elif seedHex.len == 0:
+      echo "Generating a new NKN seed (comm-only, no coins)..."
+      let (generated, err) = bridge.generateSeed()
+      if err.len > 0: return "Seed generation failed: " & err
+      seedHex = generated
+      echo "Seed generated."
+
+    writeEnvVar(envFile, "NKN_WALLET_SEED", seedHex)
+    cfg.channels.nmobile.enabled = true
+    cfg.channels.nmobile.seed = "${NKN_WALLET_SEED}"
+
+  # Auto-seed an identifier for every declared agent the first time,
+  # unless the caller supplied explicit identifier/agent on this run.
+  let firstRun = cfg.channels.nmobile.identifiers.len == 0 and
+                  newIdentifier.len == 0
+  if firstRun:
+    for a in cfg.agents.named:
+      if a.entity == "Human": continue
+      let sub = slugForIdentifier(a.name)
+      if sub.len == 0: continue
+      cfg.channels.nmobile.identifiers.add(NMobileIdentifierConfig(
+        enabled: some(true), identifier: sub, agent: a.name))
+
+  if newIdentifier.len > 0:
+    # Check-and-update or append.
+    var found = false
+    for i in 0 ..< cfg.channels.nmobile.identifiers.len:
+      if cfg.channels.nmobile.identifiers[i].identifier == newIdentifier:
+        cfg.channels.nmobile.identifiers[i].agent = newAgent
+        found = true; break
+    if not found:
+      cfg.channels.nmobile.identifiers.add(NMobileIdentifierConfig(
+        enabled: some(true), identifier: newIdentifier, agent: newAgent))
+
+  # Persist the updated config.
+  saveConfig(getConfigPath(), cfg)
+
+  # BASE.nims: make `co update` regenerate with the same shape. One
+  # `identifier "<sub>", "<Agent>"` line per mapping; seed field is an
+  # env-ref, never the raw hex.
+  var blockLines: seq[string] = @["channel \"nmobile\":",
+                                   "  seed \"${NKN_WALLET_SEED}\""]
+  for idCfg in cfg.channels.nmobile.identifiers:
+    if idCfg.agent.len > 0:
+      blockLines.add("  identifier \"" & idCfg.identifier & "\", \"" &
+                     idCfg.agent & "\"")
+    else:
+      blockLines.add("  identifier \"" & idCfg.identifier & "\"")
+  let fullBlock = blockLines.join("\n")
+  # Per-mapping append line (used when the block already exists in
+  # BASE.nims — appends new routes rather than rewriting).
+  let appendLine =
+    if newIdentifier.len > 0:
+      if newAgent.len > 0:
+        "  identifier \"" & newIdentifier & "\", \"" & newAgent & "\""
+      else: "  identifier \"" & newIdentifier & "\""
+    else: ""
+
+  let updated = ensureChannelInBaseNims("nmobile", fullBlock, appendLine)
+
+  # Compose the caller-facing summary. Print each identifier's full
+  # NKN address so operators can copy-paste for peers.
+  var lines: seq[string] = @[]
+  lines.add("nMobile channel configured.")
+  lines.add("  Seed in .env (NKN_WALLET_SEED).")
+  case updated
+  of cnuBlockAdded:     lines.add("  Appended channel block to BASE.nims.")
+  of cnuItemAdded:      lines.add("  Appended identifier to existing BASE.nims block.")
+  of cnuItemUpdated:    lines.add("  Updated existing identifier line in BASE.nims.")
+  of cnuAlreadyPresent: lines.add("  BASE.nims already declared this identifier.")
+  of cnuNoFile:         lines.add("  Warning: BASE.nims not found — `co update` won't preserve this.")
+  if cfg.channels.nmobile.identifiers.len > 0:
+    lines.add("")
+    lines.add("Addresses:")
+    for idCfg in cfg.channels.nmobile.identifiers:
+      let (fullAddr, err) = bridge.getAddressFromSeed(seedHex, idCfg.identifier)
+      if err.len == 0:
+        lines.add("  " & fullAddr & "  (" &
+                  (if idCfg.agent.len > 0: idCfg.agent else: "unbound") & ")")
+  lines.add("")
+  lines.add("Restart the gateway to connect.")
+  lines.join("\n")
 
 proc loadChannelTypes(): JsonNode =
   ## Read res/channels.json — the catalog of channel TYPES the binary
@@ -910,7 +988,7 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
              "`claw channel types`)."
     case args[1]
     of "feishu", "lark": return authFeishuChannel(cfg, args[2..^1])
-    of "nmobile", "nkn": return addNMobileChannel(cfg, args[2..^1])
+    of "nmobile", "nkn": return authNmobileChannel(cfg, args[2..^1])
     else: return "Auth helper not yet available for '" & args[1] & "'.\n" &
                  "Set the required env vars from `claw channel types` and\n" &
                  "declare the channel block in BASE.nims directly."

@@ -90,12 +90,25 @@ type
     client_secret*: string
     allow_from*: seq[string]
 
+  NMobileIdentifierConfig* = object
+    ## One NKN sub-client slot — `<identifier>.<pubkey>` routes inbound
+    ## to the named agent's office. Mirrors `FeishuAppConfig`.
+    enabled*: Option[bool]
+    identifier*: string
+    agent*: string
+
   NMobileConfig* = object
     enabled*: bool
     stream_intermediary*: bool
+    # Legacy fields — kept for back-compat with existing encrypted-wallet
+    # deployments. New configs use `seed` (via NKN_WALLET_SEED in .env)
+    # plus the `identifiers` list below.
     wallet_json*: string
     password*: string
     identifier*: string
+    # New seed-centric model: one seed powers many identifier sub-clients.
+    seed*: string                              ## NKN_WALLET_SEED env expansion
+    identifiers*: seq[NMobileIdentifierConfig] ## sub-client → agent mapping
     allow_from*: seq[string]
     fcm_key*: string
     push_proxy*: string

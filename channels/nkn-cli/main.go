@@ -109,6 +109,115 @@ func handleGenerateWalletWithSeed(id string, params json.RawMessage) {
 	sendJSON(Response{ID: id, Result: walletJSON})
 }
 
+// Seed-centric path — NKN comm-identity without the coin-wallet ceremony.
+// The seed IS the identity; no password, no encrypted wallet file.
+// See claw's nmobile channel design.
+
+func handleCreateClientFromSeed(id string, params json.RawMessage) {
+	var p struct {
+		SeedHex        string `json:"seed_hex"`
+		Identifier     string `json:"identifier"`
+		NumSubClients  int    `json:"num_sub_clients"`
+		OriginalClient bool   `json:"original_client"`
+	}
+	json.Unmarshal(params, &p)
+
+	seed, err := hex.DecodeString(p.SeedHex)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: "bad seed hex: " + err.Error()})
+		return
+	}
+	account, err := nkn.NewAccount(seed)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+
+	client, err := nkn.NewMultiClient(account, p.Identifier, p.NumSubClients, p.OriginalClient, nil)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+
+	<-client.OnConnect.C
+	addr := client.Address()
+
+	mutex.Lock()
+	activeClients[addr] = client
+	mutex.Unlock()
+
+	// Push received messages to stdout
+	go func() {
+		for msg := range client.OnMessage.C {
+			sendJSON(IncomingMessage{
+				Type:       "message",
+				ClientAddr: addr,
+				Src:        msg.Src,
+				Data:       string(msg.Data),
+			})
+		}
+	}()
+
+	sendJSON(Response{ID: id, Result: addr})
+}
+
+func handleGetAddressFromSeed(id string, params json.RawMessage) {
+	var p struct {
+		SeedHex    string `json:"seed_hex"`
+		Identifier string `json:"identifier"`
+	}
+	json.Unmarshal(params, &p)
+
+	seed, err := hex.DecodeString(p.SeedHex)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: "bad seed hex: " + err.Error()})
+		return
+	}
+	account, err := nkn.NewAccount(seed)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+
+	pubKey := hex.EncodeToString(account.PubKey())
+	var addr string
+	if len(p.Identifier) > 0 {
+		addr = p.Identifier + "." + pubKey
+	} else {
+		addr = pubKey
+	}
+	sendJSON(Response{ID: id, Result: addr})
+}
+
+// Compat path for importing a legacy encrypted wallet (e.g. exported
+// from the nMobile app). Decrypts once, returns the seed so the caller
+// can persist just that going forward.
+
+func handleExtractSeed(id string, params json.RawMessage) {
+	var p struct {
+		WalletJSON string `json:"wallet_json"`
+		Password   string `json:"password"`
+	}
+	json.Unmarshal(params, &p)
+
+	w, err := nkn.WalletFromJSON(p.WalletJSON, &nkn.WalletConfig{Password: p.Password})
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+	sendJSON(Response{ID: id, Result: hex.EncodeToString(w.Seed())})
+}
+
+func handleGenerateSeed(id string, params json.RawMessage) {
+	// Fresh random seed, no encryption, no wallet file.
+	account, err := nkn.NewAccount(nil)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+	sendJSON(Response{ID: id, Result: hex.EncodeToString(account.Seed())})
+}
+
 func handleCreateClient(id string, params json.RawMessage) {
 	var p struct {
 		WalletJSON     string `json:"wallet_json"`
@@ -254,10 +363,18 @@ func main() {
 				handleGenerateWallet(req.ID, req.Params)
 			case "generate_wallet_with_seed":
 				handleGenerateWalletWithSeed(req.ID, req.Params)
+			case "generate_seed":
+				handleGenerateSeed(req.ID, req.Params)
+			case "extract_seed":
+				handleExtractSeed(req.ID, req.Params)
 			case "create_client":
 				handleCreateClient(req.ID, req.Params)
+			case "create_client_from_seed":
+				handleCreateClientFromSeed(req.ID, req.Params)
 			case "get_address":
 				handleGetAddress(req.ID, req.Params)
+			case "get_address_from_seed":
+				handleGetAddressFromSeed(req.ID, req.Params)
 			case "send_message":
 				handleSendMessage(req.ID, req.Params)
 			case "close_client":
