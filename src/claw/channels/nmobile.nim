@@ -717,11 +717,20 @@ proc poll(c: NMobileChannel) {.async.} =
                   pongPayload["options"] = %*{"profileVersion": info.profileVersion, "push": true}
                 else:
                   pongPayload["options"] = %*{"push": true}
-                
+
                 let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
                 discard c.bridge.sendNKNMessage(clientAddr, src, $pongPayload, maxHoldingSeconds = ttl, noReply = true)
               # removed continue
-  
+
+            of "device:request", "contact", "event:contactOptions":
+              # nMobile app-protocol handshakes fired automatically the
+              # first time a peer saves our address as a contact — not
+              # user-authored. Absorb silently instead of waking the
+              # agent loop with a translated "I can't read this" turn.
+              debugCF("nmobile", "Protocol handshake absorbed",
+                      {"src": src, "type": contentType,
+                       "id": j.safeGetStr("id")}.toTable)
+
             else:
               infoChanged = true
               deliverToAgent = true
