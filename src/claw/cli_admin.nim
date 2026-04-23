@@ -3339,16 +3339,26 @@ proc readAgentState(officeDir: string): string =
     return "idle"
 
 proc renderQRAsString(qr: DrawedQRCode): string =
-  ## Renders a QR code as a string of block characters for markdown
+  ## Render a QR code to a string of block characters. Each module is two
+  ## columns wide (block chars are ~2:1 tall) so the on-screen aspect is
+  ## roughly square. A 4-module quiet zone is added on every side — phone
+  ## scanners need it to locate the finder patterns, and without it the
+  ## QR is effectively unscannable on-screen.
+  const Quiet = 4
   let size = qr.drawing.size
+  let rowLen = (size.int + Quiet * 2) * 2  # 2 chars per module horizontally
+  let blankRow = ' '.repeat(rowLen) & "\n"
   result = ""
-  for y in 0'u8..<size.uint8:
-    for x in 0'u8..<size.uint8:
-      # Use the explicit func rename or just access the matrix if ambiguity persists
+  for _ in 0 ..< Quiet: result.add(blankRow)
+  for y in 0'u8 ..< size.uint8:
+    result.add(' '.repeat(Quiet * 2))
+    for x in 0'u8 ..< size.uint8:
       let bitPos: uint16 = y.uint16 * size + x
       let val = ((qr.drawing.matrix[bitPos div 8] shr (7 - (bitPos mod 8))) and 0x01) == 0x01
       result.add(if val: "██" else: "  ")
-    result.add "\n"
+    result.add(' '.repeat(Quiet * 2))
+    result.add('\n')
+  for _ in 0 ..< Quiet: result.add(blankRow)
 
 proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
