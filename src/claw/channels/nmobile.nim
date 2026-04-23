@@ -385,7 +385,12 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
     fcmKey: ncfg.fcm_key,
     pushProxy: ncfg.push_proxy,
     enableOfflineQueue: ncfg.enable_offline_queue,
-    decryptIpfsCache: (if options.isSome(ncfg.decrypt_ipfs_cache): options.get(ncfg.decrypt_ipfs_cache) else: false),
+    # Default on — encrypted IPFS is how nmobile clients transmit
+    # photos, and the AES-GCM pipeline is local only (we already have
+    # the download + decrypt code; skipping by default meant customers
+    # got "I can't see images" for every photo they sent). Operators
+    # can still opt out via `decrypt_ipfs_cache: false` in config.
+    decryptIpfsCache: (if options.isSome(ncfg.decrypt_ipfs_cache): options.get(ncfg.decrypt_ipfs_cache) else: true),
     messageTTLHours: ncfg.message_ttl_hours,
     numSubClients: ncfg.num_sub_clients,
     originalClient: ncfg.original_client,
@@ -610,22 +615,44 @@ proc poll(c: NMobileChannel) {.async.} =
                   discard
                 infoCF("nmobile", "IPFS cache task queued", {"src": src, "cidPrefix": ipfsHashPrefix, "cacheDir": cacheDir}.toTable)
 
-              var autoReply = ""
-              autoReply.add("I received your message, but I can't open images/files on NKN/NMobile yet for security reasons. ")
-              autoReply.add("Please describe it in text, or resend via Feishu.\n\n")
-              autoReply.add("我收到了你发来的图片/文件，但出于安全原因我暂时无法在 NKN/NMobile 上打开。请用文字描述，或通过飞书重新发送。")
-              autoReply.add("\n\nDetected type: " & contentType & (if fileType.len > 0: " (" & fileType & ")" else: ""))
-              if contentType == "ipfs" and ipfsHashPrefix.len > 0:
-                autoReply.add("\nCID(prefix): " & ipfsHashPrefix & "… (len=" & $ipfsHashLen & ")")
-              let replyPayload = c.genPayload("text", autoReply, genUUID())
-              var replyOptions = newJObject()
-              replyOptions["push"] = %true
-              if info.profileVersion.len > 0:
-                replyOptions["profileVersion"] = %info.profileVersion
-              replyPayload["options"] = replyOptions
-              let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
-              discard c.bridge.sendNKNMessage(clientAddr, src, $replyPayload, maxHoldingSeconds = ttl, noReply = true)
-              finalData.add(" (Note: user was auto-notified about this limitation.)")
+              # An IPFS image we can decrypt will arrive via the async
+              # cache task and be delivered to the agent as [image:
+              # <path>]; sending a "can't open" decline first would
+              # confuse the thread. Skip the autoreply in that case.
+              let willDecryptIpfs = contentType == "ipfs" and c.decryptIpfsCache and
+                                     ipfsCid.len > 0 and
+                                     j.hasKey("options") and j["options"].kind == JObject and
+                                     j["options"].hasKey("ipfsEncrypt") and
+                                     j["options"]["ipfsEncrypt"].kind in {JInt, JFloat} and
+                                     j["options"]["ipfsEncrypt"].getInt() == 1 and
+                                     j["options"].hasKey("ipfsEncryptKeyBytes") and
+                                     j["options"]["ipfsEncryptKeyBytes"].kind == JArray and
+                                     j["options"]["ipfsEncryptKeyBytes"].len == 16
+              if willDecryptIpfs:
+                # Async cache task will deliver [image: <path>] to the
+                # agent when it completes. Skip the synchronous
+                # placeholder delivery so the agent sees one clean
+                # message instead of "User sent a file... (pending)"
+                # followed by the real image.
+                deliverToAgent = false
+              if not willDecryptIpfs:
+                var autoReply = ""
+                autoReply.add("I received your message, but I can't open images/files on NKN/NMobile yet for security reasons. ")
+                autoReply.add("Please describe it in text, or resend via Feishu.\n\n")
+                autoReply.add("我收到了你发来的图片/文件，但出于安全原因我暂时无法在 NKN/NMobile 上打开。请用文字描述，或通过飞书重新发送。")
+                autoReply.add("\n\nDetected type: " & contentType & (if fileType.len > 0: " (" & fileType & ")" else: ""))
+                if contentType == "ipfs" and ipfsHashPrefix.len > 0:
+                  autoReply.add("\nCID(prefix): " & ipfsHashPrefix & "… (len=" & $ipfsHashLen & ")")
+                let replyPayload = c.genPayload("textExtension", autoReply, genUUID())
+                var replyOptions = newJObject()
+                replyOptions["push"] = %true
+                replyOptions["isMarkdown"] = %true
+                if info.profileVersion.len > 0:
+                  replyOptions["profileVersion"] = %info.profileVersion
+                replyPayload["options"] = replyOptions
+                let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
+                discard c.bridge.sendNKNMessage(clientAddr, src, $replyPayload, maxHoldingSeconds = ttl, noReply = true)
+                finalData.add(" (Note: user was auto-notified about this limitation.)")
               
               if contentType == "ipfs" and ipfsCid.len > 0 and agentName != "":
                 let opts = if j.hasKey("options") and j["options"].kind == JObject: j["options"] else: nil
@@ -636,20 +663,57 @@ proc poll(c: NMobileChannel) {.async.} =
                 let prefix2 = ipfsHashPrefix
                 let len2 = ipfsHashLen
                 let clientAddr2 = clientAddr
+                let isImageHint = (fileType == "image")
                 asyncCheck((proc() {.async.} =
                   infoCF("nmobile", "IPFS cache task start", {"src": src2, "cidPrefix": prefix2}.toTable)
                   let dl = await c.tryDownloadIpfsToCache(src2, cid2, fn2, opts, clientAddr2)
                   if dl[0] and dl[1].len > 0:
+                    # Detect actual image content by magic bytes in case
+                    # the sender mis-labels or the fileType hint is
+                    # missing. Rename with the right extension so the
+                    # agent can open the cache file directly.
+                    var finalPath = dl[1]
+                    var isImage = isImageHint
+                    var ext = ""
+                    try:
+                      let f = open(finalPath, fmRead)
+                      var head: array[8, byte]
+                      let n = f.readBytes(head, 0, 8)
+                      f.close()
+                      if n >= 3 and head[0] == 0xFF and head[1] == 0xD8 and head[2] == 0xFF:
+                        ext = ".jpg"; isImage = true
+                      elif n >= 8 and head[0] == 0x89 and head[1] == 0x50 and
+                           head[2] == 0x4E and head[3] == 0x47:
+                        ext = ".png"; isImage = true
+                      elif n >= 6 and head[0] == 0x47 and head[1] == 0x49 and
+                           head[2] == 0x46:
+                        ext = ".gif"; isImage = true
+                      elif n >= 12 and head[0] == 0x52 and head[1] == 0x49 and
+                           head[2] == 0x46 and head[3] == 0x46:
+                        ext = ".webp"; isImage = true
+                    except CatchableError: discard
+                    if ext.len > 0 and not finalPath.endsWith(ext):
+                      let newPath = finalPath & ext
+                      try:
+                        moveFile(finalPath, newPath)
+                        finalPath = newPath
+                      except CatchableError: discard
                     var md2 = initTable[string, string]()
-                    md2["content_type"] = "ipfs_cached"
+                    md2["content_type"] = if isImage: "ipfs_image" else: "ipfs_cached"
                     md2["ipfs_cid"] = cid2
-                    md2["ipfs_cache_path"] = dl[1]
+                    md2["ipfs_cache_path"] = finalPath
                     md2["ipfs_cache_bytes"] = $dl[2]
-                    var msg2 = "IPFS file cached. "
-                    if fn2.len > 0:
-                      msg2.add("Filename: " & fn2 & ". ")
-                    msg2.add("CID(prefix): " & prefix2 & "… (len=" & $len2 & "). ")
-                    msg2.add("CachePath: " & dl[1] & ". Bytes: " & $dl[2] & ".")
+                    let msg2 =
+                      if isImage:
+                        # Same marker shape as the inline-image path so
+                        # the agent's image-aware tools can pick it up.
+                        "[image: " & finalPath & "]"
+                      else:
+                        var s = "IPFS file cached. "
+                        if fn2.len > 0: s.add("Filename: " & fn2 & ". ")
+                        s.add("CID(prefix): " & prefix2 & "… (len=" & $len2 & "). ")
+                        s.add("Path: " & finalPath & ". Bytes: " & $dl[2] & ".")
+                        s
                     c.handleMessage(src2, src2, msg2, metadata = md2, recipientID = agent2)
                   else:
                     infoCF("nmobile", "IPFS cache task finish (not cached)", {"src": src2, "cidPrefix": prefix2}.toTable)
