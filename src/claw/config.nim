@@ -14,7 +14,6 @@ type
 
   NamedAgentConfig* = object
     name*: string
-    nkn_identifier*: Option[string]
     api_key*: Option[string]
     provider*: string
     model*: string

@@ -329,11 +329,11 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
   except:
     discard
   
-  # Identity resolution: prefer the DSL `channel "nmobile": identifier` list
-  # (seed-centric model). Fall back to the legacy NamedAgentConfig.
-  # nkn_identifier scatter + implicit name-as-identifier only when the new
-  # block is empty (a deployment that hasn't re-run `claw channel auth`
-  # under the new model).
+  # Identity resolution: the DSL `channel "nmobile": identifier` list is
+  # the only source of sub-client→agent routing. When it's empty (company
+  # hasn't run `claw channel auth nmobile` yet), we default-route every
+  # AI agent to a slug of its name, so the channel still comes up for
+  # first-boot smoke tests.
   var idPairs: seq[(string, string)] = @[]
   var agentMap = initTable[string, string]()
   if ncfg.identifiers.len > 0:
@@ -350,11 +350,8 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
         infoCF("nmobile", "Skipping NKN extension for Human entity",
                {"name": a.name}.toTable)
         continue
-      let id = if a.nkn_identifier.isSome and a.nkn_identifier.get().len > 0:
-                 a.nkn_identifier.get()
-               else: a.name
-      agentMap[a.name] = id
-      idPairs.add((id, a.name))
+      agentMap[a.name] = a.name
+      idPairs.add((a.name, a.name))
 
   result = NMobileChannel(
     bus: base.bus,
@@ -817,6 +814,34 @@ const
   NknClientMaxAgeSec = 14_400   ## 4h blind cycle cap (same as feishu).
   NknClientStaleSec  = 900      ## 15min silent → treat as dead.
   NknWatchdogTickSec = 60       ## Scan cadence.
+
+proc nkyYellowBook*(cfg: Config, lang = "en"): string =
+  ## Build a "phone directory" of agent NKN addresses — printed to a
+  ## newly-bound nMobile customer after invite redemption so they can
+  ## save each agent directly in their contacts.
+  ##
+  ## Empty string when no nMobile channel is configured or the seed
+  ## isn't available — caller just skips the section.
+  let seed = expandEnv(cfg.channels.nmobile.seed)
+  if seed.len == 0 or cfg.channels.nmobile.identifiers.len == 0: return ""
+  var entries: seq[(string, string)] = @[]
+  try:
+    let bridge = newNknBridge()
+    defer: bridge.stop()
+    for idCfg in cfg.channels.nmobile.identifiers:
+      if idCfg.agent.len == 0 or idCfg.identifier.len == 0: continue
+      let (fullAddr, err) = bridge.getAddressFromSeed(seed, idCfg.identifier)
+      if err.len == 0 and fullAddr.len > 0:
+        entries.add((idCfg.agent, fullAddr))
+  except CatchableError: discard
+  if entries.len == 0: return ""
+  let zh = lang.startsWith("zh")
+  result = if zh:
+    "\n\n---\n\n📇 **您可直接联系我们的助理（nMobile 通讯录）**\n\n"
+  else:
+    "\n\n---\n\n📇 **Direct lines — add to your nMobile contacts**\n\n"
+  for (agent, fullAddr) in entries:
+    result.add("- **" & agent & "**\n  `" & fullAddr & "`\n")
 
 proc clientWatchdog(c: NMobileChannel) {.thread.} =
   ## SIGKILL+respawn NKN sub-clients whose relay session has gone silently

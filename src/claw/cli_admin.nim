@@ -656,6 +656,8 @@ proc authFeishuChannel*(cfg: var Config, args: seq[string]): string =
   res.add("\nRestart the gateway to connect.")
   return res
 
+proc renderQRAsString(qr: DrawedQRCode): string  # forward: defined later
+
 proc slugForIdentifier(agentName: string): string =
   ## Lowercase ASCII-safe sub-client name. NKN's sub-client identifier
   ## is UTF-8-legal but operators read addresses in logs, dashboards,
@@ -816,12 +818,17 @@ proc authNmobileChannel*(cfg: var Config, args: seq[string]): string =
   of cnuNoFile:         lines.add("  Warning: BASE.nims not found — `co update` won't preserve this.")
   if cfg.channels.nmobile.identifiers.len > 0:
     lines.add("")
-    lines.add("Addresses:")
+    lines.add("Addresses — scan with the nMobile app to add as contact:")
     for idCfg in cfg.channels.nmobile.identifiers:
       let (fullAddr, err) = bridge.getAddressFromSeed(seedHex, idCfg.identifier)
-      if err.len == 0:
-        lines.add("  " & fullAddr & "  (" &
-                  (if idCfg.agent.len > 0: idCfg.agent else: "unbound") & ")")
+      if err.len > 0: continue
+      let agentLabel = if idCfg.agent.len > 0: idCfg.agent else: "unbound"
+      lines.add("")
+      lines.add("  " & agentLabel & "  →  " & fullAddr)
+      try:
+        lines.add(indent(renderQRAsString(newQR(fullAddr)), 2))
+      except CatchableError:
+        lines.add("    (QR render failed — use the address string above)")
   lines.add("")
   lines.add("Restart the gateway to connect.")
   lines.join("\n")
@@ -3732,15 +3739,26 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
     var cardContent = "# Business Card: " & name & "\n\n"
     cardContent &= "## " & customerName & "\n\n"
     
-    var identifier = name # Use agent name as default identifier for professional look
-    if agentConfig.nkn_identifier.isSome:
-      identifier = agentConfig.nkn_identifier.get()
-      
+    # Look up the agent's sub-identifier from the `channel "nmobile":`
+    # DSL block. Fall back to the agent's own name if the block is
+    # empty (first-boot smoke-test default).
+    var identifier = name
+    for idCfg in cfg.channels.nmobile.identifiers:
+      if idCfg.agent == name and idCfg.identifier.len > 0:
+        identifier = idCfg.identifier
+        break
+
     var addrNkn = ""
     var err = ""
     try:
       let bridge = newNknBridge()
-      (addrNkn, err) = bridge.getNKNAddress(cfg.channels.nmobile.wallet_json, cfg.channels.nmobile.password, identifier)
+      let seed = expandEnv(cfg.channels.nmobile.seed)
+      if seed.len > 0:
+        (addrNkn, err) = bridge.getAddressFromSeed(seed, identifier)
+      else:
+        (addrNkn, err) = bridge.getNKNAddress(
+          cfg.channels.nmobile.wallet_json,
+          expandEnv(cfg.channels.nmobile.password), identifier)
       bridge.stop()
     except:
       err = getCurrentExceptionMsg()

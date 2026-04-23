@@ -9,7 +9,7 @@ import billing/[subscription as sub_mod, welcome as welcome_mod, company as comp
 import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
 import providers/http, providers/types as providers_types, protocol
-import channels/[base as channel_base, manager as channel_manager]
+import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
 import services/[heartbeat, cron as cron_service]
 import daemon/[socket, status]
 
@@ -1465,6 +1465,11 @@ Options:
                   # Welcome text is hand-authored per language — skip
                   # maybeTranslate (which is for one-off English strings).
                   response = welcomeMessage(ctx)
+                  # For nMobile onboardees, append the "yellow book" — a
+                  # directory of each agent's full NKN address so the
+                  # customer can save them directly in the nMobile app.
+                  if msg.channel == "nmobile":
+                    response.add(nmobile_channel.nkyYellowBook(cfg[], effLang))
                   stderr.writeLine "claw: customer-invite redeemed " &
                                    inv.targetNcId & " via " & channelKey &
                                    " ← " & msg.sender_id & " [lang=" &
