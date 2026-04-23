@@ -1620,6 +1620,32 @@ Options:
                     "chat": msg.chat_id}.toTable)
         if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
+            # System commands are operator-level actions — gateway/config
+            # control, not conversation. They're accepted ONLY when the
+            # message is addressed to the company (corporate entity).
+            # A customer DMing `atlas.<pubkey>` or `cli_<app>_agent` with
+            # `/restart` gets silently dropped; the agent never sees it
+            # and the gateway doesn't act on it. The company main-line
+            # address is the single intended surface for these commands.
+            let targetsCompany =
+              if msg.recipient_id.len == 0:
+                true  # bare main-line / default fallback — accept
+              else:
+                var hit = false
+                let g = loadWorld(cfg[].workspacePath())
+                if g != nil:
+                  for ent in g.entities.values:
+                    if ent.kind == ekCorporate and
+                       ent.name == msg.recipient_id:
+                      hit = true; break
+                hit
+            if not targetsCompany:
+              infoCF("claw", "Dropped slash command — not routed to company",
+                     {"sender": msg.sender_id,
+                      "recipient": msg.recipient_id,
+                      "channel": msg.channel,
+                      "cmd": plainContent[0 ..< min(plainContent.len, 48)]}.toTable)
+              continue  # skip the rest of handling; no reply to non-op paths
             # Fast path: system commands run in a spawned task so they
             # don't block the main inbound loop behind a 10-60s agent
             # turn on an unrelated chat. These handlers are read-only
