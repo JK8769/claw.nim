@@ -1042,6 +1042,9 @@ method send*(c: NMobileChannel, msg: OutboundMessage) {.async.} =
       if name == "":
         senderAddr = addr; break
   if senderAddr.len == 0: senderAddr = c.clientAddrs[0]
+  debugCF("nmobile", "Outbound routing",
+          {"sender_agent": msg.sender_agent, "senderAddr": senderAddr,
+           "dest": msg.chat_id}.toTable)
 
   if msg.kind == Typing:
     # Handle typing/thinking feedback for nMobile

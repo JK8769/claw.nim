@@ -1715,10 +1715,19 @@ Options:
           # Preserve the app_id so a reply to a Feishu message on App B
           # goes out on App B's lark-cli (not whichever is first-enabled).
           let inboundAppID = msg.metadata.getOrDefault("app_id", "")
-          msgBus.publishOutbound(newOutbound(msg.channel, recipient, msg.chat_id, response,
+          # Responses from this path (bind intercept, invite redeem, gate
+          # refusals — anything gateway-built, NOT agent LLM output) must
+          # carry the ORIGINAL `recipient_id` as sender_agent, not the
+          # "Lexi" fallback above. The fallback is the office routing key;
+          # reusing it as sender_agent stamps gateway-built replies as
+          # coming from Lexi, which on nmobile routes out through
+          # `lexi.<pub>` instead of the main-line client the customer
+          # actually DM'd.
+          let outSender = msg.recipient_id
+          msgBus.publishOutbound(newOutbound(msg.channel, outSender, msg.chat_id, response,
                                              appID = inboundAppID,
                                              metadata = finalMeta))
-          statusEmitter.emitChannelMsg(msg.channel, "out", recipient)
+          statusEmitter.emitChannelMsg(msg.channel, "out", outSender)
           discard  # TODO: emit activity event via stdio
       except Exception as e:
         errorCF("claw", "Message loop error", {"error": e.msg}.toTable)
