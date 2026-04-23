@@ -4,12 +4,16 @@ import ../crypto_gcm
 import ../bus, ../bus_types, ../config, ../logger
 import ../agent/cortex as cortex_mod
 import ../libnkn/nkn_bridge
+import ../version
 
 type
   PeerInfo = object
     deviceId: string
     profileVersion: string
     deviceToken: string
+    displayName: string            ## From peer's `contact`/`contact:profile`
+                                    ## card — the name they chose to show
+                                    ## in their nMobile app.
     lastGreetingAt: float
 
   NknQueueItem = tuple[clientAddr, src, data: string]
@@ -314,6 +318,7 @@ proc loadPeers(c: NMobileChannel) =
         if v.hasKey("deviceId"): info.deviceId = v["deviceId"].getStr()
         if v.hasKey("profileVersion"): info.profileVersion = v["profileVersion"].getStr()
         if v.hasKey("deviceToken"): info.deviceToken = v["deviceToken"].getStr()
+        if v.hasKey("displayName"): info.displayName = v["displayName"].getStr()
         if v.hasKey("lastGreetingAt"): info.lastGreetingAt = v["lastGreetingAt"].getFloat()
         c.peers[k] = info
       infoCF("nmobile", "Loaded peers from disk", {"count": $c.peers.len}.toTable)
@@ -510,7 +515,9 @@ proc poll(c: NMobileChannel) {.async.} =
             case contentType
             of "text":
               finalData = j["content"].getStr()
-              infoCF("nmobile", "Text message received", {"src": src, "agent": agentName, "msg": finalData}.toTable)
+              var textFields = {"src": src, "agent": agentName, "msg": finalData}.toTable
+              if info.displayName.len > 0: textFields["from"] = info.displayName
+              infoCF("nmobile", "Text message received", textFields)
               
               infoChanged = true
               deliverToAgent = true
@@ -722,11 +729,70 @@ proc poll(c: NMobileChannel) {.async.} =
                 discard c.bridge.sendNKNMessage(clientAddr, src, $pongPayload, maxHoldingSeconds = ttl, noReply = true)
               # removed continue
 
-            of "device:request", "contact", "event:contactOptions":
-              # nMobile app-protocol handshakes fired automatically the
-              # first time a peer saves our address as a contact — not
-              # user-authored. Absorb silently instead of waking the
-              # agent loop with a translated "I can't read this" turn.
+            of "contact", "contact:profile":
+              # Peer's contact card — capture the display name so logs
+              # and outbound metadata can reference a human label instead
+              # of a bare pubkey. nMobile's schema nests name fields in
+              # `content`; top-level `version` is the profile version.
+              # See nmobile's `getContactProfileResponseFull`
+              # (lib/schema/message.dart:1247-1267).
+              if j.hasKey("version") and j["version"].kind == JString:
+                let pv = j["version"].getStr()
+                if pv.len > 0 and info.profileVersion != pv:
+                  info.profileVersion = pv
+                  infoChanged = true
+              if j.hasKey("content") and j["content"].kind == JObject:
+                let content = j["content"]
+                var newName = ""
+                # Precedence: explicit `name` wins (that's what the peer
+                # chose to display); else first_name [+ last_name].
+                if content.hasKey("name") and content["name"].kind == JString:
+                  newName = content["name"].getStr()
+                elif content.hasKey("first_name") and content["first_name"].kind == JString:
+                  newName = content["first_name"].getStr()
+                  if content.hasKey("last_name") and content["last_name"].kind == JString:
+                    let ln = content["last_name"].getStr()
+                    if ln.len > 0: newName.add(" " & ln)
+                newName = newName.strip()
+                if newName.len > 0 and info.displayName != newName:
+                  info.displayName = newName
+                  infoChanged = true
+                  infoCF("nmobile", "Captured peer displayName",
+                         {"src": src, "displayName": newName,
+                          "contentType": contentType}.toTable)
+              debugCF("nmobile", "Contact handshake absorbed",
+                      {"src": src, "type": contentType,
+                       "id": j.safeGetStr("id")}.toTable)
+
+            of "device:request":
+              # Peer asking for our device info so their state machine
+              # can finish the new-contact handshake. We're a gateway
+              # (no FCM handle), so respond with an empty deviceToken —
+              # nmobile's chat_in.dart:555-599 accepts the handshake and
+              # just skips the push-to-us path, which is what we want.
+              # See nmobile's `getDeviceInfoResponse` at
+              # lib/schema/message.dart:1297-1308.
+              let reqId = j.safeGetStr("id")
+              let diPayload = c.genPayload("device:info", "", genUUID())
+              diPayload["appName"] = %"nimclaw"
+              diPayload["appVersion"] = %versionString()
+              diPayload["platform"] = %"gateway"
+              diPayload["platformVersion"] = %(hostOS & " " & hostCPU)
+              diPayload["deviceToken"] = %""  # headless — no FCM target
+              var diOpts = newJObject()
+              diOpts["push"] = %true
+              if info.profileVersion.len > 0:
+                diOpts["profileVersion"] = %info.profileVersion
+              diPayload["options"] = diOpts
+              let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
+              discard c.bridge.sendNKNMessage(clientAddr, src, $diPayload,
+                                              maxHoldingSeconds = ttl, noReply = true)
+              debugCF("nmobile", "Replied to device:request with headless device:info",
+                      {"src": src, "reqId": reqId}.toTable)
+
+            of "event:contactOptions":
+              # Peer's contact settings changed event — nothing for us
+              # to act on. Absorb silently.
               debugCF("nmobile", "Protocol handshake absorbed",
                       {"src": src, "type": contentType,
                        "id": j.safeGetStr("id")}.toTable)
@@ -772,7 +838,10 @@ proc poll(c: NMobileChannel) {.async.} =
   
             if deliverToAgent:
               let destLabel = if agentName == "": "main-line (bind / default)" else: agentName
-              infoC("nmobile", "Received " & contentType & " from " & src & " for " & destLabel)
+              let fromLabel =
+                if info.displayName.len > 0: info.displayName & " (" & src & ")"
+                else: src
+              infoC("nmobile", "Received " & contentType & " from " & fromLabel & " for " & destLabel)
               var md = initTable[string, string]()
               md["content_type"] = contentType
               if j.hasKey("id"): md["msg_id"] = j["id"].getStr()
