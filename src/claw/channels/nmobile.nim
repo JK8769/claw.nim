@@ -1023,9 +1023,12 @@ method stop*(c: NMobileChannel) {.async.} =
 
 method send*(c: NMobileChannel, msg: OutboundMessage) {.async.} =
   if not c.running or c.clientAddrs.len == 0: return
-  
+  # nMobile has no real typing-indicator API; a 💭 emoji "pre-message"
+  # just clutters the thread, so drop Typing kinds outright.
+  if msg.kind == Typing: return
+
   let dest = msg.chat_id
-  
+
   # Route the reply out through the sub-client whose role matches — a
   # DM to lexi.<pub> must leave via lexi.<pub> so the customer's thread
   # stays under the Lexi contact. Bind/default replies have no
@@ -1045,16 +1048,6 @@ method send*(c: NMobileChannel, msg: OutboundMessage) {.async.} =
   debugCF("nmobile", "Outbound routing",
           {"sender_agent": msg.sender_agent, "senderAddr": senderAddr,
            "dest": msg.chat_id}.toTable)
-
-  if msg.kind == Typing:
-    # Handle typing/thinking feedback for nMobile
-    # Since nMobile doesn't have a status API, we send a quick emoji acknowledgment
-    infoC("nmobile", "Sending typing feedback to " & dest)
-    let typingMsgId = genUUID()
-    let typingPayload = c.genPayload("text", "💭", typingMsgId)
-    # Even typing feedback should have some TTL to ensure it shows up if they just backgrounded
-    discard c.bridge.sendNKNMessage(senderAddr, dest, $typingPayload, maxHoldingSeconds = 3600, noReply = true)
-    return
 
   var data = msg.content
   if data.len > 0:
