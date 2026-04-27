@@ -20,6 +20,12 @@ type
     max_depth*: int
     system_prompt*: Option[string]
     temperature*: Option[float64]
+    thinking*: Option[bool]   ## DeepSeek-V4 (and similar) thinking-mode
+                              ## toggle. None = use the model's default
+                              ## (currently `enabled` for v4-flash and
+                              ## v4-pro). Some(false) = disable thinking
+                              ## for faster, cheaper, deterministic
+                              ## responses on quick lookups.
     role*: Option[string]
     entity*: string # "AI", "Human", "Corporate"
     identity*: string # "User", "Staff", "Agent", "Customer", "Guest"

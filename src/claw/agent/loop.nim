@@ -102,6 +102,10 @@ type
     model*: string
     contextWindow*: int
     temperature*: float
+    thinking*: Option[bool]   ## DeepSeek-V4 mode toggle. None = pass
+                              ## nothing through; some(false) = disable
+                              ## thinking; some(true) = explicitly
+                              ## enable. Loaded from cfg.agents.named.
     maxIterations*: int
     sessions*: SessionManager
     contextBuilder*: ContextBuilder
@@ -439,10 +443,16 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
               infoCF("agent", "Deferred tool loading", {"core_schemas": $defs.len, "hidden": $hiddenNames.len, "activated": $activatedSet.len}.toTable)
           defs
 
-    let options = {
+    var options = {
       "max_tokens": %al.contextWindow,
       "temperature": %al.temperature
     }.toTable
+    if al.thinking.isSome:
+      # Surfaced to the HTTP provider, which translates it into the
+      # provider-specific wire format (DeepSeek V4: extra_body
+      # `thinking: {type: enabled|disabled}`). For models that don't
+      # implement the toggle the provider ignores the option.
+      options["thinking"] = %al.thinking.get
     
     var response: LLMResponse
     try:
@@ -1734,10 +1744,15 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       if na.skills.len > 0:
         al.skillScope = na.skills
       al.workstationEnabled = na.workstation
+      if na.thinking.isSome:
+        al.thinking = na.thinking
+      if na.temperature.isSome:
+        al.temperature = na.temperature.get
       if na.tools.len > 0 or na.deny.len > 0 or na.workstation or na.skills.len > 0:
         infoCF("agent", "Applied ClawDSL scope",
           {"agent": agentName, "allowed": $na.tools.len, "denied": $na.deny.len,
-           "skills": na.skills.join(","), "workstation": $na.workstation}.toTable)
+           "skills": na.skills.join(","), "workstation": $na.workstation,
+           "thinking": (if na.thinking.isSome: $na.thinking.get else: "default")}.toTable)
       break
 
   # If workstation is enabled, auto-expose forged MCP tools registered under this agent's session key.

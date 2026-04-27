@@ -2,7 +2,7 @@
 ## Import this in a .nims file and run with `nim e MyCompany.nims`.
 ## Generates ~/.nimclaw-<OrgName>/ with BASE.json, workspace, skills, etc.
 
-import std/[json, os, strutils, tables]
+import std/[json, os, strutils, tables, options]
 
 # ── Spec Types ────────────────────────────────────────────────────
 
@@ -32,6 +32,11 @@ type
                            ## profile preset's soul when non-empty.
     maxDepth*: int
     temperature*: float
+    thinking*: Option[bool]   ## DeepSeek-V4 thinking-mode override.
+                              ## none → model default; some(false) →
+                              ## disable thinking for fast cheap turns;
+                              ## some(true) → force on (rarely needed,
+                              ## v4 default is on).
     reportsTo*: seq[ClawRelation]
     serves*: seq[ClawRelation]
     identifiers*: seq[tuple[channel, id: string]]
@@ -257,6 +262,8 @@ template agent*(agentName: string, body: untyped) =
       a.maxDepth = d
     template temperature(t: float) {.used.} =
       a.temperature = t
+    template thinking(b: bool) {.used.} =
+      a.thinking = some(b)
     template identifier(chanName, chanId: string) {.used.} =
       a.identifiers.add((channel: chanName, id: chanId))
     template reportsTo(targetName: string, relBody: untyped) {.used.} =
@@ -896,6 +903,10 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
       entry["deny"] = %a.deny
     if a.workstation:
       entry["workstation"] = %true
+    if a.thinking.isSome:
+      entry["thinking"] = %a.thinking.get
+    if a.temperature != 0.0:
+      entry["temperature"] = %a.temperature
     # Resolved capabilities (from resolver pass)
     if a.resolvedTools.len > 0:
       entry["tools"] = %a.resolvedTools

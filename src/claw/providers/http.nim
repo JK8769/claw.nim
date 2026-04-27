@@ -130,6 +130,28 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
   if options.hasKey("temperature"):
     requestBody["temperature"] = options["temperature"]
 
+  # DeepSeek V4 thinking-mode toggle. The model defaults to thinking
+  # enabled; agents that don't need deliberation (quick lookups, simple
+  # formatting) can save latency and tokens by disabling it. Wire
+  # format per https://api-docs.deepseek.com/guides/thinking_mode :
+  # `extra_body.thinking: {type: "enabled" | "disabled"}` on the
+  # OpenAI-compatible endpoint, which our HTTP backend serializes as
+  # `thinking` at the top of the request body. Only applied for v4
+  # models — any other provider/model silently ignores it on receipt
+  # but emitting the field unconditionally would risk 4xx from
+  # stricter providers.
+  if options.hasKey("thinking"):
+    let lowerModel = model.toLowerAscii
+    if lowerModel.contains("deepseek-v4") or
+       lowerModel == "deepseek-chat" or
+       lowerModel == "deepseek-reasoner":
+      let modeStr =
+        if options["thinking"].kind == JBool and options["thinking"].getBool:
+          "enabled"
+        else:
+          "disabled"
+      requestBody["thinking"] = %*{"type": modeStr}
+
   var headers = emptyHttpHeaders()
   headers["Content-Type"] = "application/json"
   headers["HTTP-Referer"] = "https://github.com/claw/nimclaw"
