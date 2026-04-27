@@ -632,7 +632,24 @@ proc subscriberWatchdog(c: FeishuChannel) {.thread.} =
       if reason.len == 0: continue
       infoCF("feishu", "Watchdog cycling subscriber",
              {"app_id": app.appID, "reason": reason}.toTable)
-      try: app.subscribeProcess.terminate() except CatchableError: discard
+      # SIGKILL not SIGTERM: the eventReader thread is blocked inside
+      # `s.readLine` waiting for the next event line. Sending SIGTERM
+      # gives lark-cli a chance to do graceful shutdown, but its stdout
+      # pipe doesn't reliably propagate EOF back to Nim's FileStream
+      # before close() — observed in production: subscriber recycled
+      # but readEvents stayed blocked forever, supervisor never logged
+      # "died, restarting", subscriber never respawned, watchdog
+      # cycled the same dead PID every minute.
+      # SIGKILL is unblockable, OS closes the pipe immediately, the
+      # blocked readLine returns false on EOF, eventReader's outer
+      # loop falls through to the respawn path. We're recycling for
+      # liveness — graceful shutdown buys us nothing here.
+      try: app.subscribeProcess.kill() except CatchableError: discard
+      # Also close the output stream as belt-and-braces — if the OS
+      # somehow drags its feet on the pipe close, an explicit
+      # FileStream close still drops the descriptor.
+      try: app.subscribeProcess.outputStream.close()
+      except CatchableError: discard
 
 proc readEvents(p: Process, c: FeishuChannel, app: FeishuAppInstance) =
   ## Read events from a single subscriber process until it dies or channel stops.
