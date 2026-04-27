@@ -15,12 +15,12 @@ person "Owner":
 # Set DEEPSEEK_API_KEY in your environment or the generated .env file.
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-chat"
-  models "deepseek-chat", "deepseek-reasoner"
+  defaultModel "deepseek-v4-flash"
+  models "deepseek-v4-flash", "deepseek-v4-pro"
 
 # ── Agent ─────────────────────────────────────────────
 agent "Lexi":
-  model "deepseek-chat"
+  model "deepseek-v4-flash"
   provider "deepseek"
   profile "Secretary"
 

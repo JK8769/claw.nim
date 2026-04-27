@@ -16,8 +16,8 @@ person "Jerry":
 
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-chat"
-  models "deepseek-chat", "deepseek-reasoner"
+  defaultModel "deepseek-v4-flash"
+  models "deepseek-v4-flash", "deepseek-v4-pro"
 
 provider "ollama":
   apiKey "ollama"
@@ -25,7 +25,7 @@ provider "ollama":
 
 # ── Agents ────────────────────────────────────────────
 agent "Lexi":
-  model "deepseek-chat"
+  model "deepseek-v4-flash"
   provider "deepseek"
   role "Admin"
   identity "Staff"
@@ -41,7 +41,7 @@ agent "Lexi":
     etiquette "This is your primary lead."
 
 agent "Atlas":
-  model "deepseek-chat"
+  model "deepseek-v4-flash"
   provider "deepseek"
   role "Member"
   identity "Staff"

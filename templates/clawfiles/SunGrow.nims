@@ -55,8 +55,8 @@ person "Owner":
 # a strong customer-facing model for Atlas.
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-chat"
-  models "deepseek-chat", "deepseek-reasoner"
+  defaultModel "deepseek-v4-flash"
+  models "deepseek-v4-flash", "deepseek-v4-pro"
 
 provider "opencode-go":
   apiBase "https://opencode.ai/zen/go/v1"
@@ -83,7 +83,7 @@ competency "solar-analysis":
 
 # ── Agents ────────────────────────────────────────────
 agent "Lexi":
-  model "glm-5.1"             # swap to "deepseek-chat" + provider "deepseek" if no opencode-go key
+  model "glm-5.1"             # swap to "deepseek-v4-flash" + provider "deepseek" if no opencode-go key
   provider "opencode-go"
   role "Admin"
   identity "Staff"
@@ -103,7 +103,7 @@ agent "Lexi":
     etiquette "Primary lead. Prefers concise reports with kWh and SOC numbers stated clearly."
 
 agent "Atlas":
-  model "mimo-v2-pro"         # swap to "deepseek-chat" + provider "deepseek" if no opencode-go key
+  model "mimo-v2-pro"         # swap to "deepseek-v4-flash" + provider "deepseek" if no opencode-go key
   provider "opencode-go"
   role "Staff"
   identity "Staff"
