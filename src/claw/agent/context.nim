@@ -337,6 +337,26 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
   let now = now().format("yyyy-MM-dd HH:mm (dddd) zzz")
   let workspacePath = absolutePath(cb.workspace)
   let runtime = hostOS & " " & hostCPU & ", Nim " & NimVersion
+
+  # Model identity: when the agent is asked "what model are you running
+  # on?", the system prompt is the ground truth. Without this line,
+  # agents fall back to calling `model_list` (which describes the
+  # company's registry, not the driver of the current request) and
+  # confidently report the wrong thing.
+  var modelLine = ""
+  if agentName.len > 0:
+    for na in cb.agentsConfig:
+      if na.name == agentName:
+        var bits: seq[string] = @[]
+        if na.model.len > 0: bits.add(na.model)
+        if na.provider.len > 0: bits.add("via " & na.provider)
+        if na.thinking.isSome:
+          bits.add("thinking " & (if na.thinking.get: "enabled" else: "disabled"))
+        if bits.len > 0:
+          modelLine = "\n\n## Driver\n" & bits.join(" ") &
+                      " — this is the model behind your current turn." &
+                      " If asked which model you're using, answer from this line, NOT from any tool's catalog output."
+        break
   let toolsSection =
     if useXmlTools:
       if allowedTools.len > 0: buildToolInstructionsFiltered(cb.tools, allowedTools) else: buildToolInstructions(cb.tools)
@@ -358,7 +378,7 @@ You are an AI agent in a nimclaw runtime. The `IDENTITY` section below declares 
 $1
 
 ## Runtime
-$2
+$2$5
 
 ## Workspace
 Your office is at: $3
@@ -377,7 +397,7 @@ $4
 
 3. **Be helpful and accurate** - When using tools, briefly explain what you're doing.
 
-4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(now, runtime, workspacePath, toolsSection)
+4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.""".format(now, runtime, workspacePath, toolsSection, modelLine)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
