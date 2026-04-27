@@ -15,11 +15,42 @@
     },
     "deepseek/deepseek-chat": {
       "vendor": "deepseek",
-      "family": "deepseek-v3",
-      "context_length": 65536,
+      "family": "deepseek-v4",
+      "context_length": 1000000,
+      "max_output_tokens": 384000,
       "modality": "text",
       "capabilities": [
-        "tool-use"
+        "tool-use",
+        "json-mode"
+      ],
+      "alias_of": "deepseek/deepseek-v4-flash",
+      "alias_mode": "non-thinking",
+      "deprecated": true
+    },
+    "deepseek/deepseek-v4-flash": {
+      "vendor": "deepseek",
+      "family": "deepseek-v4",
+      "context_length": 1000000,
+      "max_output_tokens": 384000,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "json-mode",
+        "reasoning",
+        "fim-beta"
+      ]
+    },
+    "deepseek/deepseek-v4-pro": {
+      "vendor": "deepseek",
+      "family": "deepseek-v4",
+      "context_length": 1000000,
+      "max_output_tokens": 384000,
+      "modality": "text",
+      "capabilities": [
+        "tool-use",
+        "json-mode",
+        "reasoning",
+        "fim-beta"
       ]
     },
     "mistralai/codestral-22b": {
@@ -239,12 +270,18 @@
     },
     "deepseek/deepseek-reasoner": {
       "vendor": "deepseek",
-      "family": "deepseek-r1",
-      "context_length": 65536,
+      "family": "deepseek-v4",
+      "context_length": 1000000,
+      "max_output_tokens": 384000,
       "modality": "text",
       "capabilities": [
+        "tool-use",
+        "json-mode",
         "reasoning"
-      ]
+      ],
+      "alias_of": "deepseek/deepseek-v4-flash",
+      "alias_mode": "thinking",
+      "deprecated": true
     },
     "z-ai/glm5": {
       "vendor": "z-ai",
@@ -439,21 +476,48 @@
       ]
     },
     "deepseek": {
-      "updated": "2026-04-21",
+      "updated": "2026-04-27",
+      "_note": "DeepSeek v4 lineup. Old `deepseek-chat` and `deepseek-reasoner` API IDs still resolve as compatibility aliases to v4-flash non-thinking / thinking modes respectively, but DeepSeek has marked them deprecated — bill at the same rate as v4-flash.",
       "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "model": "deepseek/deepseek-v4-flash",
+          "owned_by": "deepseek",
+          "input_cost_per_1m_usd": 0.14,
+          "input_cost_per_1m_cache_hit_usd": 0.014,
+          "output_cost_per_1m_usd": 0.28
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "model": "deepseek/deepseek-v4-pro",
+          "owned_by": "deepseek",
+          "input_cost_per_1m_usd": 0.435,
+          "input_cost_per_1m_cache_hit_usd": 0.003625,
+          "output_cost_per_1m_usd": 0.87,
+          "input_cost_per_1m_list_usd": 1.74,
+          "output_cost_per_1m_list_usd": 3.48,
+          "promo_until": "2026-05-05T15:59:00Z",
+          "_promo_note": "75% off list price until 2026-05-05 15:59 UTC."
+        },
         {
           "id": "deepseek-chat",
           "model": "deepseek/deepseek-chat",
           "owned_by": "deepseek",
-          "input_cost_per_1m_usd": 0.27,
-          "output_cost_per_1m_usd": 1.1
+          "input_cost_per_1m_usd": 0.14,
+          "input_cost_per_1m_cache_hit_usd": 0.014,
+          "output_cost_per_1m_usd": 0.28,
+          "deprecated": true,
+          "alias_of": "deepseek-v4-flash"
         },
         {
           "id": "deepseek-reasoner",
           "model": "deepseek/deepseek-reasoner",
           "owned_by": "deepseek",
-          "input_cost_per_1m_usd": 0.55,
-          "output_cost_per_1m_usd": 2.19
+          "input_cost_per_1m_usd": 0.14,
+          "input_cost_per_1m_cache_hit_usd": 0.014,
+          "output_cost_per_1m_usd": 0.28,
+          "deprecated": true,
+          "alias_of": "deepseek-v4-flash"
         }
       ]
     },

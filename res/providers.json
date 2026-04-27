@@ -15,7 +15,7 @@
       "apiBase": "https://api.deepseek.com/v1",
       "authHeader": "Authorization: Bearer",
       "verifyPath": "/models",
-      "defaultModel": "deepseek-chat"
+      "defaultModel": "deepseek-v4-flash"
     },
     {
       "name": "groq",
