@@ -1315,7 +1315,31 @@ Options:
         statusEmitter.emitChannelMsg(msg.channel, "in", msg.sender_id)
         discard  # TODO: emit activity event via stdio
 
-        let recipient = if msg.recipient_id == "": "Lexi" else: msg.recipient_id
+        # `companyRoute` = this message is addressed to the company
+        # surface, not a specific agent: either the empty recipient
+        # (nmobile bare-pubkey main-line) or a recipient name that
+        # matches a Corporate entity in the graph (e.g. Feishu app
+        # explicitly assigned to "SunGrowCN" in the DSL). Bind /
+        # invite / reception gates handle these without ever spinning
+        # up an agent loop — same architectural rule the nmobile
+        # main-line already followed, now also applied per-channel
+        # when the operator routes a Feishu app at the corporate node.
+        var companyRoute = msg.recipient_id.len == 0
+        if not companyRoute:
+          let g = loadWorld(cfg[].workspacePath())
+          if g != nil:
+            for ent in g.entities.values:
+              if ent.kind == ekCorporate and ent.name == msg.recipient_id:
+                companyRoute = true
+                break
+
+        # Office key still needs an agent-shaped fallback because the
+        # system-command fast path expects a real AgentLoop. Lexi gets
+        # a no-op office spawned that's never asked to think; the
+        # actual reply happens via the bind/invite/reception gates.
+        let recipient =
+          if companyRoute or msg.recipient_id == "": "Lexi"
+          else: msg.recipient_id
         let officeKey = recipient.toLowerAscii()
 
         if not gCtx.offices.hasKey(officeKey):
@@ -1629,24 +1653,32 @@ Options:
             infoCF("claw", "Group-chat silent (no @mention)",
                    {"agent": agentName, "sender": msg.sender_id,
                     "chat": msg.chat_id}.toTable)
-        # Main-line reception gate — bare-pubkey nMobile traffic is a
-        # reception desk, not a conversation surface. Anything that
-        # reached here (recognised sender, past bind/invite intercepts,
-        # not a slash-command) is by definition a freeform message to
-        # the company address, which shouldn't spin up the LLM. Reply
-        # with a static pointer to the per-agent extensions and skip the
-        # agent loop entirely.
-        if response == "" and shouldRespond and
-           msg.channel == "nmobile" and msg.recipient_id.len == 0 and
+        # Company-line reception gate. Any inbound that resolved to
+        # `companyRoute` (bare-pubkey nMobile main-line OR a Feishu app
+        # assigned to the corporate entity in the DSL) is a reception
+        # surface, not a conversation. Bind/invite intercepts above
+        # already had their shot; if nothing matched and it isn't a
+        # slash command, reply with a static pointer and skip the LLM.
+        if response == "" and shouldRespond and companyRoute and
            not plainContent.startsWith("/"):
           let lang = detectLang(plainContent)
           let zh = lang.startsWith("zh")
-          response =
-            if zh:
-              "这是公司主线（接待台），不接入助理对话。请直接私信下列助理："
-            else:
-              "This is the company main line (reception). It doesn't route to a chat assistant — please DM an agent directly:"
-          response.add(nmobile_channel.nkyYellowBook(cfg[], if zh: "zh" else: "en"))
+          if msg.channel == "nmobile":
+            response =
+              if zh:
+                "这是公司主线（接待台），不接入助理对话。请直接私信下列助理："
+              else:
+                "This is the company main line (reception). It doesn't route to a chat assistant — please DM an agent directly:"
+            response.add(nmobile_channel.nkyYellowBook(cfg[], if zh: "zh" else: "en"))
+          else:
+            # Feishu (and future channels): no per-agent extension model —
+            # each agent runs as its own bot in its own app. Just point
+            # the sender at the bind/invite codes that brought them here.
+            response =
+              if zh:
+                "这是公司主线（接待台），不接入助理对话。如果您要绑定或加入，请发送绑定码 / 邀请码。"
+              else:
+                "This is the company main line (reception). It doesn't route to a chat assistant — if you're onboarding, please send your bind / invite code."
 
         if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
@@ -1657,19 +1689,10 @@ Options:
             # `/restart` gets silently dropped; the agent never sees it
             # and the gateway doesn't act on it. The company main-line
             # address is the single intended surface for these commands.
-            let targetsCompany =
-              if msg.recipient_id.len == 0:
-                true  # bare main-line / default fallback — accept
-              else:
-                var hit = false
-                let g = loadWorld(cfg[].workspacePath())
-                if g != nil:
-                  for ent in g.entities.values:
-                    if ent.kind == ekCorporate and
-                       ent.name == msg.recipient_id:
-                      hit = true; break
-                hit
-            if not targetsCompany:
+            # Slash commands accepted only when addressed to the
+            # company surface — same `companyRoute` flag computed at
+            # the top of the loop, no need to re-resolve.
+            if not companyRoute:
               infoCF("claw", "Dropped slash command — not routed to company",
                      {"sender": msg.sender_id,
                       "recipient": msg.recipient_id,
