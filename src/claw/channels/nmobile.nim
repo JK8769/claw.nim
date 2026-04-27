@@ -1108,6 +1108,51 @@ proc poll(c: NMobileChannel) {.async.} =
                       {"src": src, "type": contentType,
                        "id": j.safeGetStr("id")}.toTable)
 
+            of "msgStatus":
+              # Delivery-state resync. After a peer reconnects following
+              # a gap, it sends `requestType: "ask"` with a list of
+              # past msgIds asking which we received. If we ignore it
+              # (or fall to the unhandled branch), the LLM gets woken up
+              # to apologise about non-text content. Worse, replying
+              # `0` (unknown) for everything would prompt nmobile to
+              # resend days-old chat content as if fresh. So reply
+              # `310` (read) for every msgId — declares the
+              # conversation in-sync and stops the resync request loop.
+              # See nmobile chat_in.dart:980-1015 for the protocol.
+              let content =
+                if j.hasKey("content") and j["content"].kind == JObject: j["content"]
+                else: newJObject()
+              let requestType = content{"requestType"}.getStr()
+              if requestType == "ask":
+                let messageIds = content{"messageIds"}
+                var statusList = newJArray()
+                if messageIds != nil and messageIds.kind == JArray:
+                  for m in messageIds:
+                    if m.kind == JString:
+                      statusList.add(%(m.getStr() & ":310"))
+                if statusList.len > 0:
+                  let replyPayload = c.genPayload("msgStatus", "", genUUID())
+                  replyPayload.delete("content")
+                  replyPayload["content"] = %*{
+                    "requestType": "reply",
+                    "messageIds": statusList
+                  }
+                  var opts = newJObject()
+                  opts["push"] = %true
+                  if info.profileVersion.len > 0:
+                    opts["profileVersion"] = %info.profileVersion
+                  replyPayload["options"] = opts
+                  let ttl = if c.enableOfflineQueue: c.messageTTLHours * 3600 else: 0
+                  discard c.bridge.sendNKNMessage(clientAddr, src, $replyPayload,
+                                                   maxHoldingSeconds = ttl,
+                                                   noReply = true)
+                  infoCF("nmobile", "msgStatus ack: declared all-read",
+                         {"src": src, "count": $statusList.len}.toTable)
+              else:
+                debugCF("nmobile", "msgStatus reply absorbed",
+                        {"src": src, "requestType": requestType,
+                         "id": j.safeGetStr("id")}.toTable)
+
             of "nknOnePiece":
               # Reed-Solomon-chunked media (most commonly a photo).
               # Accumulate pieces keyed by `id`; deliver the reassembled
