@@ -603,267 +603,298 @@ proc startSubscriberProcess(larkCliBin, configDir: string): Process =
 
 const
   SubscriberMaxAgeSec = 14_400     ## 4h blind-cycle cap.
-  SubscriberStaleSec  = 900        ## 15min without any stdout line = dead.
-  WatchdogTickSec     = 60         ## Liveness scan cadence.
+  SubscriberStaleSec  = 3_600      ## 1h without stdout = treat as dead.
+                                    ## Was 15min, but legitimately quiet
+                                    ## apps (a tenant where nobody DMs
+                                    ## the bot for an hour) hit that
+                                    ## threshold harmlessly. 1h is still
+                                    ## tight enough to detect actual
+                                    ## socket failures.
+  ReadPollIntervalMs  = 5_000      ## Reader's poll() timeout — wakes the
+                                    ## syscall periodically so staleness
+                                    ## and shutdown checks can run.
 
 proc subscriberWatchdog(c: FeishuChannel) {.thread.} =
-  ## SIGTERM subscribers whose Feishu event socket has silently died
-  ## (no data, no error, readLine blocked). eventReader's existing
-  ## exit-detection loop then respawns with a fresh socket. Polls the
-  ## shutdown flag each second so `stop()` returns promptly.
-  var tickElapsed = 0
+  ## Liveness checks moved INTO each eventReader thread (they self-poll
+  ## via posix.poll with a periodic timeout, so they self-detect
+  ## staleness without an external watchdog racing on the pipe FD —
+  ## that race was the root cause of the zombie-subscriber bug we
+  ## hit in production: SIGTERM the process from the watchdog thread
+  ## while the reader thread was blocked in fgets, and the reader
+  ## stayed parked forever).
+  ##
+  ## Kept around for shutdown signalling (stop() flips the flag and
+  ## joins) and as a hook for future per-app health metrics.
   while c.watchdogRunning and c.running:
     sleep(1000)
-    tickElapsed += 1
-    if tickElapsed < WatchdogTickSec: continue
-    tickElapsed = 0
-    let now = epochTime()
-    for app in c.apps:
-      if not app.enabled or app.subscribeProcess == nil or app.spawnedAt <= 0:
-        continue
-      let age = now - app.spawnedAt
-      let staleness = if app.lastEventAt > 0: now - app.lastEventAt else: 0.0
-      var reason = ""
-      if age > SubscriberMaxAgeSec.float:
-        reason = "4h cycle (age=" & $int(age) & "s)"
-      elif app.lastEventAt > 0 and staleness > SubscriberStaleSec.float:
-        reason = "no events " & $int(staleness) & "s (alive " &
-                 $int(age) & "s)"
-      if reason.len == 0: continue
-      infoCF("feishu", "Watchdog cycling subscriber",
-             {"app_id": app.appID, "reason": reason}.toTable)
-      # SIGKILL not SIGTERM: the eventReader thread is blocked inside
-      # `s.readLine` waiting for the next event line. Sending SIGTERM
-      # gives lark-cli a chance to do graceful shutdown, but its stdout
-      # pipe doesn't reliably propagate EOF back to Nim's FileStream
-      # before close() — observed in production: subscriber recycled
-      # but readEvents stayed blocked forever, supervisor never logged
-      # "died, restarting", subscriber never respawned, watchdog
-      # cycled the same dead PID every minute.
-      # SIGKILL is unblockable, OS closes the pipe immediately, the
-      # blocked readLine returns false on EOF, eventReader's outer
-      # loop falls through to the respawn path. We're recycling for
-      # liveness — graceful shutdown buys us nothing here.
-      try: app.subscribeProcess.kill() except CatchableError: discard
-      # Also close the output stream as belt-and-braces — if the OS
-      # somehow drags its feet on the pipe close, an explicit
-      # FileStream close still drops the descriptor.
-      try: app.subscribeProcess.outputStream.close()
-      except CatchableError: discard
 
-proc readEvents(p: Process, c: FeishuChannel, app: FeishuAppInstance) =
-  ## Read events from a single subscriber process until it dies or channel stops.
-  let s = p.outputStream()
+proc dispatchFeishuLine(line: string, c: FeishuChannel, app: FeishuAppInstance) =
+  ## Process one JSON event line: parse → classify → publish to bus.
+  ## Extracted from the old readEvents body so the new poll-based reader
+  ## can call it per parsed line. Each `continue` in the original loop
+  ## becomes a `return` here — same effect, single-line scope.
   let appID = app.appID
-  var line = ""
-  while c.running and not s.atEnd():
-    try:
-      if not s.readLine(line): continue
-      if line.len == 0 or not line.startsWith("{"): continue
-      # Stamp liveness for the watchdog. Single writer (this thread),
-      # single reader (watchdog) — the plain float store is safe.
-      app.lastEventAt = epochTime()
+  try:
+    let evt = flattenFeishuEvent(parseJson(line))
+    let evtType = evt.getOrDefault("type").getStr()
 
-      let evt = flattenFeishuEvent(parseJson(line))
-      let evtType = evt.getOrDefault("type").getStr()
+    if evtType == "card.action.trigger":
+      let action = evt.getOrDefault("action")
+      let context = evt.getOrDefault("context")
+      let operator = evt.getOrDefault("operator")
+      let chatID = context.getOrDefault("open_chat_id").getStr()
+      let messageID = context.getOrDefault("open_message_id").getStr()
+      let senderID = operator.getOrDefault("open_id").getStr()
+      let actionValue = if action.kind == JObject: $action.getOrDefault("value") else: ""
 
-      if evtType == "card.action.trigger":
-        let action = evt.getOrDefault("action")
-        let context = evt.getOrDefault("context")
-        let operator = evt.getOrDefault("operator")
-        let chatID = context.getOrDefault("open_chat_id").getStr()
-        let messageID = context.getOrDefault("open_message_id").getStr()
-        let senderID = operator.getOrDefault("open_id").getStr()
-        let actionValue = if action.kind == JObject: $action.getOrDefault("value") else: ""
+      if chatID.len == 0:
+        debugCF("feishu", "Card action without chat_id, skipping", {"event_id": evt.getOrDefault("event_id").getStr()}.toTable)
+        return
 
-        if chatID.len == 0:
-          debugCF("feishu", "Card action without chat_id, skipping", {"event_id": evt.getOrDefault("event_id").getStr()}.toTable)
-          continue
+      infoCF("feishu", "Card action received", {"chat": chatID, "sender": senderID, "action": actionValue}.toTable)
 
-        infoCF("feishu", "Card action received", {"chat": chatID, "sender": senderID, "action": actionValue}.toTable)
+      let content = "[Card button clicked: " & actionValue & "]"
+      var metadata = {"message_id": messageID, "app_id": appID, "event_type": "card.action.trigger", "action_value": actionValue}.toTable
+      c.handleMessage(senderID, chatID, content, @[], metadata)
+      return
 
-        let content = "[Card button clicked: " & actionValue & "]"
-        var metadata = {"message_id": messageID, "app_id": appID, "event_type": "card.action.trigger", "action_value": actionValue}.toTable
-        c.handleMessage(senderID, chatID, content, @[], metadata)
-        continue
+    if evtType != "im.message.receive_v1":
+      debugCF("feishu", "Non-IM event received", {"type": evtType}.toTable)
+      return
 
-      if evtType != "im.message.receive_v1":
-        debugCF("feishu", "Non-IM event received", {"type": evtType}.toTable)
-        continue
+    let messageID = evt.getOrDefault("message_id").getStr()
+    let chatID = evt.getOrDefault("chat_id").getStr()
+    let senderID = evt.getOrDefault("sender_id").getStr()
+    let messageType = evt.getOrDefault("message_type").getStr("text")
+    let content = evt.getOrDefault("content").getStr()
+    let createTimeStr = evt.getOrDefault("create_time").getStr()
 
-      let messageID = evt.getOrDefault("message_id").getStr()
-      let chatID = evt.getOrDefault("chat_id").getStr()
-      let senderID = evt.getOrDefault("sender_id").getStr()
-      let messageType = evt.getOrDefault("message_type").getStr("text")
-      let content = evt.getOrDefault("content").getStr()
-      let createTimeStr = evt.getOrDefault("create_time").getStr()
-
-      # Dedup by message_id
-      if messageID.len > 0:
-        let isDuplicate = block:
-          acquire(c.cacheLock)
-          try:
-            if c.messageCache.hasKey(messageID):
-              true
-            else:
-              c.messageCache[messageID] = epochTime()
-              c.saveCache()
-              false
-          finally:
-            release(c.cacheLock)
-        if isDuplicate:
-          debugCF("feishu", "Discarding duplicate", {"msg_id": messageID}.toTable)
-          continue
-
-      # Ignore stale messages (>5 min old)
-      if createTimeStr.len > 0:
-        let createTime = createTimeStr.parseBiggestInt
-        let nowMs = (epochTime() * 1000).int64
-        if createTime > 0 and (nowMs - createTime) > 300_000:
-          debugCF("feishu", "Ignoring stale message", {"msg_id": messageID, "age_s": $((nowMs - createTime) div 1000)}.toTable)
-          continue
-
-      let rootID = evt.getOrDefault("root_id").getStr()
-      let parentID = evt.getOrDefault("parent_id").getStr()
-      let threadID = evt.getOrDefault("thread_id").getStr()
-      infoCF("feishu", "Processing message", {"msg_id": messageID, "sender": senderID, "chat": chatID, "type": messageType, "root_id": rootID, "parent_id": parentID, "thread_id": threadID}.toTable)
-
-      # Per-app agent routing. Resolved here (earlier than strictly
-      # needed for publishing) so the text-mention resolver below can
-      # substitute a bot's display name with the agent's config name.
-      var routeTo = ""
-      for a in c.apps:
-        if a.appID == appID:
-          routeTo = a.agent
-          break
-
-      var finalContent = content
-      var mediaPaths: seq[string] = @[]
-
-      if messageType == "image":
-        # Parse image_key from content JSON: {"image_key":"img_v3_xxx"}
-        var imageKey = ""
+    # Dedup by message_id
+    if messageID.len > 0:
+      let isDuplicate = block:
+        acquire(c.cacheLock)
         try:
-          let contentJson = parseJson(content)
-          imageKey = contentJson{"image_key"}.getStr("")
-        except: discard
+          if c.messageCache.hasKey(messageID):
+            true
+          else:
+            c.messageCache[messageID] = epochTime()
+            c.saveCache()
+            false
+        finally:
+          release(c.cacheLock)
+      if isDuplicate:
+        debugCF("feishu", "Discarding duplicate", {"msg_id": messageID}.toTable)
+        return
 
-        if imageKey.len > 0 and messageID.len > 0:
-          let mediaDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID / "cache" / "media"
-          try:
-            createDir(mediaDir)
-            let outputPath = mediaDir / imageKey & ".jpg"
-            let configDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID
-            let env = buildLarkEnv(configDir)
-            let dlProc = startProcess(c.larkCliBin,
-              args = ["im", "+messages-resources-download",
-                      "--message-id", messageID,
-                      "--file-key", imageKey,
-                      "--type", "image",
-                      "--output", outputPath],
-              env = env, options = {poUsePath})
-            let code = dlProc.waitForExit(30000)
-            dlProc.close()
-            if code == 0 and fileExists(outputPath):
-              mediaPaths.add(outputPath)
-              finalContent = "[image: " & outputPath & "]"
-              infoCF("feishu", "Downloaded image", {"file_key": imageKey, "path": outputPath}.toTable)
-            else:
-              finalContent = "[image: download failed for " & imageKey & "]"
-              warnCF("feishu", "Image download failed", {"file_key": imageKey, "exit_code": $code}.toTable)
-          except Exception as e:
-            finalContent = "[image: download error: " & e.msg & "]"
-            errorCF("feishu", "Image download error", {"file_key": imageKey, "error": e.msg}.toTable)
-        else:
-          finalContent = "[image: missing image_key or message_id]"
+    # Ignore stale messages (>5 min old)
+    if createTimeStr.len > 0:
+      let createTime = createTimeStr.parseBiggestInt
+      let nowMs = (epochTime() * 1000).int64
+      if createTime > 0 and (nowMs - createTime) > 300_000:
+        debugCF("feishu", "Ignoring stale message", {"msg_id": messageID, "age_s": $((nowMs - createTime) div 1000)}.toTable)
+        return
 
-      elif messageType == "audio":
-        finalContent = "[audio: " & messageID & "]"
-      elif messageType == "file":
-        finalContent = "[file: " & messageID & "]"
-      elif messageType == "text":
-        # Mentions auto-discovery. flattenFeishuEvent already placed
-        # `mentions` as a sibling field on the event with placeholders
-        # resolved. Scan for any bot mention (empty `user_id`) and
-        # cache the bot's display name for this (app, chat) pair.
-        # Defensively typed — SIGSEGV on malformed JSON subtrees would
-        # bypass try/except, so every step validates kind.
-        try:
-          let mentions = evt.getOrDefault("mentions")
-          if mentions != nil and mentions.kind == JArray:
-            for m in mentions:
-              if m == nil or m.kind != JObject: continue
-              let displayName = m.getOrDefault("name").getStr("").strip()
-              let mIdObj = m.getOrDefault("id")
-              let mUserId =
-                if mIdObj != nil and mIdObj.kind == JObject:
-                  mIdObj.getOrDefault("user_id").getStr("")
-                else: ""
-              let isBot = mUserId.len == 0
-              if isBot and displayName.len > 0 and routeTo.len > 0:
-                c.recordBotDisplayName(appID, chatID, displayName)
-                break  # one bot per message is the 99% case
-        except CatchableError: discard
-      elif messageType != "text":
-        finalContent = "[Non-text message: " & messageType & "]"
+    let rootID = evt.getOrDefault("root_id").getStr()
+    let parentID = evt.getOrDefault("parent_id").getStr()
+    let threadID = evt.getOrDefault("thread_id").getStr()
+    infoCF("feishu", "Processing message", {"msg_id": messageID, "sender": senderID, "chat": chatID, "type": messageType, "root_id": rootID, "parent_id": parentID, "thread_id": threadID}.toTable)
 
-      var metadata = {"message_id": messageID, "app_id": appID}.toTable
-      # Pass the resolved mentions array through as JSON in metadata so
-      # downstream (context builder → agent LLM → create_customer_invite
-      # tool) can see who was @mentioned alongside the bot. Powers the
-      # group-chat invite UX where operators @mention the customer.
+    # Per-app agent routing. Resolved here (earlier than strictly
+    # needed for publishing) so the text-mention resolver below can
+    # substitute a bot's display name with the agent's config name.
+    var routeTo = ""
+    for a in c.apps:
+      if a.appID == appID:
+        routeTo = a.agent
+        break
+
+    var finalContent = content
+    var mediaPaths: seq[string] = @[]
+
+    if messageType == "image":
+      # Parse image_key from content JSON: {"image_key":"img_v3_xxx"}
+      var imageKey = ""
       try:
-        let m = evt.getOrDefault("mentions")
-        if m != nil and m.kind == JArray and m.len > 0:
-          metadata["mentions"] = $m
-      except CatchableError: discard
-      # Tenant-scoped cross-app identifiers: `union_id` is stable across
-      # all apps published by the same Feishu tenant; `user_id` is the
-      # tenant's internal employee ID (only present for corporate users
-      # in the same org). Either lets the binding/resolver recognize
-      # the same human on a different app without a second bind.
-      let unionID = evt.getOrDefault("union_id").getStr()
-      if unionID.len > 0: metadata["union_id"] = unionID
-      let userID = evt.getOrDefault("user_id").getStr()
-      if userID.len > 0: metadata["user_id"] = userID
-      if rootID.len > 0:
-        metadata["root_id"] = rootID
-      if parentID.len > 0:
-        metadata["parent_id"] = parentID
-      if threadID.len > 0:
-        metadata["thread_id"] = threadID
+        let contentJson = parseJson(content)
+        imageKey = contentJson{"image_key"}.getStr("")
+      except: discard
 
-      # Detect DM vs group from Feishu's chat_id namespace.
-      # ou_ = user/open-id (DM); oc_ = open-chat-id (group).
-      # Event payload also carries `chat_type` ("p2p" | "group") — honour
-      # that when present, fall back to prefix heuristic otherwise.
-      var kind: ChatKind = ckUnknown
-      let eventChatType = evt.getOrDefault("chat_type").getStr()
-      case eventChatType
-      of "p2p":   kind = ckDM
-      of "group": kind = ckGroup
+      if imageKey.len > 0 and messageID.len > 0:
+        let mediaDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID / "cache" / "media"
+        try:
+          createDir(mediaDir)
+          let outputPath = mediaDir / imageKey & ".jpg"
+          let configDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID
+          let env = buildLarkEnv(configDir)
+          let dlProc = startProcess(c.larkCliBin,
+            args = ["im", "+messages-resources-download",
+                    "--message-id", messageID,
+                    "--file-key", imageKey,
+                    "--type", "image",
+                    "--output", outputPath],
+            env = env, options = {poUsePath})
+          let code = dlProc.waitForExit(30000)
+          dlProc.close()
+          if code == 0 and fileExists(outputPath):
+            mediaPaths.add(outputPath)
+            finalContent = "[image: " & outputPath & "]"
+            infoCF("feishu", "Downloaded image", {"file_key": imageKey, "path": outputPath}.toTable)
+          else:
+            finalContent = "[image: download failed for " & imageKey & "]"
+            warnCF("feishu", "Image download failed", {"file_key": imageKey, "exit_code": $code}.toTable)
+        except Exception as e:
+          finalContent = "[image: download error: " & e.msg & "]"
+          errorCF("feishu", "Image download error", {"file_key": imageKey, "error": e.msg}.toTable)
       else:
-        if chatID.startsWith("ou_"):   kind = ckDM
-        elif chatID.startsWith("oc_"): kind = ckGroup
+        finalContent = "[image: missing image_key or message_id]"
 
-      # Bot display name — group-chat only. In a 1:1 DM the customer
-      # is talking directly to one bot, so the bot's "display name"
-      # doesn't need to compete with other participants or personas;
-      # just use the internal config name. Group chats have multiple
-      # members who may see the bot under a chat-local nickname, so
-      # the agent should sign as that name there.
-      if kind == ckGroup:
-        let botName = c.lookupBotDisplayName(appID, chatID)
-        if botName.len > 0:
-          metadata["bot_display_name"] = botName
+    elif messageType == "audio":
+      finalContent = "[audio: " & messageID & "]"
+    elif messageType == "file":
+      finalContent = "[file: " & messageID & "]"
+    elif messageType == "text":
+      # Mentions auto-discovery. flattenFeishuEvent already placed
+      # `mentions` as a sibling field on the event with placeholders
+      # resolved. Scan for any bot mention (empty `user_id`) and
+      # cache the bot's display name for this (app, chat) pair.
+      # Defensively typed — SIGSEGV on malformed JSON subtrees would
+      # bypass try/except, so every step validates kind.
+      try:
+        let mentions = evt.getOrDefault("mentions")
+        if mentions != nil and mentions.kind == JArray:
+          for m in mentions:
+            if m == nil or m.kind != JObject: continue
+            let displayName = m.getOrDefault("name").getStr("").strip()
+            let mIdObj = m.getOrDefault("id")
+            let mUserId =
+              if mIdObj != nil and mIdObj.kind == JObject:
+                mIdObj.getOrDefault("user_id").getStr("")
+              else: ""
+            let isBot = mUserId.len == 0
+            if isBot and displayName.len > 0 and routeTo.len > 0:
+              c.recordBotDisplayName(appID, chatID, displayName)
+              break  # one bot per message is the 99% case
+      except CatchableError: discard
+    elif messageType != "text":
+      finalContent = "[Non-text message: " & messageType & "]"
 
-      # `routeTo` was computed above (before content pre-processing)
-      # so the mention resolver could use it. Empty → gateway uses its
-      # default (Lexi).
-      c.handleMessage(senderID, chatID, finalContent, mediaPaths, metadata,
-                       recipientID = routeTo, chatKind = kind)
-    except Exception as e:
-      errorCF("feishu", "Event parse error", {"error": e.msg}.toTable)
+    var metadata = {"message_id": messageID, "app_id": appID}.toTable
+    # Pass the resolved mentions array through as JSON in metadata so
+    # downstream (context builder → agent LLM → create_customer_invite
+    # tool) can see who was @mentioned alongside the bot. Powers the
+    # group-chat invite UX where operators @mention the customer.
+    try:
+      let m = evt.getOrDefault("mentions")
+      if m != nil and m.kind == JArray and m.len > 0:
+        metadata["mentions"] = $m
+    except CatchableError: discard
+    # Tenant-scoped cross-app identifiers: `union_id` is stable across
+    # all apps published by the same Feishu tenant; `user_id` is the
+    # tenant's internal employee ID (only present for corporate users
+    # in the same org). Either lets the binding/resolver recognize
+    # the same human on a different app without a second bind.
+    let unionID = evt.getOrDefault("union_id").getStr()
+    if unionID.len > 0: metadata["union_id"] = unionID
+    let userID = evt.getOrDefault("user_id").getStr()
+    if userID.len > 0: metadata["user_id"] = userID
+    if rootID.len > 0:
+      metadata["root_id"] = rootID
+    if parentID.len > 0:
+      metadata["parent_id"] = parentID
+    if threadID.len > 0:
+      metadata["thread_id"] = threadID
+
+    # Detect DM vs group from Feishu's chat_id namespace.
+    # ou_ = user/open-id (DM); oc_ = open-chat-id (group).
+    # Event payload also carries `chat_type` ("p2p" | "group") — honour
+    # that when present, fall back to prefix heuristic otherwise.
+    var kind: ChatKind = ckUnknown
+    let eventChatType = evt.getOrDefault("chat_type").getStr()
+    case eventChatType
+    of "p2p":   kind = ckDM
+    of "group": kind = ckGroup
+    else:
+      if chatID.startsWith("ou_"):   kind = ckDM
+      elif chatID.startsWith("oc_"): kind = ckGroup
+
+    # Bot display name — group-chat only. In a 1:1 DM the customer
+    # is talking directly to one bot, so the bot's "display name"
+    # doesn't need to compete with other participants or personas;
+    # just use the internal config name. Group chats have multiple
+    # members who may see the bot under a chat-local nickname, so
+    # the agent should sign as that name there.
+    if kind == ckGroup:
+      let botName = c.lookupBotDisplayName(appID, chatID)
+      if botName.len > 0:
+        metadata["bot_display_name"] = botName
+
+    # `routeTo` was computed above (before content pre-processing)
+    # so the mention resolver could use it. Empty → gateway uses its
+    # default (Lexi).
+    c.handleMessage(senderID, chatID, finalContent, mediaPaths, metadata,
+                     recipientID = routeTo, chatKind = kind)
+  except Exception as e:
+    errorCF("feishu", "Event parse error", {"error": e.msg}.toTable)
+
+proc readEvents(p: Process, c: FeishuChannel, app: FeishuAppInstance): string =
+  ## Read events from the subscriber. Returns reason for exit:
+  ##   "eof"      — process closed its stdout (died, normal restart)
+  ##   "shutdown" — channel-wide stop signalled
+  ##   "stale"    — no events for SubscriberStaleSec — suspect dead socket
+  ##   "max_age"  — exceeded SubscriberMaxAgeSec — preventive recycle
+  ##   "error"    — unrecoverable read/poll error
+  ##
+  ## Uses posix poll(2) + read(2) directly instead of stream readLine
+  ## because readLine on a FileStream doesn't notice process death from
+  ## another thread (observed in production: zombie subscriber, EOF
+  ## never propagates, reader parked forever). With explicit poll the
+  ## reader self-monitors staleness on every timeout — no separate
+  ## watchdog needed, no race on the pipe FD.
+  let appID = app.appID
+  let fd = p.outputHandle.cint
+  var rbuf = newString(8192)
+  var lineBuf = ""
+  var pfd: TPollfd
+  pfd.fd = fd
+  pfd.events = POLLIN
+  while c.running:
+    pfd.revents = 0
+    let ready = poll(addr pfd, 1, ReadPollIntervalMs.cint)
+    if ready < 0:
+      if errno.cint == EINTR: continue
+      errorCF("feishu", "poll() error",
+              {"app_id": appID, "errno": $errno.int}.toTable)
+      return "error"
+    if ready == 0:
+      # Timeout — self-check staleness/age before polling again.
+      let now = epochTime()
+      let age = now - app.spawnedAt
+      if age > SubscriberMaxAgeSec.float:
+        return "max_age"
+      if app.lastEventAt > 0 and (now - app.lastEventAt) > SubscriberStaleSec.float:
+        return "stale"
+      continue
+    if (pfd.revents and POLLIN) == 0:
+      # POLLERR / POLLHUP / POLLNVAL — pipe is gone.
+      return "eof"
+    let n = posix.read(fd, addr rbuf[0], rbuf.len.cint)
+    if n == 0: return "eof"
+    if n < 0:
+      if errno.cint == EINTR: continue
+      errorCF("feishu", "read() error",
+              {"app_id": appID, "errno": $errno.int}.toTable)
+      return "error"
+    lineBuf.add(rbuf.substr(0, n.int - 1))
+    while true:
+      let nl = lineBuf.find('\n')
+      if nl < 0: break
+      var line = lineBuf[0 ..< nl]
+      lineBuf = lineBuf[nl + 1 .. ^1]
+      if line.len > 0 and line[^1] == '\r': line.setLen(line.len - 1)
+      if line.len == 0 or not line.startsWith("{"): continue
+      app.lastEventAt = epochTime()
+      dispatchFeishuLine(line, c, app)
+  return "shutdown"
 
 proc subscriberPidPath(configDir: string): string =
   configDir / "locks" / "subscriber.pid"
@@ -932,14 +963,24 @@ proc eventReader(args: SubscriberArgs) {.thread.} =
     infoCF("feishu", "Subscriber connected", {"app_id": appID}.toTable)
     backoff = 1  # reset on successful connect
 
-    readEvents(p, c, app)
+    let exitReason = readEvents(p, c, app)
 
-    # Process ended — clean up
-    let exitCode = try: p.waitForExit(100) except: -1
+    # Reader returned. If it returned because the reader self-detected
+    # staleness (no events / max age), the lark-cli process is still
+    # alive and we have to kill it. SIGKILL not SIGTERM: SIGTERM gave
+    # lark-cli a chance to do graceful shutdown but its stdout pipe
+    # didn't reliably close before the parent Nim FileStream noticed,
+    # leading to the parked-reader zombie we just escaped from.
+    if exitReason in ["stale", "max_age"]:
+      infoCF("feishu", "Recycling subscriber", {"app_id": appID, "reason": exitReason}.toTable)
+      try: p.kill() except CatchableError: discard
+    let exitCode = try: p.waitForExit(2000) except: -1
     try: p.close() except: discard
 
     if not c.running: break
-    warnCF("feishu", "Subscriber died, restarting", {"app_id": appID, "exit_code": $exitCode, "backoff_s": $backoff}.toTable)
+    warnCF("feishu", "Subscriber down, restarting",
+           {"app_id": appID, "reason": exitReason,
+            "exit_code": $exitCode, "backoff_s": $backoff}.toTable)
     sleep(backoff * 1000)
     backoff = min(backoff * 2, 30)
 
