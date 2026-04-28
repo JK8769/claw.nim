@@ -826,15 +826,20 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       elif t.lastTool.len > 0: t.lastTool
       else: "(no tool yet)"
     if sub == "list":
-      var rows: seq[string] = @["AGENT       STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
+      # MODEL column shows the live model on the agent loop when the
+      # office is open (reflects /model overrides without restart),
+      # falling back to the static config for out-of-office agents.
+      var rows: seq[string] = @["AGENT       MODEL                  STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
       for a in cfg.agents.named:
         let key = a.name.toLowerAscii()
         let namePad = a.name.alignLeft(12)
         if not gCtx.offices.hasKey(key):
-          rows.add(namePad & "OOO".alignLeft(12) & "-".alignLeft(7) & "-".alignLeft(12) &
+          let modelPad = (if a.model.len > 0: a.model else: "-").alignLeft(23)
+          rows.add(namePad & modelPad & "OOO".alignLeft(12) & "-".alignLeft(7) & "-".alignLeft(12) &
                    "-".alignLeft(12) & "-".alignLeft(21) & "out-of-office")
           continue
         let al2 = gCtx.offices[key]
+        let modelPad = (if al2.model.len > 0: al2.model else: "-").alignLeft(23)
         let tokStr = fmtTokens(al2.liveTokensTotal)
         if al2.liveTasks.len > 0:
           # One row per in-flight task so concurrent turns are both visible.
@@ -842,14 +847,14 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
             let iterStr = $task.iteration & "/" & $task.maxIterations
             let elStr = fmtUptime(now - task.startedAt)
             let outcome = "running (" & truncate(sk, 24) & ")"
-            rows.add(namePad & "Working".alignLeft(12) & iterStr.alignLeft(7) &
+            rows.add(namePad & modelPad & "Working".alignLeft(12) & iterStr.alignLeft(7) &
                      elStr.alignLeft(12) & tokStr.alignLeft(12) &
                      toolDisplay(task).alignLeft(21) & outcome)
           continue
         # Idle — show how the last turn ended, if any.
         let last = al2.liveLastFinished
         if last == nil:
-          rows.add(namePad & "In-Office".alignLeft(12) & "-".alignLeft(7) &
+          rows.add(namePad & modelPad & "In-Office".alignLeft(12) & "-".alignLeft(7) &
                    "-".alignLeft(12) & tokStr.alignLeft(12) & "-".alignLeft(21) & "never-ran")
         else:
           let iterStr = $last.iteration & "/" & $last.maxIterations
@@ -857,7 +862,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           let outcome =
             if last.lastError.len > 0: "❌ " & shortErr(last.lastError)
             else: "✓ ok (turn " & $al2.liveTurnCount & ")"
-          rows.add(namePad & "In-Office".alignLeft(12) & iterStr.alignLeft(7) &
+          rows.add(namePad & modelPad & "In-Office".alignLeft(12) & iterStr.alignLeft(7) &
                    elStr.alignLeft(12) & tokStr.alignLeft(12) &
                    toolDisplay(last).alignLeft(21) & outcome)
       return codeBlock(rows.join("\n"))
