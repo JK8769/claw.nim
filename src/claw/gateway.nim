@@ -1181,8 +1181,8 @@ Usage:
   /user trust
   /user add <name> [--permission=<p>]
   /user edit <nc-id> <field> <value>
-  /user bind <nc-id>
-  /user rebind <nc-id>
+  /user bind <nc-id> [--keep]
+  /user rebind <nc-id> [--keep]
   /user invite <customer-name> [<agent>] [<uses>] [--lang=<l>] [--skill=<s>]... [--skills=<cs>]
   /user remove <nc-id>
 
@@ -1193,6 +1193,8 @@ Options:
   --sort=<s>        nc | name | kind | permission | tier | role
   --reverse         Reverse sort order
   --format=<f>      table | json  [default: table]
+  --keep            On `bind`/`rebind`, keep existing identifiers (default
+                    wipes them so the new code is the only way back in)
   --lang=<l>        Customer's language for paste templates (zh, en, ja, ko, ru, ar, ...)
   --skill=<s>       Allowed skill grant (repeatable) — `[user@]skill[/res,...]`
   --skills=<cs>     Comma-separated shorthand for --skill
@@ -1204,6 +1206,7 @@ Options:
                 "/user add Anna --permission=Member",
                 "/user edit nc:7 permission Member",
                 "/user bind nc:7",
+                "/user rebind nc:7 --keep",
                 "/user invite Alice",
                 "/user invite Acme Atlas 1",
                 "/user invite Alice --lang=zh",
