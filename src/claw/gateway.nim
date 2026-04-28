@@ -1126,6 +1126,24 @@ proc handleSocketRpc(req: RpcRequest): JsonNode {.gcsafe.} =
 
 proc runGateway*(host: string, port: int, debug: bool, stream: bool,
                 useStdio: bool = false, pane: string = "left") =
+  # `/restart` exec's the new gateway through a `/bin/sh` helper, and
+  # that shell inherits every open fd the OLD gateway had at fork time
+  # (the old gateway's lark-cli / nkn-cli / MCP pipes are NOT marked
+  # CLOEXEC). The exec'd new gateway then inherits all of those —
+  # leaving us with 1000+ orphaned pipe fds before we've even called
+  # `main()`. Once that count crosses libcurl's select() FD_SETSIZE
+  # ceiling (~1024 on macOS), every HTTPS request fails with
+  # `Unrecoverable error in select/poll`, and the failure looks like
+  # "deepseek is down" when really the fd table is full.
+  #
+  # Defensive close of inherited fds 3..maxClose. stdin/stdout/stderr
+  # stay open. macOS doesn't expose `closefrom`, so we loop manually;
+  # `close()` on a non-open fd is a cheap no-op (returns EBADF).
+  block closeInheritedFds:
+    const maxClose = 8192
+    for fd in 3 ..< maxClose:
+      discard close(fd.cint)
+
   if useStdio: logger.stdioMode = true
   if debug: setLevel(DEBUG)
 
