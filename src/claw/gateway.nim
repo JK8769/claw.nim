@@ -856,6 +856,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         # actually claimed the invite (the redemption flow stamps the
         # customer's identifier onto the pre-allocated entity rather
         # than updating `usedBy`).
+        #
+        # Customers promoted to internal-tier (Member / Staff /
+        # Employee / Admin / SuperAdmin) are excluded — once they
+        # join the team, they're not the agent's customers anymore.
+        # The invite-derived path filters; declared `serves` edges
+        # are kept as-is (operator's explicit intent).
         var customers = initHashSet[WorldEntityID]()
         for link in ent.serves: customers.incl(link.targetID)
         for inv in agentInvites.values:
@@ -863,8 +869,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           if inv.targetNcId.len == 0 or not inv.targetNcId.startsWith("nc:"): continue
           let cid = parseAlias(inv.targetNcId)
           if uint32(cid) == 0 or not agentGraph.entities.hasKey(cid): continue
-          if agentGraph.entities[cid].identifiers.len > 0:
-            customers.incl(cid)
+          let target = agentGraph.entities[cid]
+          if target.identifiers.len == 0: continue
+          if isInternalRole(target.role): continue
+          customers.incl(cid)
         let serves = (if customers.len > 0: $customers.len else: "-")
         (reports, serves)
       var rows: seq[string] = @["AGENT       MODEL                   REPORTS-TO    SERVES  STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
