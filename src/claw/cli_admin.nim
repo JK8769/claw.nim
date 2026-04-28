@@ -1626,7 +1626,26 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
 
     var ourAgents: HashSet[string]
     for a in cfg.agents.named: ourAgents.incl(a.name)
-    type Row = tuple[ncId, name, kind, perm, tier, relRole, sub, skills, idents: string]
+    # INVITED column: count distinct customers each internal user has
+    # actually onboarded. Pre-tally by walking INVITES.json once
+    # rather than re-scanning per row. A "real onboarding" is an
+    # invite where (a) the target entity exists and (b) it has at
+    # least one identifier (i.e. someone actually claimed it — the
+    # redemption flow stamps the channel identifier on the entity
+    # rather than touching `usedBy`, so the identifier check is the
+    # reliable proxy).
+    let invites = loadInvites(workspace)
+    var invitedBy = initTable[string, HashSet[WorldEntityID]]()
+    for inv in invites.values:
+      if inv.issuedBy.len == 0 or not inv.issuedBy.startsWith("nc:"): continue
+      if inv.targetNcId.len == 0 or not inv.targetNcId.startsWith("nc:"): continue
+      let cid = parseAlias(inv.targetNcId)
+      if uint32(cid) == 0 or not graph.entities.hasKey(cid): continue
+      if graph.entities[cid].identifiers.len == 0: continue
+      if not invitedBy.hasKey(inv.issuedBy):
+        invitedBy[inv.issuedBy] = initHashSet[WorldEntityID]()
+      invitedBy[inv.issuedBy].incl(cid)
+    type Row = tuple[ncId, name, kind, perm, tier, relRole, sub, skills, invited, idents: string]
     var rows: seq[Row]
     for id, ent in graph.entities.pairs:
       if ent.kind in {ekCorporate, ekInvite}: continue
@@ -1652,20 +1671,28 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         if kind.len > 0: identKinds.incl(kind)
       var identList = toSeq(identKinds.items)
       identList.sort()
+      let alias = toAlias(id)
+      let invitedStr =
+        if tierStr == "int" and invitedBy.hasKey(alias): $invitedBy[alias].len
+        elif tierStr == "int": "0"
+        else: "—"
       rows.add((
-        ncId: toAlias(id),
+        ncId: alias,
         name: ent.name,
         kind: kindStr,
         perm: permStr,
         tier: tierStr,
         relRole: userRelRole(graph, id),
-        sub: userSubscription(toAlias(id), tierStr),
+        sub: userSubscription(alias, tierStr),
         skills: userSkillSummary(ent),
+        invited: invitedStr,
         idents: (if identList.len > 0: identList.join(", ") else: "—")
       ))
 
     # Sort by the requested column (nc default).
     let sk = sortKey
+    proc invitedAsInt(s: string): int =
+      try: parseInt(s) except: -1  # "—" and "0" sort sensibly
     rows.sort(proc(a, b: Row): int =
       case sk:
       of "name":                 cmp(a.name.toLowerAscii, b.name.toLowerAscii)
@@ -1675,6 +1702,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       of "role", "rel", "relrole": cmp(a.relRole.toLowerAscii, b.relRole.toLowerAscii)
       of "sub", "subscription":  cmp(a.sub, b.sub)
       of "skills", "skill":      cmp(a.skills, b.skills)
+      of "invited", "inv":       cmp(invitedAsInt(a.invited), invitedAsInt(b.invited))
       else:                      cmp(parseAlias(a.ncId).uint32, parseAlias(b.ncId).uint32))
     if reverse: rows.reverse()
 
@@ -1687,6 +1715,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                    "relationship_role": r.relRole,
                    "subscription": r.sub,
                    "skills": r.skills,
+                   "invited": r.invited,
                    "identifiers": r.idents})
       return $arr
     if rows.len == 0:
@@ -1696,7 +1725,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                "register on their first message; our own agents are shown\n" &
                "by `claw agent list`."
       return hint
-    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   SUB       SKILLS                    CHANNELS\n"
+    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   SUB       INVITED  SKILLS                    CHANNELS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
@@ -1714,6 +1743,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
               pad(r.tier, 5) & " " &
               pad(relRole, 11) & " " &
               pad(r.sub, 9) & " " &
+              pad(r.invited, 8) & " " &
               pad(skills, 25) & " " &
               r.idents & "\n")
     var summary = "\n" & $rows.len & " user(s)"
