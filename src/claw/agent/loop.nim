@@ -8,7 +8,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite]
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers]
 import ../services/cron as cron_service
 import curly
 import ../lib/malebolgia
@@ -1490,6 +1490,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # entity + invite code; returns an `nc:X/CODE` string to share.
   regTagged(newCreateCustomerInviteTool(), ["admin", "customer", "invite"],
             "create customer invite code onboarding nc:id bundled string")
+  # Internal-tier self-service: lets any internal user ask their
+  # agent "how many customers have I invited?" without a slash.
+  regTagged(newMyCustomersTool(workspace), ["customer", "invite", "stats"],
+            "my customers count list onboarded invited referrals")
   regTagged(newModelListTool(), ["diagnostics", "providers", "models"],
             "list available llm models capabilities context pricing")
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
