@@ -71,6 +71,9 @@ method execute*(t: MyCustomersTool, args: Table[string, JsonNode]): Future[strin
     if uint32(cid) == 0 or not t.graph.entities.hasKey(cid): continue
     let target = t.graph.entities[cid]
     if target.identifiers.len == 0: continue
+    # Drop entities that have been promoted to internal-tier — they
+    # joined the team, so they're no longer "customers I invited".
+    if isInternalRole(target.role): continue
     if seen.hasKey(inv.targetNcId): continue
     seen[inv.targetNcId] = true
     var chans: seq[string]

@@ -1642,6 +1642,10 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       let cid = parseAlias(inv.targetNcId)
       if uint32(cid) == 0 or not graph.entities.hasKey(cid): continue
       if graph.entities[cid].identifiers.len == 0: continue
+      # Drop entities promoted to internal-tier — once they join the
+      # team they're no longer in the "customers I invited" tally.
+      # Same semantic as `/agent list`'s SERVES filter.
+      if isInternalRole(graph.entities[cid].role): continue
       if not invitedBy.hasKey(inv.issuedBy):
         invitedBy[inv.issuedBy] = initHashSet[WorldEntityID]()
       invitedBy[inv.issuedBy].incl(cid)
