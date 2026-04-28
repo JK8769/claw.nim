@@ -834,6 +834,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       # SERVES is the count of `serves` edges (customer fan-out).
       let workspace = cfg[].workspacePath()
       let agentGraph = loadWorld(workspace)
+      let agentInvites = loadInvites(workspace)
       proc agentRelationships(name: string): (string, string) =
         if agentGraph == nil: return ("-", "-")
         if not agentGraph.nameIndex.hasKey(name): return ("-", "-")
@@ -847,7 +848,24 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
             reports = agentGraph.entities[firstID].name
             if ent.reportsTo.len > 1:
               reports.add(" +" & $(ent.reportsTo.len - 1))
-        let serves = (if ent.serves.len > 0: $ent.serves.len else: "-")
+        # Count distinct customers served by this agent, drawing from
+        # two sources: (1) declared `serves "..."` edges in BASE.nims
+        # and (2) entities pre-allocated by invites issued via this
+        # agent (INVITES.json `agentName` + `targetNcId`) whose target
+        # entity has at least one identifier — i.e. a real customer
+        # actually claimed the invite (the redemption flow stamps the
+        # customer's identifier onto the pre-allocated entity rather
+        # than updating `usedBy`).
+        var customers = initHashSet[WorldEntityID]()
+        for link in ent.serves: customers.incl(link.targetID)
+        for inv in agentInvites.values:
+          if inv.agentName != name: continue
+          if inv.targetNcId.len == 0 or not inv.targetNcId.startsWith("nc:"): continue
+          let cid = parseAlias(inv.targetNcId)
+          if uint32(cid) == 0 or not agentGraph.entities.hasKey(cid): continue
+          if agentGraph.entities[cid].identifiers.len > 0:
+            customers.incl(cid)
+        let serves = (if customers.len > 0: $customers.len else: "-")
         (reports, serves)
       var rows: seq[string] = @["AGENT       MODEL                   REPORTS-TO    SERVES  STATE       ITER   ELAPSED     TOKENS      LAST TOOL            OUTCOME"]
       for a in cfg.agents.named:
