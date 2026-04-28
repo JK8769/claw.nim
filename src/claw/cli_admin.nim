@@ -1642,11 +1642,16 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       of rvActive:   (if recycled: continue)
       of rvRecycled: (if not recycled: continue)
       of rvAll: discard
-      var identParts: seq[string]
-      for chan, sid in ent.identifiers.pairs:
-        var shown = sid
-        if shown.len > 12: shown = shown[0 ..< 10] & "…"
-        identParts.add(chan & ":" & shown)
+      # List view shows distinct channel KINDS (`feishu`, `nkn`,
+      # `telegram` …) deduped — answers "where can I reach this
+      # person?" at a glance. Per-binding detail (app_id, raw
+      # identifier values, union ids) lives in `/user show <nc:id>`.
+      var identKinds: HashSet[string]
+      for chan, _ in ent.identifiers.pairs:
+        let kind = chan.split(':', 1)[0]
+        if kind.len > 0: identKinds.incl(kind)
+      var identList = toSeq(identKinds.items)
+      identList.sort()
       rows.add((
         ncId: toAlias(id),
         name: ent.name,
@@ -1656,7 +1661,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
         relRole: userRelRole(graph, id),
         sub: userSubscription(toAlias(id), tierStr),
         skills: userSkillSummary(ent),
-        idents: (if identParts.len > 0: identParts.join(", ") else: "—")
+        idents: (if identList.len > 0: identList.join(", ") else: "—")
       ))
 
     # Sort by the requested column (nc default).
@@ -1691,16 +1696,17 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                "register on their first message; our own agents are shown\n" &
                "by `claw agent list`."
       return hint
-    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   SUB       SKILLS                    IDENTIFIERS\n"
+    var res = "NC:ID  NAME                  KIND     PERMISSION   TIER  ROLE(rel)   SUB       SKILLS                    CHANNELS\n"
     for r in rows:
       var name = r.name
       if name.len > 20: name = name[0 ..< 18] & "…"
-      var idents = r.idents
-      if idents.len > 35: idents = idents[0 ..< 33] & "…"
       var skills = r.skills
       if skills.runeLen > 24: skills = skills[0 ..< 22] & "…"
       let perm = (if r.perm.len > 0: r.perm else: "—")
       let relRole = (if r.relRole.len > 0: r.relRole else: "—")
+      # idents is already pre-deduped to channel-kind names — short
+      # enough to render in full (`feishu, nkn, telegram` is ~24 chars
+      # for an extreme case). No truncation needed.
       res.add(pad(r.ncId, 6) & " " &
               pad(name, 21) & " " &
               pad(r.kind, 8) & " " &
@@ -1709,7 +1715,7 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
               pad(relRole, 11) & " " &
               pad(r.sub, 9) & " " &
               pad(skills, 25) & " " &
-              idents & "\n")
+              r.idents & "\n")
     var summary = "\n" & $rows.len & " user(s)"
     if filterKind.len + filterTier.len + filterPerm.len > 0:
       var parts: seq[string]
