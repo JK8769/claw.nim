@@ -1379,8 +1379,16 @@ proc clientWatchdog(c: NMobileChannel) {.thread.} =
       discard c.bridge.closeNKNClient(clientAddr)
       # Re-create with same seed + identifier — nkn-cli derives the same
       # address deterministically, so clientAddr-keyed tables stay valid.
+      # nkn-sdk-go refuses NewMultiClient with numSubClients == 0 — the
+      # config defaults that to 0 when unset, so apply the same backfill
+      # the first-spawn path uses (NknDefaultNumSubClients = 4). Without
+      # this guard the watchdog cycles, respawn always fails with
+      # "NewMultiClient: failed to create client", and the gateway is
+      # silently NKN-deaf until restart.
+      let watchdogSub =
+        if c.numSubClients > 0: c.numSubClients else: NknDefaultNumSubClients
       let (_, err) = c.bridge.createClientFromSeed(c.seed, sub,
-                        c.numSubClients, c.originalClient)
+                        watchdogSub, c.originalClient)
       if err.len > 0:
         errorCF("nmobile", "Watchdog respawn failed",
                 {"address": clientAddr, "error": err}.toTable)

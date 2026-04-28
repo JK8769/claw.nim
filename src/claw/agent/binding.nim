@@ -247,7 +247,11 @@ proc rebind*(graph: WorldGraph, workspace: string,
   if uint32(id) == 0 or not graph.entities.hasKey(id):
     return none(BindingCode)
   var ent = graph.entities[id]
-  if ent.kind != ekPerson or ent.role.toLowerAscii != "superadmin":
+  # Bind codes are only minted for trusted internal roles. Customer
+  # / Guest / external people use the invite flow (claw user invite),
+  # which has its own ledger and per-customer skill grants.
+  if ent.kind != ekPerson or
+     ent.role.toLowerAscii notin ["superadmin", "admin"]:
     return none(BindingCode)
   if dropExisting and ent.identifiers.len > 0:
     ent.identifiers = initTable[string, string]()
