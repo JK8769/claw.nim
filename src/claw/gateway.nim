@@ -528,6 +528,17 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    Examples:\n" &
              "      `/user invite Alice`          — Atlas, 1 use\n" &
              "      `/user invite Acme Atlas 3`   — Atlas, 3 redemptions\n\n" &
+             "  `/user edit <nc:id> <field> <value>`   🔒 Admin\n" &
+             "    Update name, permission, jobTitle, or kind on an\n" &
+             "    existing user. Writes BASE.nims directly (run\n" &
+             "    `/co update` after to refresh BASE.json). Use this\n" &
+             "    to promote a Customer to Member, classify an Unknown\n" &
+             "    guest, etc. For identifiers (NKN/Telegram/etc) use\n" &
+             "    `/user bind` instead — those should be stamped by\n" &
+             "    the user actually messaging from that channel.\n" &
+             "    Examples:\n" &
+             "      `/user edit nc:7 permission Member`\n" &
+             "      `/user edit nc:5 jobTitle \"Field Engineer\"`\n\n" &
              "  `/user remove <nc:id>`   🔒 Admin\n" &
              "    Deletes an entity from the graph AND from BASE.nims\n" &
              "    (person block + any reportsTo/serves references\n" &
@@ -535,14 +546,15 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    cleaning up stale Unknown auto-registers or dupes.\n" &
              "    Example: `/user remove nc:7`\n\n" &
              "Access:  `list`/`show`/`trust`/`invite` — any internal\n" &
-             "         `add`/`remove` — Admin or SuperAdmin\n" &
-             "         `bind`/`rebind` — SuperAdmin only"
+             "         `add`/`edit`/`remove` — Admin or SuperAdmin\n" &
+             "         `bind`/`rebind` — SuperAdmin only (works for any\n" &
+             "                            internal-tier role)"
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
     # Per-subcommand ACL: the entry gate above lets through any
     # internal-tier caller; tighten further by subcommand intent.
     #   list / show / trust / invite  → any internal (entry gate suffices)
-    #   add / remove                  → Admin or SuperAdmin
+    #   add / edit / remove           → Admin or SuperAdmin
     #   bind                          → SuperAdmin only
     if sub in ["list", "show", "trust"]:
       var cfgCopy = cfg[]
@@ -566,6 +578,14 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       var cfgCopy = cfg[]
       let body = runUserCommand(cfgCopy, @[sub] & subArgs)
       return codeBlock(body)
+    if sub == "edit":
+      if callerPermGate < pmAdmin:
+        return "Only Admin or SuperAdmin can edit users. " &
+               "(`/user edit <nc:id> <field> <value>` — fields: " &
+               "name, permission, jobTitle, kind.)"
+      var cfgCopy = cfg[]
+      let body = runUserCommand(cfgCopy, @[sub] & subArgs)
+      return codeBlock(body)
     if sub in ["bind", "rebind"]:
       if callerPermGate < pmSuperAdmin:
         return "Only SuperAdmin can issue bind codes. " &
@@ -581,8 +601,8 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       fakeMsg.content = cmdRewrite
       return await handleSystemCommand(cfg, fakeMsg, al)
     return "Unknown /user subcommand: `" & sub & "`.\n" &
-           "Available: `list`, `show`, `trust`, `add`, `bind`, " &
-           "`invite`, `remove`."
+           "Available: `list`, `show`, `trust`, `add`, `edit`, " &
+           "`bind`, `invite`, `remove`."
 
   elif cmd.startsWith("/invite"):
     # Legacy alias for `/user invite`. Entry gate has confirmed

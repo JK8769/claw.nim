@@ -118,6 +118,22 @@ proc parseUserRole*(s: string, default: UserRole = urGuest): UserRole =
     try: return parseEnum[UserRole](low)
     except: return default
 
+proc isInternalRole*(role: string): bool =
+  ## Single source of truth for "is this an internal-tier role?".
+  ## Used by `binding.rebind` (gates who can be issued a bind code),
+  ## `gateway.resolveCallerPermission` (slash entry gate), and
+  ## `cli_admin.tierFromRoleName` (mirrors clawdsl tier inference).
+  ## Internal = trusted operators on the company side. External =
+  ## customers / guests / students / etc. (use the invite flow instead).
+  case role.toLowerAscii.strip
+  of "superadmin", "admin", "staff", "member", "employee": true
+  else: false
+
+proc isExternalRole*(role: string): bool =
+  case role.toLowerAscii.strip
+  of "boss", "master", "lead", "customer", "student", "guest": true
+  else: false
+
 proc guestsFilePath*(officeDir: string): string =
   ## Single source of truth for the guest-ledger file path. Prefers
   ## the new `guests.json`; returns the legacy `RELATIONS.json` only

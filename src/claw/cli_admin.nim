@@ -1183,13 +1183,13 @@ proc tierFromRoleName*(label: string): string =
   ## Name-only heuristic: classify a role/permission label into
   ## "int"/"ext"/"?". Mirrors clawdsl.nim's tier inference. Callers
   ## without a Config (e.g. MCP tools) use this; `tierOfRole` wraps
-  ## it with the trust-block lookup for the CLI-side callers.
-  let low = label.toLowerAscii.strip
-  if low.len == 0: return "?"
-  case low:
-  of "superadmin", "admin", "staff", "employee", "member": "int"
-  of "boss", "master", "lead", "customer", "student", "guest": "ext"
-  else: "?"
+  ## it with the trust-block lookup for the CLI-side callers. Role
+  ## lists live in cortex.{isInternalRole,isExternalRole} — single
+  ## source of truth shared with binding/gateway.
+  if label.strip.len == 0: return "?"
+  if isInternalRole(label): return "int"
+  if isExternalRole(label): return "ext"
+  "?"
 
 proc tierOfRole(cfg: Config, label: string): string =
   ## Declared roles in the trust: block win; otherwise fall back to
