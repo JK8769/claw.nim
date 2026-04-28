@@ -69,6 +69,10 @@ type
     telegramPushChatId: Option[string]
     peers: Table[string, PeerInfo]
     seenMessages: Table[string, float] # messageId -> timestamp
+    seenMessagesFile: string   # Path to seen.json — persists dedup
+                               # across gateway restarts so the same
+                               # /restart isn't reprocessed when the
+                               # mobile NKN client retries delivery.
     pieceBuffers: Table[string, PieceBuffer] # msgId -> accumulator
     pendingNotifications: Table[string, OutboundMessage] # LLM messageId -> Pending Telegram notification
     lastReadMsgId: string # ID of the last sent message that can be cleared by an empty read receipt
@@ -346,6 +350,46 @@ proc loadPeers(c: NMobileChannel) =
     except:
       errorCF("nmobile", "Failed to load peers", {"error": getCurrentExceptionMsg()}.toTable)
 
+proc saveSeenMessages(c: NMobileChannel) =
+  ## Persist the inbound msgId dedup table. Without this, every
+  ## gateway restart starts fresh — and the mobile NKN client's
+  ## retry queue re-delivers the same `/restart` (or any pre-restart
+  ## message), causing an infinite restart loop. Cap at the most
+  ## recent 1000 entries on save.
+  if c.seenMessagesFile.len == 0: return
+  try:
+    var j = newJObject()
+    let now = getTime().toUnixFloat()
+    var pairs: seq[(string, float)]
+    for k, v in c.seenMessages.pairs:
+      if now - v <= 3600:  # 1h TTL
+        pairs.add((k, v))
+    pairs.sort(proc(a, b: (string, float)): int = cmp(b[1], a[1]))
+    if pairs.len > 1000: pairs.setLen(1000)
+    for (k, v) in pairs: j[k] = %v
+    writeFile(c.seenMessagesFile, $j)
+  except:
+    errorCF("nmobile", "Failed to save seen messages",
+            {"error": getCurrentExceptionMsg()}.toTable)
+
+proc loadSeenMessages(c: NMobileChannel) =
+  ## Load the dedup table at startup. Drops entries older than 1h
+  ## so old messages don't pollute the cache forever.
+  if c.seenMessagesFile.len == 0: return
+  if not fileExists(c.seenMessagesFile): return
+  try:
+    let j = parseFile(c.seenMessagesFile)
+    let now = getTime().toUnixFloat()
+    for k, v in j.pairs:
+      let ts = v.getFloat()
+      if now - ts <= 3600:
+        c.seenMessages[k] = ts
+    infoCF("nmobile", "Loaded seen messages from disk",
+           {"count": $c.seenMessages.len}.toTable)
+  except:
+    errorCF("nmobile", "Failed to load seen messages",
+            {"error": getCurrentExceptionMsg()}.toTable)
+
 proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
   let ncfg = cfg.channels.nmobile
   let base = newBaseChannel("nmobile", bus, ncfg.allow_from)
@@ -418,6 +462,7 @@ proc newNMobileChannel*(cfg: Config, bus: MessageBus): NMobileChannel =
     telegramPushChatId: ncfg.telegram_push_chat_id,
     peers: initTable[string, PeerInfo](),
     seenMessages: initTable[string, float](),
+    seenMessagesFile: "",  # Set in start() after per-address dir is known
     pieceBuffers: initTable[string, PieceBuffer](),
     pendingNotifications: initTable[string, OutboundMessage](),
     peersFile: appData / "channels" / "nmobile" / "peers.json",  # Migrated to per-addr dir in start()
@@ -727,6 +772,13 @@ proc poll(c: NMobileChannel) {.async.} =
                 for k in toDel: c.seenMessages.del(k)
 
               c.seenMessages[msgId] = now
+              # Persist so the next gateway after restart skips this
+              # msgId — prevents the mobile NKN client's retry queue
+              # from re-triggering already-processed `/restart` etc.
+              # Save on every insert — the file is small (≤1000 entries)
+              # and the cost of a single un-saved msgId is the entire
+              # restart loop bug we just fixed.
+              c.saveSeenMessages()
    
             let contentType = j.safeGetStr("contentType")
             var deliverToAgent = false
@@ -1444,6 +1496,8 @@ method start*(c: NMobileChannel) {.async.} =
         if not fileExists(perAddrPeers) and fileExists(c.peersFile):
           copyFile(c.peersFile, perAddrPeers)
         c.peersFile = perAddrPeers
+        c.seenMessagesFile = addrDir / "seen.json"
+        c.loadSeenMessages()
         let defaultExt =
           if c.identifiers.len > 0: c.identifiers[0][0]
           elif c.identifier.len > 0: c.identifier

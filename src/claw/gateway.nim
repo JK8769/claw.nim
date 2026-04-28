@@ -1171,21 +1171,25 @@ subscribers to route events to the new agent's office.
                 "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas",
                 "/channel assign cli_a948ea9ee5785cd3 Atlas"]))
   register(SystemCommand(
-    name: "/user", summary: "User management (list, show, trust, invite, remove).",
-    usage: "/user <list|show|trust|invite|remove> [<args>...]",
+    name: "/user", summary: "User management (list, show, trust, add, edit, bind, invite, remove).",
+    usage: "/user <list|show|trust|add|edit|bind|invite|remove> [<args>...]",
     doc: """User management.
 
 Usage:
   /user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<s>] [--reverse] [--format=<f>]
   /user show <nc-id>
   /user trust
+  /user add <name> [--permission=<p>]
+  /user edit <nc-id> <field> <value>
+  /user bind <nc-id>
+  /user rebind <nc-id>
   /user invite <customer-name> [<agent>] [<uses>] [--lang=<l>] [--skill=<s>]... [--skills=<cs>]
   /user remove <nc-id>
 
 Options:
   --kind=<k>        Person | AI | Unknown | Service
   --tier=<t>        int | ext | ?
-  --permission=<p>  Filter by declared permission
+  --permission=<p>  Filter (`list`) or assign (`add`) a permission/role
   --sort=<s>        nc | name | kind | permission | tier | role
   --reverse         Reverse sort order
   --format=<f>      table | json  [default: table]
@@ -1197,6 +1201,9 @@ Options:
     examples: @["/user list --kind=Unknown",
                 "/user show nc:4",
                 "/user trust",
+                "/user add Anna --permission=Member",
+                "/user edit nc:7 permission Member",
+                "/user bind nc:7",
                 "/user invite Alice",
                 "/user invite Acme Atlas 1",
                 "/user invite Alice --lang=zh",
