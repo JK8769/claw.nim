@@ -237,10 +237,14 @@ proc tryBind*(graph: WorldGraph, workspace: string,
   some(matched)
 
 proc rebind*(graph: WorldGraph, workspace: string,
-             alias: string, dropExisting: bool = true): Option[BindingCode] =
-  ## Force-issue a fresh binding code for an existing SuperAdmin, even
-  ## if they already have identifiers. If `dropExisting`, wipe the
-  ## identifiers so the code is the only way back in (lost-device flow).
+             alias: string, wipeExisting: bool = false): Option[BindingCode] =
+  ## Force-issue a fresh binding code for an existing internal user.
+  ## Default is **additive**: the new code, when consumed via tryBind
+  ## from any channel, stamps just THAT channel's identifier and leaves
+  ## others untouched (tryBind is already channel-scoped). Pass
+  ## `wipeExisting = true` for the lost-device flow where every
+  ## existing identifier must be revoked so the new code is the only
+  ## way back in.
   if graph == nil: return none(BindingCode)
   if not alias.startsWith("nc:"): return none(BindingCode)
   let id = parseAlias(alias)
@@ -254,7 +258,7 @@ proc rebind*(graph: WorldGraph, workspace: string,
   # role list lives in cortex.isInternalRole — single source of truth.
   if ent.kind != ekPerson or not isInternalRole(ent.role):
     return none(BindingCode)
-  if dropExisting and ent.identifiers.len > 0:
+  if wipeExisting and ent.identifiers.len > 0:
     ent.identifiers = initTable[string, string]()
     graph.entities[id] = ent
     graph.saveWorld()

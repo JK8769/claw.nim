@@ -2415,32 +2415,38 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
     return res
 
   if subcmd == "rebind":
-    # Issue a fresh SuperAdmin binding code for a specific nc:id (or
-    # all unbound SuperAdmins if no argument). Usable when the current
-    # identifier is no longer reachable (lost device, left Telegram,
-    # rotated Feishu open_id, etc.). By default this wipes the existing
-    # identifiers on the target so the new code is the only way in —
-    # pass `--keep` to leave them intact (dual-bind).
-    var dropExisting = true
+    # Issue a fresh binding code for a specific internal nc:id (or
+    # all unbound SuperAdmins if no argument). The bind is **additive
+    # per channel**: when the user replies from NKN, only the NKN
+    # identifier gets stamped; Feishu / Telegram / etc. stay intact.
+    # tryBind() reads (channelKey, senderID) from the inbound and only
+    # touches that one slot.
+    #
+    # Pass `--wipe` for the lost-device flow: revokes every existing
+    # identifier at mint time so the new code is the only way in
+    # (use this when an attacker may have an existing channel).
+    var wipeExisting = false
     var targetAlias = ""
     for a in args[1 .. ^1]:
-      if a == "--keep": dropExisting = false
+      if a == "--wipe": wipeExisting = true
+      elif a == "--keep": discard  # legacy no-op; additive is default
       elif a.startsWith("nc:"): targetAlias = a
       else:
         return "Error: unrecognised argument \"" & a & "\".\n" &
-               "Usage: claw user rebind [<nc:id>] [--keep]"
+               "Usage: claw user rebind [<nc:id>] [--wipe]"
     if targetAlias.len > 0:
-      let code = rebind(graph, cfg.workspacePath(), targetAlias, dropExisting)
+      let code = rebind(graph, cfg.workspacePath(), targetAlias, wipeExisting)
       if code.isNone:
-        return "Error: " & targetAlias & " is not a SuperAdmin Person or\n" &
+        return "Error: " & targetAlias & " is not an internal Person or\n" &
                "no such entity."
       let c = code.get
       return "Rebind code for " & c.targetName & " (" & c.targetNcId & "): " &
              c.code & "\n" &
-             (if dropExisting:
-                "Previous identifiers were cleared. "
+             (if wipeExisting:
+                "All previous identifiers were cleared (lost-device flow).\n"
               else:
-                "Existing identifiers kept. ") &
+                "Existing identifiers preserved — only the channel that " &
+                "consumes this code gets a new binding.\n") &
              "Send this code as your first message to:\n" &
              bindTargets(cfg) & "\n" &
              "Codes expire after 24 hours."
