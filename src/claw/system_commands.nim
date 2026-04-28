@@ -19,7 +19,13 @@ import docopt
 type
   Permission* = enum
     pmAny           ## Anyone on any chat.
-    pmSuperAdmin    ## Requires declared entity permission == SuperAdmin/Admin.
+    pmInternal      ## Any internal-tier role (SuperAdmin, Admin, Staff,
+                    ## Member, Employee). Customer/Guest are excluded.
+    pmAdmin         ## Admin or SuperAdmin — operator tier. Most
+                    ## previously-`pmSuperAdmin` call sites that meant
+                    ## "admin or above" now use this.
+    pmSuperAdmin    ## True SuperAdmin only (the apex of trust). Granting
+                    ## another SuperAdmin requires being one.
 
   CmdArg* = object
     name*: string          ## "app_id"
@@ -83,7 +89,9 @@ proc renderHelp*(filterPermission: Permission = pmAny): string =
     result.add("\n**" & group.capitalizeAscii() & "**\n")
     var block_body = ""
     for c in cmds:
-      let lock = if filterPermission == pmAny and c.permission == pmSuperAdmin: "🔒 " else: ""
+      # 🔒 marks commands the caller can't actually run — i.e. require
+      # a strictly higher tier than the caller has.
+      let lock = if c.permission > filterPermission: "🔒 " else: ""
       block_body.add(lock & c.name.alignLeft(14) & "  " & c.summary & "\n")
     result.add(codeBlock(block_body))
     result.add("\n")
@@ -106,8 +114,11 @@ proc renderCommandDetail*(name: string): string =
     result.add("**Arguments**\n" & codeBlock(body) & "\n\n")
   if c.examples.len > 0:
     result.add("**Examples**\n" & codeBlock(c.examples.join("\n")) & "\n")
-  if c.permission == pmSuperAdmin:
-    result.add("\n🔒 SuperAdmin only.\n")
+  case c.permission
+  of pmAny: discard
+  of pmInternal:   result.add("\n🔒 Internal staff only.\n")
+  of pmAdmin:      result.add("\n🔒 Admin or SuperAdmin only.\n")
+  of pmSuperAdmin: result.add("\n🔒 SuperAdmin only.\n")
 
 proc parseArgs*(cmdName, raw: string, argv: seq[string]): ParseResult =
   ## Run docopt against the command's registered `doc` spec. `argv`

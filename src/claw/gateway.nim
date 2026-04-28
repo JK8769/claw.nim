@@ -256,8 +256,10 @@ proc maybeTranslate(cfg: ref Config, src, userSample: string,
     return src
 
 proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
-  ## Resolve the caller's declared entity permission. SuperAdmin/Admin
-  ## return pmSuperAdmin; everyone else returns pmAny.
+  ## Resolve the caller's declared entity permission into one of four
+  ## tiers (pmSuperAdmin > pmAdmin > pmInternal > pmAny). The entry
+  ## gate accepts pmInternal+; per-subcommand checks tighten further
+  ## (e.g. /user bind needs pmSuperAdmin, /user add needs pmAdmin).
   let workspace = cfg[].workspacePath()
   let graph = loadWorld(workspace)
   if graph == nil: return pmAny
@@ -269,8 +271,15 @@ proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
   if uint32(entID) == 0 or not graph.entities.hasKey(entID):
     return pmAny
   let p = graph.entities[entID].role.toLowerAscii
-  if p in ["superadmin", "admin"]: return pmSuperAdmin
-  pmAny
+  # Admin/SuperAdmin get their own tier; defer the broader internal-vs-
+  # external check to `tierFromRoleName` so the role-string list lives
+  # in one place (cli_admin.nim, mirroring clawdsl.nim's tier inference).
+  case p
+  of "superadmin": pmSuperAdmin
+  of "admin":      pmAdmin
+  else:
+    if tierFromRoleName(p) == "int": pmInternal
+    else: pmAny
 
 proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): Future[string] {.async.} =
   let cmd = msg.content.strip()
@@ -279,10 +288,14 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
   # covers the entire slash surface. Non-admin callers get a polite
   # refusal that doesn't leak which commands exist.
   let callerPermGate = resolveCallerPermission(cfg, msg)
-  if callerPermGate != pmSuperAdmin:
+  if callerPermGate == pmAny:
     return "System commands (`/status`, `/user …`, `/channel …`, etc.) " &
-           "are restricted to operators. Ask a SuperAdmin if you need " &
-           "something administrative done."
+           "are restricted to internal staff. Ask a SuperAdmin if you " &
+           "need something administrative done."
+  # Internal-tier passes the entry gate. Each subcommand applies its
+  # own additional check below — e.g. `/user bind` requires pmSuperAdmin
+  # (true SA only), `/user add` requires pmAdmin (Admin or SA), and
+  # `/user invite` accepts any internal.
   if cmd == "/status":
     let workspace = cfg[].workspacePath()
     let graph = loadWorld(workspace)
@@ -472,10 +485,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     return "Switched to `" & providerKey & "/" & modelName & "`. Session cleared."
   elif cmd.startsWith("/user"):
     # Namespace for user management: `/user <subcmd> [<args>...]`.
-    # Entry gate already confirmed SuperAdmin — dispatch through
-    # runUserCommand / mintCustomerInvite so CLI and chat share the
-    # same backend. `/user invite` rewrites to the `/invite` alias
-    # below for presentation-layer formatting.
+    # Entry gate has confirmed pmInternal+; per-subcommand checks below
+    # tighten further. Dispatch routes through runUserCommand /
+    # mintCustomerInvite so CLI and chat share the same backend.
+    # `/user invite` rewrites to the `/invite` alias below for
+    # presentation-layer formatting.
     let rawParts = strutils.splitWhitespace(cmd)
     let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
     if argv.len == 0 or argv[0] == "help":
@@ -505,7 +519,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    role, trust, etiquette). Shows per-agent divergence\n" &
              "    that `/user list` collapses.\n" &
              "    Example: `/user trust`\n\n" &
-             "  `/user invite <customer-name> [<agent>] [<uses>]`   🔒 SuperAdmin\n" &
+             "  `/user invite <customer-name> [<agent>] [<uses>]`\n" &
              "    Pre-allocates a Customer Person entity + mints a\n" &
              "    one-shot access code (`nc:X/CODE`). Returns three\n" &
              "    paste-ready sentence templates the customer can\n" &
@@ -514,42 +528,67 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    Examples:\n" &
              "      `/user invite Alice`          — Atlas, 1 use\n" &
              "      `/user invite Acme Atlas 3`   — Atlas, 3 redemptions\n\n" &
-             "  `/user remove <nc:id>`   🔒 SuperAdmin\n" &
+             "  `/user remove <nc:id>`   🔒 Admin\n" &
              "    Deletes an entity from the graph AND from BASE.nims\n" &
              "    (person block + any reportsTo/serves references\n" &
              "    cascaded). Prefer this over manual DSL edits for\n" &
              "    cleaning up stale Unknown auto-registers or dupes.\n" &
              "    Example: `/user remove nc:7`\n\n" &
-             "All `/user` subcommands (and every `/` system command)\n" &
-             "are restricted to SuperAdmin / Admin callers."
+             "Access:  `list`/`show`/`trust`/`invite` — any internal\n" &
+             "         `add`/`remove` — Admin or SuperAdmin\n" &
+             "         `bind`/`rebind` — SuperAdmin only"
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
-    # Entry gate has already confirmed SuperAdmin, so all subs are
-    # permitted. Routes through the same runUserCommand / mintCustomer-
-    # Invite paths the CLI uses — single source of truth. Output is
-    # wrapped in a code block so column-aligned tables survive Feishu
-    # markdown; JSON output opts out so machine use stays raw.
-    if sub in ["list", "show", "trust", "remove"]:
+    # Per-subcommand ACL: the entry gate above lets through any
+    # internal-tier caller; tighten further by subcommand intent.
+    #   list / show / trust / invite  → any internal (entry gate suffices)
+    #   add / remove                  → Admin or SuperAdmin
+    #   bind                          → SuperAdmin only
+    if sub in ["list", "show", "trust"]:
       var cfgCopy = cfg[]
       let body = runUserCommand(cfgCopy, @[sub] & subArgs)
       let wantsJson = "--format=json" in subArgs or "--json" in subArgs
       if wantsJson: return body
       return codeBlock(body)
+    if sub == "remove":
+      if callerPermGate < pmAdmin:
+        return "Only Admin or SuperAdmin can remove users. " &
+               "(For removing a customer's access without deleting " &
+               "their record, ask an Admin.)"
+      var cfgCopy = cfg[]
+      let body = runUserCommand(cfgCopy, @[sub] & subArgs)
+      return codeBlock(body)
+    if sub == "add":
+      if callerPermGate < pmAdmin:
+        return "Only Admin or SuperAdmin can add internal users. " &
+               "(For customer onboarding, use `/user invite` — any " &
+               "internal staff member can mint a customer invite.)"
+      var cfgCopy = cfg[]
+      let body = runUserCommand(cfgCopy, @[sub] & subArgs)
+      return codeBlock(body)
+    if sub in ["bind", "rebind"]:
+      if callerPermGate < pmSuperAdmin:
+        return "Only SuperAdmin can issue bind codes. " &
+               "(For non-SuperAdmin internal onboarding, use `/user add`.)"
+      var cfgCopy = cfg[]
+      let body = runUserCommand(cfgCopy, @["rebind"] & subArgs)
+      return codeBlock(body)
     if sub == "invite":
       # Rewrite to the legacy /invite alias below — same helper path,
-      # chat-specific paste-template formatting.
+      # chat-specific paste-template formatting. Open to any internal.
       let cmdRewrite = "/invite " & subArgs.join(" ")
       var fakeMsg = msg
       fakeMsg.content = cmdRewrite
       return await handleSystemCommand(cfg, fakeMsg, al)
     return "Unknown /user subcommand: `" & sub & "`.\n" &
-           "Try `/user list`, `/user show <nc:id>`, `/user trust`, " &
-           "`/user remove <nc:id>`, or `/user invite <name>`."
+           "Available: `list`, `show`, `trust`, `add`, `bind`, " &
+           "`invite`, `remove`."
 
   elif cmd.startsWith("/invite"):
-    # Legacy alias for `/user invite`. Entry gate already confirmed
-    # SuperAdmin; we only need the caller's nc:id here for invite
-    # provenance (the `issuedBy` field on InviteConstraint).
+    # Legacy alias for `/user invite`. Entry gate has confirmed
+    # pmInternal+ (any internal can mint a customer invite); we only
+    # need the caller's nc:id here for invite provenance (the
+    # `issuedBy` field on InviteConstraint).
     let workspace = cfg[].workspacePath()
     let g = loadWorld(workspace)
     var issuer = ""
@@ -622,16 +661,18 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
            "message in " & (if targetLang.len > 0: targetLang else: "their language") & "."
 
   elif cmd == "/help" or cmd.startsWith("/help "):
-    # Entry gate confirms SuperAdmin, so show everything (no 🔒 filter).
+    # Pass the caller's actual tier so renderHelp can mark commands
+    # the caller can't run with the lock icon.
     let parts = strutils.splitWhitespace(cmd)
     if parts.len >= 2:
       return renderCommandDetail(parts[1])
-    return renderHelp(pmSuperAdmin)
+    return renderHelp(callerPermGate)
 
   elif cmd.startsWith("/channel"):
     # `/channel auth feishu <app_id> <app_secret> [<agent>]`
     # `/channel list`
-    # Entry gate already confirmed SuperAdmin.
+    if callerPermGate < pmAdmin:
+      return "Only Admin or SuperAdmin can manage channels."
     let rawParts = strutils.splitWhitespace(cmd)
     # parts[0] = "/channel", pass the rest to docopt.
     let argv = if rawParts.len > 1: rawParts[1 .. ^1] else: @[]
@@ -679,6 +720,8 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
   elif cmd == "/co" or cmd == "/company" or
        cmd.startsWith("/co ") or cmd.startsWith("/company "):
+    if callerPermGate < pmAdmin:
+      return "Only Admin or SuperAdmin can run `/co` commands."
     # Subcommands:
     #   `/co update` — rebuild BASE.json from BASE.nims (no restart).
     #   `/co cost`   — token+USD breakdown across all agents.
@@ -743,6 +786,8 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
   elif cmd == "/agent" or cmd == "/agents" or
        cmd.startsWith("/agent ") or cmd.startsWith("/agents "):
+    if callerPermGate < pmAdmin:
+      return "Only Admin or SuperAdmin can manage agents."
     # Live-state inspection. `/agent` or `/agent list` → one-line per agent
     # with WORKING/idle + iteration + elapsed + outcome (OK/error). Idle rows
     # show how the previous turn ended so operators can spot silent failures
@@ -845,10 +890,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     return "**Agent " & name & "**\n\n" & codeBlock(lines.join("\n"))
 
   elif cmd == "/restart":
-    # SuperAdmin-only: stop the current gateway and launch a fresh one
+    if callerPermGate < pmAdmin:
+      return "Only Admin or SuperAdmin can restart the gateway."
+    # Admin+: stop the current gateway and launch a fresh one
     # so config/DSL changes (e.g. a freshly added Feishu app) take
-    # effect without dropping to a terminal. Entry gate confirmed
-    # SuperAdmin already.
+    # effect without dropping to a terminal.
     #
     # Step 0: rebuild BASE.json from BASE.nims FIRST. If this fails
     # (syntax error, missing template, etc.), bail out immediately —
@@ -1078,13 +1124,13 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
   register(SystemCommand(
     name: "/stream", summary: "Toggle intermediary thought streaming.",
     usage: "/stream <on|off>", group: "agent-control",
-    permission: pmSuperAdmin,
+    permission: pmAdmin,
     args: @[CmdArg(name: "value", description: "on or off", required: true)],
     examples: @["/stream on", "/stream off"]))
   register(SystemCommand(
     name: "/model", summary: "Switch model, or list known models.",
     usage: "/model [<provider:model> | list [<provider>]]",
-    group: "agent-control", permission: pmSuperAdmin,
+    group: "agent-control", permission: pmAdmin,
     examples: @["/model", "/model list", "/model deepseek:deepseek-reasoner"]))
   register(SystemCommand(
     name: "/channel", summary: "Register, inspect, or reroute chat channels (Feishu apps, etc.).",
@@ -1100,7 +1146,7 @@ Usage:
 declared agent. Edits BASE.nims; run `/restart` after for lark-cli
 subscribers to route events to the new agent's office.
 """,
-    group: "admin", menuHint: "Channels", permission: pmSuperAdmin,
+    group: "admin", menuHint: "Channels", permission: pmAdmin,
     examples: @["/channel list",
                 "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas",
                 "/channel assign cli_a948ea9ee5785cd3 Atlas"]))
@@ -1141,19 +1187,19 @@ Options:
     name: "/agent",
     summary: "Live agent state — WORKING/idle, current iteration, last tool, elapsed time. `/agent list` for all, `/agent <name>` for detail.",
     usage: "/agent [<name>|list]", group: "admin",
-    menuHint: "Agent state", permission: pmSuperAdmin,
+    menuHint: "Agent state", permission: pmAdmin,
     examples: @["/agent list", "/agent Atlas", "/agent Lexi"]))
   register(SystemCommand(
     name: "/restart",
     summary: "Rebuild BASE.json from BASE.nims AND restart the gateway. Fails safely if the rebuild errors — the running gateway stays up.",
     usage: "/restart", group: "admin",
-    menuHint: "Restart gateway", permission: pmSuperAdmin,
+    menuHint: "Restart gateway", permission: pmAdmin,
     examples: @["/restart"]))
   register(SystemCommand(
     name: "/co",
     summary: "Company management. `/co update` rebuilds BASE.json from BASE.nims; `/co cost` shows token + USD spend across all agents.",
     usage: "/co <update|cost>", group: "admin",
-    menuHint: "Company admin", permission: pmSuperAdmin,
+    menuHint: "Company admin", permission: pmAdmin,
     examples: @["/co update", "/co cost"]))
 
   # Config & provider
