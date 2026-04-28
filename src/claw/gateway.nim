@@ -1129,6 +1129,20 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
   if useStdio: logger.stdioMode = true
   if debug: setLevel(DEBUG)
 
+  # Strip inherited HTTP(S)_PROXY env so the gateway never explicitly
+  # routes LLM/API traffic through a forward proxy. Transparent proxies
+  # (FlClash/Mihomo TUN, system VPN, etc.) intercept at the OS level
+  # without needing the env var; routing through an explicit forward
+  # proxy on top of TUN doubles up the fd cost (every libcurl request
+  # holds an extra pipe to the proxy) and made our gateway hit a libcurl
+  # `multi_poll` "Unrecoverable error in select/poll" once subprocess
+  # pipes piled up. Operators with a *real* corporate forward proxy
+  # should configure it per-provider in BASE.nims instead of relying
+  # on shell env inheritance — keeps the routing decision explicit.
+  for k in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+            "http_proxy", "https_proxy", "all_proxy"]:
+    if existsEnv(k): delEnv(k)
+
   # PID file — company-scoped so `claw company list` can show RUNNING per company.
   # Startup guard. A stale PID file (owner SIGKILLed, so addExitProc
   # didn't fire) is fine — `isProcessAlive` filters that out. A live
