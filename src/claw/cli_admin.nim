@@ -2043,8 +2043,36 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
       let verb = if old.len == 0: "Added" else: "Set"
       let rhs = if old.len == 0: " = \"" & value & "\""
                 else: ": \"" & old & "\" → \"" & value & "\""
+      # Cleanup hook: promoting a Customer / Guest to internal-tier
+      # makes their customer-side state obsolete. Drop the trial
+      # subscription record and mark any matching invite-ledger
+      # entries as redeemed by `targetNcId` (preserves the audit
+      # trail — who originally invited them — but stops the entry
+      # looking like an unclaimed code).
+      var transitionNote = ""
+      if field == "permission" and old.len > 0 and
+         isExternalRole(old) and isInternalRole(value):
+        var notes: seq[string]
+        if loadSubscription(alias).isSome:
+          sub_mod.clearSubscription(alias)
+          notes.add("subscription cleared")
+        var invites = loadInvites(cfg.workspacePath())
+        var dirty = false
+        let now = getTime().toUnix
+        for code, inv in invites.mpairs:
+          if inv.targetNcId == alias and inv.usedBy.len == 0:
+            inv.usedBy = alias
+            inv.usedAt = now
+            dirty = true
+        if dirty:
+          saveInvites(cfg.workspacePath(), invites)
+          notes.add("invite ledger archived")
+        if notes.len > 0:
+          transitionNote = "\nPromoted " & old & " → " & value & " (" &
+                           notes.join(", ") & ")."
       return verb & " " & alias & "." & field & rhs & "\n" &
-             "Run `claw co update` to regenerate BASE.json."
+             "Run `claw co update` to regenerate BASE.json." &
+             transitionNote
 
     # Graph-only path (entity not in BASE.nims).
     var g = graph
