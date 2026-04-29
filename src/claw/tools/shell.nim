@@ -40,7 +40,25 @@ proc newExecTool*(workingDir: string): ExecTool =
   )
 
 method name*(t: ExecTool): string = "exec"
-method description*(t: ExecTool): string = "Execute a shell command and return its output. Use with caution."
+method description*(t: ExecTool): string =
+  "Execute a shell command and return its output. Use with caution.\n" &
+  "\n" &
+  "PREFER ONE COMPREHENSIVE INVOCATION OVER MANY SMALL ONES. If your task " &
+  "is multi-step (e.g. data analysis: load → transform → train → validate → " &
+  "report), write a single self-contained Python/bash script that performs " &
+  "all steps, write it to a file with `write_file`, then run it ONCE with " &
+  "`exec python3 path.py`. Do NOT call exec 20 times to incrementally " &
+  "edit, probe, and re-run — each call costs an iteration toward the agent " &
+  "loop's max-iter cap, and the cap will stop you mid-task. The agent " &
+  "loop has a hard ceiling (typically 40 tool calls per turn); spending " &
+  "30 of them on individual `cat`/`echo`/single-line python invocations " &
+  "leaves no budget for the actual work and the loop force-summarises " &
+  "without ever reaching the answer.\n" &
+  "\n" &
+  "Note: stdin to the child is closed immediately after spawn — commands " &
+  "that read from stdin (`cat` with no args, `read`, `less`, etc.) get " &
+  "EOF instead of hanging. Pass input via files or here-strings inside " &
+  "the command if needed."
 method parameters*(t: ExecTool): Table[string, JsonNode] =
   {
     "type": %"object",
