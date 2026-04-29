@@ -1,4 +1,6 @@
 import std/[os, osproc, json, asyncdispatch, tables, strutils, times, streams, strtabs]
+when defined(posix):
+  import std/posix
 import regex
 import types
 
@@ -126,24 +128,54 @@ method execute*(t: ExecTool, args: Table[string, JsonNode]): Future[string] {.as
       safeEnv[key] = getEnv(key)
 
   var p = startProcess("/bin/sh", workingDir = cwd, args = ["-c", command], env = safeEnv, options = {poStdErrToStdOut})
+
+  # Close the parent side of the child's stdin pipe so any command that
+  # reads from stdin (`cat`, `read`, `less`, etc.) gets immediate EOF
+  # rather than blocking forever on input that will never arrive. The
+  # exec tool has no way to pipe input to the child, so leaving stdin
+  # open just creates a deadlock surface.
+  try: p.inputStream.close()
+  except CatchableError: discard
+
+  # Make the child's stdout fd non-blocking so the polling loop can
+  # actually re-check the timeout between reads. With blocking reads,
+  # `readStr(1024)` waits for data the child may never produce — the
+  # whole loop deadlocks in the first iteration and `t.timeout` never
+  # gets evaluated. Non-blocking lets us drain whatever's available
+  # and yield back to the loop body each tick.
+  when defined(posix):
+    let outFd = p.outputHandle.cint
+    let flags = fcntl(outFd, F_GETFL)
+    if flags >= 0:
+      discard fcntl(outFd, F_SETFL, flags or O_NONBLOCK)
+
+  proc drainAvailable(output: var string) =
+    when defined(posix):
+      var buf = newString(4096)
+      while true:
+        let n = read(outFd, buf[0].addr, 4096)
+        if n > 0:
+          output.add(buf[0 ..< n])
+        else:
+          break  # 0 = EOF, -1 = EAGAIN/EWOULDBLOCK or real error
+    else:
+      let data = p.outputStream.readStr(4096)
+      if data != "": output.add(data)
+
   let startTime = now()
   var output = ""
 
-  # Simple polling for timeout and reading output without blocking
   while p.running:
     if (now() - startTime) > t.timeout:
       p.terminate()
-      return "Error: Command timed out after " & $t.timeout
-
-    # Read available data from stream
-    let data = p.outputStream.readStr(1024)
-    if data != "":
-      output.add(data)
-
+      drainAvailable(output)
+      return "Error: Command timed out after " & $t.timeout &
+             (if output.len > 0: " — output so far:\n" & output else: "")
+    drainAvailable(output)
     await sleepAsync(50)
 
-  # Final read
-  output.add(p.outputStream.readAll())
+  # Final drain after the child has exited.
+  drainAvailable(output)
   let exitCode = p.peekExitCode()
   p.close()
 
