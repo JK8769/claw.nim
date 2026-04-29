@@ -50,6 +50,13 @@ type
     role*: string           ## providers_types.Message.role — "user",
                             ## "assistant", "tool", "system"
     content*: string        ## the text (may be "" when only attachments)
+    reasoning_content*: string  ## DeepSeek V4 / o1-style thinking-mode
+                                ## reasoning. Echoed back to the API on
+                                ## subsequent turns — without this, v4
+                                ## rejects with "The reasoning_content in
+                                ## the thinking mode must be passed back".
+                                ## Empty for non-thinking models or for
+                                ## user/tool/system roles.
     attachments*: seq[Attachment]
 
   SessionMeta* = object
@@ -250,9 +257,12 @@ proc addRichMessage*(sm: SessionManager, key: string, msg: SessionMessage) =
 proc addFullMessage*(sm: SessionManager, key: string,
                       msg: providers_types.Message) =
   ## Legacy API — no speaker / no attachments. Kept for call sites that
-  ## haven't been updated; prefer addRichMessage.
+  ## haven't been updated; prefer addRichMessage. Carries
+  ## `reasoning_content` through so DeepSeek V4 thinking-mode messages
+  ## survive across turns.
   sm.addRichMessage(key, SessionMessage(
     ts: 0.0, speaker: "", role: msg.role, content: msg.content,
+    reasoning_content: msg.reasoning_content,
     attachments: @[]
   ))
 
@@ -281,7 +291,9 @@ proc getHistory*(sm: SessionManager, key: string): seq[providers_types.Message] 
   let startIdx = max(0, session.meta.summaryWatermark)
   if startIdx >= session.messages.len: return @[]
   for m in session.messages[startIdx .. ^1]:
-    result.add(providers_types.Message(role: m.role, content: m.content))
+    result.add(providers_types.Message(
+      role: m.role, content: m.content,
+      reasoning_content: m.reasoning_content))
 
 proc getRichHistory*(sm: SessionManager, key: string): seq[SessionMessage] =
   acquire(sm.lock)
