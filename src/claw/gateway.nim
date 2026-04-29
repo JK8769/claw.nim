@@ -1708,8 +1708,29 @@ Options:
                   let (x, _) = g2.resolveUserGraph("feishu:user", usid)
                   if uint32(x) > 0: recognized = true
           if not recognized:
-            stderr.writeLine "claw: refused unknown sender " & channelKey2 &
-                             " ← " & msg.sender_id
+            # Structured trace so the JSONL log captures every refusal
+            # with enough context to diagnose ghost-reception cases.
+            # The previous `stderr.writeLine` didn't always reach the
+            # log file (depends on how the gateway was launched), and
+            # it didn't capture WHICH metadata fields were present —
+            # which is the missing piece when a known user gets
+            # refused (e.g. Feishu callback events that arrive
+            # without union_id, leaving the recognition fallback chain
+            # with nothing to match against).
+            let appID = msg.metadata.getOrDefault("app_id", "")
+            let unionID = msg.metadata.getOrDefault("union_id", "")
+            let userID = msg.metadata.getOrDefault("user_id", "")
+            warnCF("claw", "Refused unknown sender", {
+              "channel": msg.channel,
+              "channel_key": channelKey2,
+              "sender_id": msg.sender_id,
+              "app_id": appID,
+              "has_union": $(unionID.len > 0),
+              "has_user": $(userID.len > 0),
+              "chat_id": msg.chat_id,
+              "chat_kind": $msg.chat_kind,
+              "content_preview": truncate(plainContent, 80)
+            }.toTable)
             # Zero-LLM refusal: pick from a pre-translated catalog
             # based on detected script in the stranger's own message.
             # An English-ish message gets English; Chinese gets
