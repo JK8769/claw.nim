@@ -14,19 +14,77 @@ proc expandEnvVar(val: string): string =
   return val
 
 proc sanitizeUtf8(s: string): string =
-  ## Ensure the string is valid UTF-8, replacing invalid segments with U+FFFD
-  result = ""
+  ## Strict UTF-8 sanitizer. Replaces any byte not part of a fully-valid
+  ## UTF-8 sequence with U+FFFD (REPLACEMENT CHARACTER).
+  ##
+  ## The previous version walked the string using `runeLenAt`, which
+  ## only inspects the lead byte's claim about how many bytes follow —
+  ## it doesn't validate the continuation bytes or check the decoded
+  ## code point. That let three classes of garbage through:
+  ##   - truncated multi-byte sequences (lead byte says 3, but only 2
+  ##     bytes left in the string)
+  ##   - lone surrogates (e.g. `0xED 0xA0 0x80` decodes to U+D800,
+  ##     which is invalid in UTF-8 and rejected by Go's JSON decoder
+  ##     with "invalid unicode code point")
+  ##   - overlong encodings (e.g. `0xC0 0x80` is two bytes for U+0000
+  ##     when one byte would do)
+  ## Any of those would survive through to the LLM provider's JSON
+  ## parser and produce a 400 — which is what hit Lexi at column
+  ## 217415 of a 200k-char tool-output message.
+  result = newStringOfCap(s.len)
   var i = 0
   while i < s.len:
-    var length = runeLenAt(s, i)
-    if length > 0:
-      for _ in 1..length:
-        result.add(s[i])
-        inc i
+    let lead = s[i].byte
+    var length = 0
+    var minCp = 0
+    var maxCp = 0
+    if lead < 0x80'u8:
+      length = 1; minCp = 0; maxCp = 0x7F
+    elif lead < 0xC2'u8:
+      length = 0   # continuation byte alone OR forbidden lead 0xC0/0xC1
+    elif lead < 0xE0'u8:
+      length = 2; minCp = 0x80; maxCp = 0x7FF
+    elif lead < 0xF0'u8:
+      length = 3; minCp = 0x800; maxCp = 0xFFFF
+    elif lead < 0xF5'u8:
+      length = 4; minCp = 0x10000; maxCp = 0x10FFFF
     else:
-      # Invalid sequence, append replacement character
-      result.add("\uFFFD")
-      inc i
+      length = 0   # 0xF5+ never valid in UTF-8
+    if length == 0 or i + length > s.len:
+      result.add("\uFFFD"); inc i; continue
+    # Decode + validate continuation bytes.
+    var cp = 0
+    case length
+    of 1:
+      cp = lead.int
+    of 2:
+      let b1 = s[i+1].byte
+      if (b1 and 0xC0'u8) != 0x80'u8:
+        result.add("\uFFFD"); inc i; continue
+      cp = ((lead.int and 0x1F) shl 6) or (b1.int and 0x3F)
+    of 3:
+      let b1 = s[i+1].byte; let b2 = s[i+2].byte
+      if (b1 and 0xC0'u8) != 0x80'u8 or (b2 and 0xC0'u8) != 0x80'u8:
+        result.add("\uFFFD"); inc i; continue
+      cp = ((lead.int and 0x0F) shl 12) or
+           ((b1.int and 0x3F) shl 6) or (b2.int and 0x3F)
+    of 4:
+      let b1 = s[i+1].byte; let b2 = s[i+2].byte; let b3 = s[i+3].byte
+      if (b1 and 0xC0'u8) != 0x80'u8 or (b2 and 0xC0'u8) != 0x80'u8 or
+         (b3 and 0xC0'u8) != 0x80'u8:
+        result.add("\uFFFD"); inc i; continue
+      cp = ((lead.int and 0x07) shl 18) or ((b1.int and 0x3F) shl 12) or
+           ((b2.int and 0x3F) shl 6) or (b3.int and 0x3F)
+    else: discard
+    if cp < minCp or cp > maxCp:
+      # Overlong encoding or out-of-range
+      result.add("\uFFFD"); inc i; continue
+    if cp >= 0xD800 and cp <= 0xDFFF:
+      # Lone surrogate — valid bit pattern but forbidden in UTF-8
+      result.add("\uFFFD"); inc i; continue
+    # Valid sequence: copy through verbatim.
+    for j in 0 ..< length: result.add(s[i+j])
+    i += length
 
 type
   HTTPProvider* = ref object of LLMProvider
