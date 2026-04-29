@@ -124,6 +124,24 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
   # We need to sanitize tool names in the history to avoid DeepSeek 400 errors
   # if previous calls used colons (like nc:submit).
 
+  # DeepSeek V4 thinking-mode is strict about assistant messages in the
+  # thread: if any prior assistant turn originally had `reasoning_content`
+  # in v4's response, it MUST be echoed back on the next request — not
+  # just omitted. Sessions that pre-date the reasoning_content-preservation
+  # fix (407fb03) saved assistant turns without it, so replays would hit:
+  #   400 "The reasoning_content in the thinking mode must be passed back"
+  # Emit an empty placeholder for assistant messages that have none, but
+  # only when this request is going to v4 with thinking enabled.
+  let lowerActualModel = actualModel.toLowerAscii
+  let isV4Family = lowerActualModel.contains("deepseek-v4") or
+                   lowerActualModel == "deepseek-chat" or
+                   lowerActualModel == "deepseek-reasoner"
+  let thinkingExplicitlyOff =
+    options.hasKey("thinking") and
+    options["thinking"].kind == JBool and
+    not options["thinking"].getBool
+  let thinkingActive = isV4Family and not thinkingExplicitlyOff
+
   var jsonMessages = newJArray()
   for m in messages:
     var jMsg = %*{"role": m.role}
@@ -146,6 +164,8 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
       jMsg["content"] = %""
     if m.reasoning_content != "":
       jMsg["reasoning_content"] = %sanitizeUtf8(m.reasoning_content)
+    elif m.role == "assistant" and thinkingActive:
+      jMsg["reasoning_content"] = %""
     if m.role == "tool":
       jMsg["tool_call_id"] = %m.tool_call_id
       if m.name != "": jMsg["name"] = %sanitizeToolName(m.name)
