@@ -57,6 +57,17 @@ type
                                 ## the thinking mode must be passed back".
                                 ## Empty for non-thinking models or for
                                 ## user/tool/system roles.
+    tool_calls*: seq[providers_types.ToolCall]
+                                ## Assistant role: function calls the
+                                ## model emitted this turn. Preserved so
+                                ## replays after `/restart` keep the
+                                ## proper "assistant(tool_calls) → tool"
+                                ## protocol pairing instead of replaying
+                                ## tool results as bare user messages.
+    tool_call_id*: string       ## Tool role: which assistant tool_call
+                                ## this result corresponds to.
+    name*: string               ## Tool role: tool name. Some providers
+                                ## require it alongside tool_call_id.
     attachments*: seq[Attachment]
 
   SessionMeta* = object
@@ -257,12 +268,16 @@ proc addRichMessage*(sm: SessionManager, key: string, msg: SessionMessage) =
 proc addFullMessage*(sm: SessionManager, key: string,
                       msg: providers_types.Message) =
   ## Legacy API — no speaker / no attachments. Kept for call sites that
-  ## haven't been updated; prefer addRichMessage. Carries
-  ## `reasoning_content` through so DeepSeek V4 thinking-mode messages
-  ## survive across turns.
+  ## haven't been updated; prefer addRichMessage. Carries through every
+  ## protocol-relevant field (reasoning_content, tool_calls,
+  ## tool_call_id, name) so the message round-trips losslessly across
+  ## `/restart` and the LLM sees the same shape it generated.
   sm.addRichMessage(key, SessionMessage(
     ts: 0.0, speaker: "", role: msg.role, content: msg.content,
     reasoning_content: msg.reasoning_content,
+    tool_calls: msg.tool_calls,
+    tool_call_id: msg.tool_call_id,
+    name: msg.name,
     attachments: @[]
   ))
 
@@ -293,7 +308,10 @@ proc getHistory*(sm: SessionManager, key: string): seq[providers_types.Message] 
   for m in session.messages[startIdx .. ^1]:
     result.add(providers_types.Message(
       role: m.role, content: m.content,
-      reasoning_content: m.reasoning_content))
+      reasoning_content: m.reasoning_content,
+      tool_calls: m.tool_calls,
+      tool_call_id: m.tool_call_id,
+      name: m.name))
 
 proc getRichHistory*(sm: SessionManager, key: string): seq[SessionMessage] =
   acquire(sm.lock)

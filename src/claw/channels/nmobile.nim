@@ -1428,15 +1428,22 @@ proc clientWatchdog(c: NMobileChannel) {.thread.} =
       let sub = c.clientIdentifiers.getOrDefault(clientAddr, "")
       infoCF("nmobile", "Watchdog cycling client",
              {"address": clientAddr, "reason": reason}.toTable)
-      discard c.bridge.closeNKNClient(clientAddr)
+      let (_, closeErr) = c.bridge.closeNKNClient(clientAddr)
+      if closeErr.len > 0:
+        warnCF("nmobile", "Close before respawn failed (continuing)",
+               {"address": clientAddr, "error": closeErr}.toTable)
+      # nkn-sdk-go's MultiClient close is partly async; the identifier
+      # slot can linger briefly. Yield once before recreate so the
+      # internal state has a chance to flush — without this we
+      # occasionally hit "NewMultiClient: failed to create client"
+      # with the close still in flight. Watchdog runs on a Thread, so
+      # use blocking sleep, not sleepAsync.
+      sleep(300)
       # Re-create with same seed + identifier — nkn-cli derives the same
       # address deterministically, so clientAddr-keyed tables stay valid.
       # nkn-sdk-go refuses NewMultiClient with numSubClients == 0 — the
       # config defaults that to 0 when unset, so apply the same backfill
-      # the first-spawn path uses (NknDefaultNumSubClients = 4). Without
-      # this guard the watchdog cycles, respawn always fails with
-      # "NewMultiClient: failed to create client", and the gateway is
-      # silently NKN-deaf until restart.
+      # the first-spawn path uses (NknDefaultNumSubClients = 4).
       let watchdogSub =
         if c.numSubClients > 0: c.numSubClients else: NknDefaultNumSubClients
       let (_, err) = c.bridge.createClientFromSeed(c.seed, sub,
@@ -1444,6 +1451,16 @@ proc clientWatchdog(c: NMobileChannel) {.thread.} =
       if err.len > 0:
         errorCF("nmobile", "Watchdog respawn failed",
                 {"address": clientAddr, "error": err}.toTable)
+        # Defer the next attempt for this address — without this, the
+        # watchdog re-evaluates `age > MaxAge` immediately and retries
+        # the same NKN-unreachable seed nodes every few seconds. By
+        # bumping spawnedAt to now and zeroing lastEvent, we get a
+        # clean 4h cycle before the next attempt instead of a tight
+        # retry loop. Still leaves the slot effectively empty for
+        # inbound until then — operators see "NKN-deaf for sub-client"
+        # rather than a log spam loop.
+        c.clientSpawnedAt[clientAddr] = epochTime()
+        c.clientLastEventAt[clientAddr] = 0
         continue
       c.clientSpawnedAt[clientAddr] = epochTime()
       c.clientLastEventAt[clientAddr] = 0
