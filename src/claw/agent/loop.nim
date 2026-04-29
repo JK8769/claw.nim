@@ -583,7 +583,9 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                    {"iteration": $iteration, "retry": $emptyRetries,
                     "pattern": (if firstTurnNarration: "first-turn-narration" else: "mid-task-stall"),
                     "preview": trimmed[0..min(trimmed.len-1, 80)]}.toTable)
-            currentMessages.add(providers_types.Message(role: "assistant", content: response.content))
+            currentMessages.add(providers_types.Message(role: "assistant",
+              content: response.content,
+              reasoning_content: response.reasoning_content))
             currentMessages.add(providers_types.Message(role: "user", content: "You described what you plan to do but did not call a tool. Take the action NOW: emit the tool call in this turn. Do not respond with words alone."))
             continue
           finalContent = response.content
@@ -661,7 +663,9 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           break
         warnCF("agent", "LLM returned empty tool names, nudging to continue", {"iteration": $iteration, "retry": $emptyNameRetries}.toTable)
         if response.content.len > 0:
-          currentMessages.add(providers_types.Message(role: "assistant", content: response.content))
+          currentMessages.add(providers_types.Message(role: "assistant",
+            content: response.content,
+            reasoning_content: response.reasoning_content))
         currentMessages.add(providers_types.Message(role: "user", content: "Your last tool call had an empty function name. Please call the tool again with the correct name. For browser actions, use the 'playwright' tool with an action parameter."))
         continue
 
