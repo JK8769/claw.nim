@@ -1772,7 +1772,15 @@ Options:
               msg.channel & ":" & msg.metadata["app_id"]
             else: msg.channel
           var recognized = false
-          if g2 != nil:
+          # Framework-internal senders (subagent task completions, cron
+          # ticks, system events) use sender IDs prefixed `system:`.
+          # These aren't users to be authenticated — they're internal
+          # bus traffic. Bypass the auth gate so the message reaches
+          # whoever's supposed to handle it (subagent results go back
+          # to the parent agent, not get refused at the door).
+          if msg.sender_id.startsWith("system:"):
+            recognized = true
+          if g2 != nil and not recognized:
             let (entID, _) = g2.resolveUserGraph(channelKey2, msg.sender_id)
             if uint32(entID) > 0: recognized = true
             if not recognized and msg.channel == "feishu":
