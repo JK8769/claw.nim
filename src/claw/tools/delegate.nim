@@ -184,8 +184,8 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
   try:
     let provider = createProvider(tech.model, tech.apiKey, tech.apiBase)
     let messages = @[
-      providers_types.Message(role: "system", content: sysPrompt),
-      providers_types.Message(role: "user", content: fullPrompt)
+      providers_types.Message(role: providers_types.RoleSystem, content: sysPrompt),
+      providers_types.Message(role: providers_types.RoleUser, content: fullPrompt)
     ]
     var options = initTable[string, JsonNode]()
     options["temperature"] = %temperature

@@ -903,17 +903,17 @@ proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_t
     systemPrompt.add("\n\n## Summary of Previous Conversation\n\n" & summary)
 
   var messages: seq[providers_types.Message] = @[]
-  messages.add(providers_types.Message(role: "system", content: systemPrompt))
-  
+  messages.add(providers_types.Message(role: providers_types.RoleSystem, content: systemPrompt))
+
   # Sanitize tool names in history before adding
   var cleanHistory: seq[providers_types.Message] = @[]
   for m in history:
     var mcopy = m
-    if mcopy.role == "tool":
+    if mcopy.isTool:
       if mcopy.name == "": continue # Skip invalid tool responses
       mcopy.name = sanitizeToolName(mcopy.name)
       cleanHistory.add(mcopy)
-    elif mcopy.role == "assistant":
+    elif mcopy.isAssistant:
       if mcopy.tool_calls.len > 0:
         var validCalls: seq[providers_types.ToolCall] = @[]
         for tc in mcopy.tool_calls:
@@ -932,7 +932,7 @@ proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_t
 
   for m in cleanHistory:
     messages.add(m)
-  messages.add(providers_types.Message(role: "user", content: currentMessage))
+  messages.add(providers_types.Message(role: providers_types.RoleUser, content: currentMessage))
   return messages
 
 proc getSkillsInfo*(cb: ContextBuilder): Table[string, JsonNode] =

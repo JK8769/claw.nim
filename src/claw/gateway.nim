@@ -244,8 +244,8 @@ proc maybeTranslate(cfg: ref Config, src, userSample: string,
     let userPrompt = "Target language: " & lang &
                      "\n\nEnglish text to translate:\n" & src
     let messages = @[
-      providers_types.Message(role: "system", content: sysPrompt),
-      providers_types.Message(role: "user", content: userPrompt)]
+      providers_types.Message(role: providers_types.RoleSystem, content: sysPrompt),
+      providers_types.Message(role: providers_types.RoleUser, content: userPrompt)]
     var options = initTable[string, JsonNode]()
     options["temperature"] = %0.2
     let response = await provider.chat(messages, @[], tech.model, options)

@@ -37,7 +37,7 @@ proc testConnection*(apiBase, apiKey, model: string): tuple[success: bool, error
     
     # We send a very minimal "hello" to check connectivity
     # Increasing tokens significantly to 500 for reasoning models.
-    let resp = waitFor p.chat(@[Message(role: "user", content: "hi")], @[], model, {"max_tokens": %500}.toTable)
+    let resp = waitFor p.chat(@[Message(role: RoleUser, content: "hi")], @[], model, {"max_tokens": %500}.toTable)
     
     # If we got a valid response with either content, tool calls, or even just a finish reason (like length),
     # then the provider is technically ONLINE and the key is valid.

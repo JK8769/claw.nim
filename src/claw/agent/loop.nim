@@ -282,7 +282,7 @@ CARRY-FORWARD RULES:
   for m in batch:
     prompt.add(m.role & ": " & m.content & "\n")
 
-  let response = await al.provider.chat(@[providers_types.Message(role: "user", content: prompt)], @[], al.model, initTable[string, JsonNode]())
+  let response = await al.provider.chat(@[providers_types.Message(role: providers_types.RoleUser, content: prompt)], @[], al.model, initTable[string, JsonNode]())
   return response.content
 
 proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
@@ -296,7 +296,7 @@ proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
   let maxMessageTokens = al.contextWindow div 2
   var validMessages: seq[providers_types.Message] = @[]
   for m in toSummarize:
-    if m.role == "user" or m.role == "assistant":
+    if m.isUser or m.isAssistant:
       if (m.content.len div 4) < maxMessageTokens:
         validMessages.add(m)
 
@@ -553,7 +553,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           # the LLM cannot call them directly.
           if iteration == 1 and hiddenNames.len > 0:
             let taxonomy = al.tools.generateTaxonomy()
-            if taxonomy.len > 0 and currentMessages.len > 0 and currentMessages[0].role == "system":
+            if taxonomy.len > 0 and currentMessages.len > 0 and currentMessages[0].isSystem:
               currentMessages[0].content.add(
                 "\n\n## Additional Tools (schemas NOT loaded)\n\n" &
                 "The tools below are registered but their parameter " &
@@ -663,7 +663,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           al.bus.publishOutbound(newOutbound(opts.channel, opts.recipientID, opts.chatID, displayText, opts.replyToMessageID, opts.appID))
 
       # Save assistant message (with full content including tool call tags) to history
-      let assistantMsg = providers_types.Message(role: "assistant", content: response.content, reasoning_content: response.reasoning_content)
+      let assistantMsg = providers_types.Message(role: providers_types.RoleAssistant, content: response.content, reasoning_content: response.reasoning_content)
       currentMessages.add(assistantMsg)
       al.sessions.addFullMessage(opts.sessionKey, assistantMsg)
 
@@ -683,7 +683,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
       # Format tool results and add as a user message
       let formattedResults = formatToolResults(xmlResults)
-      let toolResultMsg = providers_types.Message(role: "user", content: formattedResults)
+      let toolResultMsg = providers_types.Message(role: providers_types.RoleUser, content: formattedResults)
       currentMessages.add(toolResultMsg)
       al.sessions.addMessage(opts.sessionKey, "user", formattedResults)
 
@@ -716,10 +716,10 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                    {"iteration": $iteration, "retry": $emptyRetries,
                     "pattern": (if firstTurnNarration: "first-turn-narration" else: "mid-task-stall"),
                     "preview": trimmed[0..min(trimmed.len-1, 80)]}.toTable)
-            currentMessages.add(providers_types.Message(role: "assistant",
+            currentMessages.add(providers_types.Message(role: providers_types.RoleAssistant,
               content: response.content,
               reasoning_content: response.reasoning_content))
-            currentMessages.add(providers_types.Message(role: "user", content: "You described what you plan to do but did not call a tool. Take the action NOW: emit the tool call in this turn. Do not respond with words alone."))
+            currentMessages.add(providers_types.Message(role: providers_types.RoleUser, content: "You described what you plan to do but did not call a tool. Take the action NOW: emit the tool call in this turn. Do not respond with words alone."))
             continue
           finalContent = response.content
         elif iteration > 1:
@@ -727,7 +727,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           emptyRetries.inc
           if emptyRetries <= 2:
             warnCF("agent", "LLM returned empty, nudging to continue", {"iteration": $iteration, "retry": $emptyRetries}.toTable)
-            currentMessages.add(providers_types.Message(role: "user", content: "Continue with the task. Use tools to complete it, then reply to the user with the results."))
+            currentMessages.add(providers_types.Message(role: providers_types.RoleUser, content: "Continue with the task. Use tools to complete it, then reply to the user with the results."))
             continue
           else:
             warnCF("agent", "LLM returned empty 3 times, forcing summary", {"iteration": $iteration}.toTable)
@@ -742,7 +742,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
             let recentStart = max(1, currentMessages.len - 4)
             for i in recentStart ..< currentMessages.len:
               summaryMessages.add(currentMessages[i])
-            summaryMessages.add(providers_types.Message(role: "user", content: summaryPrompt))
+            summaryMessages.add(providers_types.Message(role: providers_types.RoleUser, content: summaryPrompt))
             try:
               let summaryDefs: seq[ToolDefinition] = @[]
               let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature}.toTable
@@ -796,17 +796,17 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           break
         warnCF("agent", "LLM returned empty tool names, nudging to continue", {"iteration": $iteration, "retry": $emptyNameRetries}.toTable)
         if response.content.len > 0:
-          currentMessages.add(providers_types.Message(role: "assistant",
+          currentMessages.add(providers_types.Message(role: providers_types.RoleAssistant,
             content: response.content,
             reasoning_content: response.reasoning_content))
-        currentMessages.add(providers_types.Message(role: "user", content: "Your last tool call had an empty function name. Please call the tool again with the correct name. For browser actions, use the 'playwright' tool with an action parameter."))
+        currentMessages.add(providers_types.Message(role: providers_types.RoleUser, content: "Your last tool call had an empty function name. Please call the tool again with the correct name. For browser actions, use the 'playwright' tool with an action parameter."))
         continue
 
       emptyNameRetries = 0  # Reset on successful tool calls
       if opts.streamIntermediary and response.content.len > 0:
         al.bus.publishOutbound(newOutbound(opts.channel, opts.recipientID, opts.chatID, response.content, opts.replyToMessageID, opts.appID))
 
-      var assistantMsg = providers_types.Message(role: "assistant", content: response.content, reasoning_content: response.reasoning_content, tool_calls: validCalls)
+      var assistantMsg = providers_types.Message(role: providers_types.RoleAssistant, content: response.content, reasoning_content: response.reasoning_content, tool_calls: validCalls)
       currentMessages.add(assistantMsg)
       al.sessions.addFullMessage(opts.sessionKey, assistantMsg)
 
@@ -834,7 +834,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           let recentStart = max(1, currentMessages.len - 4)
           for i in recentStart ..< currentMessages.len:
             summaryMessages.add(currentMessages[i])
-          summaryMessages.add(providers_types.Message(role: "user", content: loopPrompt))
+          summaryMessages.add(providers_types.Message(role: providers_types.RoleUser, content: loopPrompt))
           try:
             let toolDefs: seq[ToolDefinition] = @[]
             let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature}.toTable
@@ -911,7 +911,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let recentStart = max(1, currentMessages.len - 4)
     for i in recentStart ..< currentMessages.len:
       summaryMessages.add(currentMessages[i])
-    summaryMessages.add(providers_types.Message(role: "user", content: exhaustPrompt))
+    summaryMessages.add(providers_types.Message(role: providers_types.RoleUser, content: exhaustPrompt))
     try:
       let toolDefs: seq[ToolDefinition] = @[]
       let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature}.toTable

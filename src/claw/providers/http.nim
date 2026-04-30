@@ -145,7 +145,7 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
   var jsonMessages = newJArray()
   for m in messages:
     var jMsg = %*{"role": m.role}
-    let hasToolCalls = m.role == "assistant" and m.tool_calls.len > 0
+    let hasToolCalls = m.hasToolCalls
     # Moonshot/Kimi rejects any assistant message with empty content,
     # even when tool_calls are present (DeepSeek/OpenAI tolerate ""
     # there). Normalize:
@@ -158,15 +158,15 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
       jMsg["content"] = %sanitizeUtf8(m.content)
     elif hasToolCalls:
       discard   # content omitted
-    elif m.role == "assistant":
+    elif m.isAssistant:
       jMsg["content"] = %" "
     else:
       jMsg["content"] = %""
     if m.reasoning_content != "":
       jMsg["reasoning_content"] = %sanitizeUtf8(m.reasoning_content)
-    elif m.role == "assistant" and thinkingActive:
+    elif m.isAssistant and thinkingActive:
       jMsg["reasoning_content"] = %""
-    if m.role == "tool":
+    if m.isTool:
       jMsg["tool_call_id"] = %m.tool_call_id
       if m.name != "": jMsg["name"] = %sanitizeToolName(m.name)
     elif hasToolCalls:
