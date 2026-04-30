@@ -536,14 +536,20 @@ template competency*(nm: string, body: untyped) =
     body
     spec.competencies.add(c)
 
-template mode*(nm: string, body: untyped) =
+template focus*(nm: string, body: untyped) =
   ## Declare a focus mode an agent can enter for a single subagent
-  ## task. The mode adds a tool subset + prompt addendum on top of
-  ## the calling agent's identity — same agent, different hat.
+  ## task. Adds a tool subset + prompt addendum on top of the calling
+  ## agent's identity — same agent, different hat.
+  ##
+  ## Named `focus` (not `mode`) because nimscript already exports a
+  ## global `mode*: ScriptMode` which shadows any same-named template
+  ## at the BASE.nims call site. The semantic — "focusing the agent
+  ## on this kind of work" — is faithful; the runtime type stays
+  ## `ClawMode` / `cfg.modes` because there's no collision there.
   ##
   ## Example:
-  ##   mode "Plan":
-  ##     description "Software architect — write step-by-step plans, no implementation."
+  ##   focus "Plan":
+  ##     summary "Software architect — write step-by-step plans, no implementation."
   ##     uses "read_file", "find", "grep"
   ##     model "deepseek-v4-pro"
   ##     promptAddendum """
@@ -552,7 +558,10 @@ template mode*(nm: string, body: untyped) =
   ##     """
   block:
     var m = ClawMode(name: nm)
-    template description(d: string) {.used.} = m.description = d
+    # Use `summary` (not `description`) because nimscript exports a
+    # global `description*: string` for nimble package metadata that
+    # we can't reliably shadow at the call site.
+    template summary(d: string) {.used.} = m.description = d
     template uses(uss: varargs[string]) {.used.} =
       for x in uss: m.uses.add(x)
     template deny(ds: varargs[string]) {.used.} =
