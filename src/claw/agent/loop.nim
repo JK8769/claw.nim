@@ -183,52 +183,60 @@ proc resolveContextWindow*(modelName: string, fallback: int): int =
 proc summarizeBatch(al: AgentLoop, batch: seq[providers_types.Message], existingSummary: string): Future[string] {.async.} =
   ## Structured facts-sheet summary instead of narrative prose. Each
   ## summarisation cycle UPDATES sections (carry forward + add new
-  ## entries + mark resolved) rather than rewriting prose, so numbers,
-  ## decisions, and file paths don't drift away across multiple
-  ## cycles. Markdown headers make it grep-friendly when the operator
-  ## inspects the meta.json.
-  var prompt = """You are summarising a working conversation between an
-internal user and an AI agent. Your output is the agent's ONLY memory
-of this segment in future turns — write a structured facts sheet, not
-a narrative.
+  ## entries + mark resolved) rather than rewriting prose, so concrete
+  ## facts don't drift away across multiple cycles.
+  ##
+  ## Domain-neutral by design — the section schema applies equally to
+  ## solar analysis, customer support, code review, scheduling, or
+  ## anything else an agent does. Domain-specific guidance (what
+  ## counts as a "key fact" for THIS competency) belongs in the
+  ## agent's competency HANDBOOK, not here.
+  var prompt = """You are summarising a working conversation between a
+user and an AI agent. Your output IS the agent's only memory of this
+segment in future turns — write a structured facts sheet, not a
+narrative.
 
-REQUIRED SECTIONS (use exactly these markdown headers, omit a section
-only when truly empty):
+Use exactly these markdown section headers. Omit a section only when
+it would be genuinely empty for this conversation.
 
 ## Goal
-One line: what the user is ultimately trying to achieve.
+One line: what the user is ultimately trying to achieve in this
+thread. If the goal shifted, note when and to what.
 
-## Key Numbers
-Concrete values with units and source. One per line. Examples:
-- v5-v4 validation MAE = 0.0689 (Dec holdout, 2026-04-29)
-- training data span: 2025-01-01 → 2025-12-31
-- predicted revenue v5-v4: ¥710,635 (+10.9% vs v5-v3)
+## Established Facts
+Concrete things that became true during the conversation: values
+discovered, results computed, files created, identities confirmed,
+external state observed. One per line. Quote numbers, paths, names,
+ids verbatim from the conversation. If a value isn't in the
+messages, write `(unspecified)` rather than guess.
 
 ## Decisions
-What was tried, what was kept, what was rejected and WHY. Format:
+What was tried, what was kept, what was rejected and the reason.
+Format each as either:
 - DECIDED <date>: <decision> — <one-line rationale>
 - REJECTED <date>: <option> — <reason>
 
 ## Current State
-What files exist, what's running, what's pending. Be concrete:
-- File `model_v5_v5.py` exists in `<path>`, last run at <ts>
-- Background pid 12345 running `python3 ...` since <ts>
+What's running, what's pending, what artifacts exist. Concrete and
+checkable — paths, process ids, statuses, not adjectives.
 
 ## Open Questions
 Things the user explicitly asked about but didn't get a final answer
-on; or things the agent flagged as needing review.
+on, or that the agent flagged as needing review.
 
 ## Recent Tool Outputs
-Brief log of consequential tool runs in this segment (write_file,
-exec, mcp_*) with their result shape — not full content. Helps the
-agent recall what it has already computed without re-running.
+Consequential tool runs in this segment with their result shape (not
+full content). Helps the agent recall what it has already computed
+without re-running.
 
-RULES:
-- Carry forward any prior facts that are still relevant. Mark
-  superseded ones with `(SUPERSEDED <date>)`.
-- Numbers and file paths must be VERBATIM from the conversation.
-  If you can't find a value in the messages, say `(unspecified)`.
-- No filler. No paraphrased re-narration of dialogue.
+CARRY-FORWARD RULES:
+- Keep prior facts that are still relevant.
+- Mark superseded ones `(SUPERSEDED <date>)` rather than deleting,
+  so the audit trail stays intact.
+- Don't paraphrase numbers, paths, or names from the conversation —
+  copy them verbatim. If you can't find a value, write
+  `(unspecified)`.
+- No filler, no re-narration of dialogue.
 
 """
   if existingSummary != "":
