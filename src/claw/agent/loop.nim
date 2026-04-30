@@ -412,10 +412,6 @@ proc maybeSummarize(al: AgentLoop, sessionKey: string) =
   else:
     release(al.summarizingLock)
 
-proc isXmlToolProvider*(model: string): bool =
-  ## Returns true for providers that need XML tool calling instead of native tools.
-  model.startsWith("opencode/") or model.startsWith("opencode-go/")
-
 proc buildToolContext(al: AgentLoop, opts: ProcessOptions, logicalUserID: string): tools_base.ToolContext =
   tools_base.ToolContext(
     channel: opts.channel,
@@ -882,9 +878,11 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           if allowedTools.len > 0 and tc.name in allowedTools:
             ctxForCall.preAuthorized = true
           result = await al.tools.executeWithContext(tc.name, tc.arguments, ctxForCall)
-        # Record in tool call log for forced summary context
-        let resultPreview = if result.len > 200: result[0..199] & "..." else: result
-        toolCallLog.add("[" & $iteration & "] " & tc.name & " → " & resultPreview)
+        # Record in tool call log for forced summary context. 200-char
+        # preview (vs subagent's 80) — this log feeds the forced-summary
+        # prompt when the loop exhausts maxIterations, so the summariser
+        # gets useful context.
+        toolCallLog.add(formatToolLogEntry(tc, result, iteration, maxLen = 200))
         let toolResultMsg = makeToolResult(tc, result)
         currentMessages.add(toolResultMsg)
         al.sessions.addFullMessage(opts.sessionKey, toolResultMsg)

@@ -16,10 +16,15 @@
 ## in their respective loops because they're agent-loop UX features,
 ## not protocol mechanics.
 
-import std/[asyncdispatch, tables]
+import std/strutils
 import types as providers_types
-import ../tools/registry as tools_registry
-import ../tools/base as tools_base
+
+proc isXmlToolProvider*(model: string): bool {.inline.} =
+  ## Providers that need XML tool calling instead of native tools.
+  ## Lives here so both the main agent loop and the subagent runner
+  ## share one definition (any future provider added must update one
+  ## place, not two).
+  model.startsWith("opencode/") or model.startsWith("opencode-go/")
 
 proc formatToolPreview*(s: string, maxLen = 80): string =
   ## One-line preview of a tool result for the iteration log. Stable
@@ -35,11 +40,6 @@ proc makeToolResult*(tc: providers_types.ToolCall,
   ## structurally complete — no risk of a call site forgetting one
   ## of the fields, which would silently break the strict pairing
   ## rule and surface as a 400.
-  ##
-  ## Callers that ALSO need to persist or otherwise reference the
-  ## constructed message use this and then append/save themselves;
-  ## callers that just want fire-and-forget use the higher-level
-  ## `executeAndAppendToolResults` below.
   providers_types.Message(
     role: RoleTool,
     content: content,
@@ -54,16 +54,21 @@ proc appendToolResult*(messages: var seq[providers_types.Message],
 
 proc formatToolLogEntry*(tc: providers_types.ToolCall,
                          resultText: string,
-                         iteration: int = 0): string {.inline.} =
+                         iteration: int = 0,
+                         maxLen = 80): string {.inline.} =
   ## Stable shape for the tool-iteration log: `[N] name → preview`.
   ## Both agent loops (main + subagent) call it so log lines are
   ## visually identical regardless of which loop produced them.
+  ## `maxLen` lets the main loop keep its longer preview (it feeds
+  ## into the forced-summary context) while subagents stay terse.
   let prefix = if iteration > 0: "[" & $iteration & "] " else: ""
-  prefix & tc.name & " → " & formatToolPreview(resultText)
+  prefix & tc.name & " → " & formatToolPreview(resultText, maxLen)
 
-# Note: there's no shared `executeAndAppendToolResults` proc.
-# Nim's async-closure rules don't allow safely capturing a
-# `var seq[Message]` across an `await`. Each caller writes its own
-# 3-line loop using `makeToolResult` + `formatToolLogEntry`. The
-# real shared piece is the message construction (which is the
-# protocol-correctness piece); the loop body is just iteration.
+proc formatToolLogEntry*(name: string,
+                         resultText: string,
+                         iteration: int = 0,
+                         maxLen = 80): string {.inline.} =
+  ## Overload for callers that don't have a `ToolCall` (e.g. the XML
+  ## branch, where calls are parsed into a different struct).
+  let prefix = if iteration > 0: "[" & $iteration & "] " else: ""
+  prefix & name & " → " & formatToolPreview(resultText, maxLen)

@@ -75,20 +75,30 @@ proc availableModes*(sm: SubagentManager): seq[cfg_mod.ModeConfig] =
   ## the operator having to maintain a parallel list).
   for m in sm.modes.values: result.add(m)
 
-proc isXmlToolProvider(model: string): bool =
-  model.startsWith("opencode/") or model.startsWith("opencode-go/")
-  # TODO: deduplicate with agent/loop.isXmlToolProvider once circular import is resolved
+proc resolveMode*(sm: SubagentManager, name: string): cfg_mod.ModeConfig =
+  ## Look up a mode by name with case-folded fallback. The DSL declares
+  ## modes Capitalised (`focus "Plan"`); the LLM is statistically likely
+  ## to emit `plan`, `Plan `, or `PLAN`. Match exactly first, then walk
+  ## the keys with `cmpIgnoreCase` so reasonable typings still resolve.
+  if name.len == 0: return cfg_mod.ModeConfig()
+  let trimmed = name.strip
+  if sm.modes.hasKey(trimmed): return sm.modes[trimmed]
+  for k, v in sm.modes:
+    if cmpIgnoreCase(k, trimmed) == 0: return v
+  cfg_mod.ModeConfig()
+
+proc hasMode*(sm: SubagentManager, name: string): bool {.inline.} =
+  ## Companion to `resolveMode`. A non-empty name resolves iff the
+  ## resulting ModeConfig has a non-empty `name` field — empty name
+  ## is the sentinel "no mode resolved" we get from `ModeConfig()`.
+  name.len > 0 and resolveMode(sm, name).name.len > 0
 
 proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
   task.status = "running"
   task.created = getTime().toUnix * 1000
 
-  # Resolve focus mode (empty = default, no override).
-  let mode =
-    if task.mode.len > 0 and sm.modes.hasKey(task.mode):
-      sm.modes[task.mode]
-    else:
-      cfg_mod.ModeConfig()
+  # Resolve focus mode (empty / unknown = default, no override).
+  let mode = resolveMode(sm, task.mode)
 
   # Model resolution: mode override > agent profile override > parent's default.
   let model =
@@ -96,6 +106,16 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
     elif task.agentOverride.len > 0: task.agentOverride
     else: sm.provider.getDefaultModel()
   let useXmlTools = isXmlToolProvider(model)
+  let strategy = inferStrategy(model)
+  # Pre-compute the mode's filtered tool whitelist once — it's invariant
+  # across iterations, so rebuilding the deny-set each turn is wasted
+  # work on a hot path that runs up to maxIterations times per task.
+  let allowedTools =
+    if mode.uses.len == 0: @[]
+    elif mode.deny.len == 0: mode.uses
+    else:
+      let denySet = mode.deny.toHashSet
+      mode.uses.filterIt(it notin denySet)
   let toolCtx = tools_base.ToolContext(
     channel: task.originChannel,
     chatID: task.originChatID,
@@ -153,21 +173,15 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
     while iteration < maxIterations:
       iteration += 1
 
-      let strategy = inferStrategy(model)
-
       let toolDefs =
         if useXmlTools or sm.tools == nil:
           @[]
-        elif mode.uses.len > 0:
-          # Mode-restricted: filter to the mode's tool whitelist
-          # minus any deny entries. The deny overlay lets a mode
-          # express "everything in `uses` except this small set" —
-          # similar to how agent profiles already mix uses + deny.
-          var allowed = mode.uses
-          if mode.deny.len > 0:
-            let denySet = mode.deny.toHashSet
-            allowed = allowed.filterIt(it notin denySet)
-          sm.tools.getDefinitionsFiltered(strategy, allowed)
+        elif allowedTools.len > 0:
+          # Mode-restricted: precomputed `allowedTools` is `uses` minus
+          # `deny`. Filtering by deny in the mode profile lets a mode
+          # express "everything in `uses` except this small set" — same
+          # pattern agent profiles use.
+          sm.tools.getDefinitionsFiltered(strategy, allowedTools)
         else:
           sm.tools.getDefinitions(strategy)
       # Keep history protocol-clean before sending (parallel to the
@@ -191,8 +205,7 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
         for xmlCall in xmlCalls:
           let result = await sm.tools.executeWithContext(xmlCall.name, xmlCall.arguments, toolCtx)
           xmlResults.add(XmlToolResult(name: xmlCall.name, output: result, success: not result.startsWith("Error:")))
-          let preview = if result.len > 80: result[0..79] & "..." else: result
-          toolCallLog.add("[" & $iteration & "] " & xmlCall.name & " → " & preview)
+          toolCallLog.add(formatToolLogEntry(xmlCall.name, result, iteration))
 
         currentMessages.add(providers_types.Message(role: providers_types.RoleUser, content: formatToolResults(xmlResults)))
       else:

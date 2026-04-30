@@ -1,10 +1,25 @@
-import std/[asyncdispatch, json, tables, strutils]
+import std/[asyncdispatch, json, tables, strutils, locks, times]
 import types
 import subagent
+
+const
+  AwaitPollIntervalMs = 200    ## Sleep between status polls.
+  AwaitTimeoutMs = 10 * 60 * 1000
+                               ## Hard deadline on `await: true` (10
+                               ## minutes). Beyond this we surface a
+                               ## timeout error rather than block the
+                               ## parent loop forever — a stuck
+                               ## subagent should not deadlock its
+                               ## caller.
 
 type
   SpawnTool* = ref object of ContextualTool
     manager*: SubagentManager
+    cachedDescription: string  ## Built the first time `description`
+                               ## runs and reused after. Modes are
+                               ## fixed at construction, so the per-
+                               ## iteration `toolToSchema` path doesn't
+                               ## need to re-render the mode list.
 
 proc newSpawnTool*(manager: SubagentManager): SpawnTool =
   SpawnTool(
@@ -13,9 +28,10 @@ proc newSpawnTool*(manager: SubagentManager): SpawnTool =
 
 method name*(t: SpawnTool): string = "spawn"
 method description*(t: SpawnTool): string =
-  ## Description includes the registered modes so the LLM sees what
-  ## focus modes are available without the operator having to keep a
-  ## parallel doc in sync.
+  ## Includes the registered modes so the LLM sees what focus modes
+  ## are available without the operator maintaining a parallel doc.
+  ## Cached after first build — modes don't change at runtime.
+  if t.cachedDescription.len > 0: return t.cachedDescription
   var d = "Spawn a focused subtask of yourself. The subagent runs as " &
           "you (same identity, same authority) but with an optional " &
           "MODE that constrains its tools and adds a focused prompt. " &
@@ -31,6 +47,7 @@ method description*(t: SpawnTool): string =
       d.add("\n\nAvailable modes:")
       for m in modes:
         d.add("\n  - `" & m.name & "`: " & m.description)
+  t.cachedDescription = d
   d
 
 method parameters*(t: SpawnTool): Table[string, JsonNode] =
@@ -81,11 +98,12 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
   if t.manager == nil:
     return "Error: Spawn tool not connected to SubagentManager"
 
-  if mode.len > 0 and not t.manager.modes.hasKey(mode):
-    var available: seq[string]
-    for m in t.manager.modes.keys: available.add(m)
+  if mode.len > 0 and not t.manager.hasMode(mode):
+    let available = t.manager.availableModes()
+    var names: seq[string]
+    for m in available: names.add(m.name)
     return "Error: unknown mode '" & mode & "'. " &
-           (if available.len > 0: "Available: " & available.join(", ")
+           (if names.len > 0: "Available: " & names.join(", ")
             else: "No modes are configured for this company.")
 
   let taskObj = t.manager.spawn(task, label, t.channel, t.chatID,
@@ -95,12 +113,23 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
 
   if waitForResult:
     # Synchronous shape: poll until the task finishes, then return its
-    # result as the tool's value. Uses the same task-completion
-    # mechanism as the fire-and-forget path; the difference is just
-    # that we wait here instead of letting the bus surface the
-    # result via a separate inbound.
-    while taskObj.status notin ["completed", "failed"]:
-      await sleepAsync(200)
+    # result as the tool's value. The status is mutated by `runTask`
+    # under `manager.lock`, so we acquire the lock for the read — a
+    # bare unsynchronised access is a data race in the Nim memory model.
+    # The deadline guards against a hung subagent deadlocking the
+    # parent loop indefinitely.
+    let started = getTime().toUnix * 1000
+    while true:
+      acquire(t.manager.lock)
+      let status = taskObj.status
+      release(t.manager.lock)
+      if status == "completed" or status == "failed": break
+      if (getTime().toUnix * 1000) - started > AwaitTimeoutMs:
+        return "Error: subagent '" & label & "' (id " & taskObj.id &
+               ") did not complete within " & $(AwaitTimeoutMs div 60000) &
+               " minutes. It may still finish — its result will arrive " &
+               "as a separate notification."
+      await sleepAsync(AwaitPollIntervalMs)
     return taskObj.result
 
   return "Spawned subagent '" & label & "' with ID " & taskObj.id &
