@@ -1,6 +1,8 @@
 import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets]
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
 import ../providers/models_catalog
+import ../providers/sanitize
+export sanitize.sanitizeForProvider
 import ../skill_grant
 import ../billing/[subscription as sub_mod, usage as usage_mod]
 import context as agent_context
@@ -463,92 +465,10 @@ proc trySelfHealHiddenTool(al: AgentLoop, toolName, dispatchKind: string): Optio
        "turn. Its actual schema is:\n\n" & schemaJson &
        "\n\nRetry the call with these parameter names.")
 
-proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
-  ## Strict OpenAI/DeepSeek-style protocol enforcement before sending
-  ## a message list to a provider. Two failure modes are handled:
-  ##
-  ## 1) Tool message without a preceding assistant.tool_calls — orphan.
-  ##    Drop it.
-  ##
-  ## 2) Assistant.tool_calls whose tool_call_ids aren't all covered by
-  ##    immediately-following `tool` messages — incomplete pairing.
-  ##    Strip the tool_calls field. Otherwise the provider rejects
-  ##    with 400 "An assistant message with 'tool_calls' must be
-  ##    followed by tool messages responding to each tool_call_id".
-  ##
-  ## Causes of incomplete pairing in practice:
-  ##   - Legacy sessions that stored tool results as `role: "user"`
-  ##   - The gateway crashed mid-tool-execution
-  ##   - A tool threw an exception and the loop bailed before adding
-  ##     the result message
-  ##   - Some agent-loop branch added a non-tool message between an
-  ##     assistant.tool_calls turn and its tool responses
-  ##
-  ## In-place modification of the seq.
-  var clean: seq[providers_types.Message] = @[]
-  var droppedOrphans = 0
-  var strippedTcs = 0
-  # `lastHadToolCalls` reflects whether the most recent NON-tool
-  # message in `clean` was an assistant with tool_calls. Tool messages
-  # themselves don't reset the flag — they share their parent's
-  # context. Only when a non-tool message is added does the flag
-  # update to reflect that new parent context.
-  var lastHadToolCalls = false
-  var i = 0
-  while i < messages.len:
-    var m = messages[i]
-    if m.role == "tool":
-      if not lastHadToolCalls:
-        inc droppedOrphans
-        inc i
-        continue
-      clean.add(m)
-      inc i
-      continue   # flag intentionally NOT updated — stays true for siblings
-    # Below this line, m is guaranteed NOT to be a tool message.
-    if m.role == "assistant" and m.tool_calls.len > 0:
-      var expected = initHashSet[string]()
-      for tc in m.tool_calls:
-        if tc.id.len > 0: expected.incl(tc.id)
-      var responded = initHashSet[string]()
-      var followingTools = 0
-      var j = i + 1
-      while j < messages.len and messages[j].role == "tool":
-        inc followingTools
-        if messages[j].tool_call_id.len > 0:
-          responded.incl(messages[j].tool_call_id)
-        inc j
-      # Two-pronged check:
-      #  (a) COUNT: at least as many tool messages must immediately
-      #      follow as the assistant has tool_calls. Catches the case
-      #      where tool_calls were emitted but no responses got
-      #      appended OR where tool_calls have empty/missing IDs
-      #      (which would make the ID-coverage check vacuously true).
-      #      The provider counts tool messages structurally; we must too.
-      #  (b) ID COVERAGE: each non-empty tool_call_id in the assistant
-      #      message must appear in some following tool message's
-      #      tool_call_id. Catches reordering / mismatch even when
-      #      counts line up.
-      var allCovered = followingTools >= m.tool_calls.len
-      if allCovered:
-        for need in expected:
-          if need notin responded:
-            allCovered = false
-            break
-      if not allCovered:
-        m.tool_calls = @[]
-        if m.content.len == 0:
-          m.content = "[tool execution interrupted — results not preserved]"
-        inc strippedTcs
-    clean.add(m)
-    lastHadToolCalls =
-      (m.role == "assistant" and m.tool_calls.len > 0)
-    inc i
-  if droppedOrphans > 0 or strippedTcs > 0:
-    warnCF("agent", "Sanitized history",
-           {"orphan_tools_dropped": $droppedOrphans,
-            "incomplete_tool_calls_stripped": $strippedTcs}.toTable)
-    messages = clean
+# sanitizeForProvider was inlined here originally; it was extracted to
+# providers/sanitize.nim so subagent.nim can reuse the same rules
+# without circular imports. This file re-exports it (see the import
+# block at the top).
 
 proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string, allowedTools: seq[string], snapshot: TaskSnapshot): Future[(string, int, seq[providers_types.Message])] {.async.} =
   ## `allowedTools` is the dispatch-time allowlist for THIS turn (role.grant +
@@ -1671,7 +1591,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
 
   # --- Agent & delegation ---
-  let subagentManager = newSubagentManager(provider, workspace, msgBus, toolsRegistry, nil)
+  let subagentManager = newSubagentManager(
+    provider, workspace, msgBus, toolsRegistry, nil,
+    maxIterations =
+      max(1, cfg.agents.defaults.max_tool_iterations))
   regTagged(newSpawnTool(subagentManager), ["agent", "automation"], "spawn autonomous sub-agents for tasks")
 
   # --- Hardware (unified) ---
