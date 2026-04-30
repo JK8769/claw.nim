@@ -101,7 +101,17 @@ type
     entity*: string
     identity*: string
     model*: string
-    contextWindow*: int
+    contextWindow*: int        ## Model's INPUT capacity from the
+                               ## canonical catalog (e.g. 1_000_000 for
+                               ## deepseek-v4-flash). Drives the
+                               ## summarisation threshold — NOT the
+                               ## per-request max_tokens.
+    maxResponseTokens*: int    ## Per-request OUTPUT cap. Sent as the
+                               ## API's `max_tokens` field. From
+                               ## `cfg.agents.defaults.max_tokens`,
+                               ## bounded by the model's
+                               ## `max_output_tokens` if the catalog
+                               ## records it.
     temperature*: float
     thinking*: Option[bool]   ## DeepSeek-V4 mode toggle. None = pass
                               ## nothing through; some(false) = disable
@@ -160,11 +170,9 @@ proc estimateTokens(messages: seq[providers_types.Message]): int =
   return total
 
 proc resolveContextWindow*(modelName: string, fallback: int): int =
-  ## Look up the model's actual context window from the canonical
-  ## catalog (`res/models.json`). The previous code conflated this
-  ## with `max_tokens` (the OUTPUT cap, defaults to 8192) — that
-  ## meant Lexi was running at <1% of what deepseek-v4-flash actually
-  ## supports (1M tokens) before history-trimming kicked in.
+  ## Look up the model's INPUT limit from the canonical catalog
+  ## (`res/models.json`). Used to size the summarisation threshold,
+  ## NOT to set the per-request `max_tokens` field.
   ##
   ## Tries (in order):
   ##   1. exact id (e.g. "deepseek/deepseek-v4-flash")
@@ -179,6 +187,30 @@ proc resolveContextWindow*(modelName: string, fallback: int): int =
     if canonicalId.endsWith("/" & modelName):
       if canonical.contextLength > 0: return canonical.contextLength
   fallback
+
+proc resolveMaxOutputTokens*(modelName: string, requested: int): int =
+  ## Bound the per-request output cap by the model's published
+  ## `max_output_tokens`. Operators set `agents.defaults.max_tokens`
+  ## (the *requested* output cap) without knowing each provider's
+  ## ceiling — sending above the ceiling triggers 400. We clamp here
+  ## so a high request like 32k still works on a model whose ceiling
+  ## is 8k or 384k, without operator guesswork per-model.
+  ##
+  ## If the catalog doesn't record a cap, the requested value is
+  ## returned unchanged (defer to the operator's setting and let the
+  ## provider enforce its own limit if any).
+  if modelName.len == 0: return requested
+  let cat = effectiveCatalog()
+  var modelCap = 0
+  if cat.canonical.hasKey(modelName):
+    modelCap = cat.canonical[modelName].maxOutputTokens
+  if modelCap == 0:
+    for canonicalId, canonical in cat.canonical.pairs:
+      if canonicalId.endsWith("/" & modelName):
+        modelCap = canonical.maxOutputTokens
+        if modelCap > 0: break
+  if modelCap > 0 and requested > modelCap: return modelCap
+  requested
 
 proc summarizeBatch(al: AgentLoop, batch: seq[providers_types.Message], existingSummary: string): Future[string] {.async.} =
   ## Structured facts-sheet summary instead of narrative prose. Each
@@ -582,7 +614,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           defs
 
     var options = {
-      "max_tokens": %al.contextWindow,
+      "max_tokens": %al.maxResponseTokens,
       "temperature": %al.temperature
     }.toTable
     if al.thinking.isSome:
@@ -1845,6 +1877,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     contextWindow: resolveContextWindow(
       if model != "": model else: cfg.agents.defaults.model,
       max(cfg.agents.defaults.max_tokens, 32000)),
+    maxResponseTokens: resolveMaxOutputTokens(
+      if model != "": model else: cfg.agents.defaults.model,
+      max(cfg.agents.defaults.max_tokens, 1)),
     temperature: cfg.agents.defaults.temperature,
     maxIterations: cfg.agents.defaults.max_tool_iterations,
     liveTasks: initTable[string, TaskSnapshot](),

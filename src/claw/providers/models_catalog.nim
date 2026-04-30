@@ -17,7 +17,9 @@ type
     vendor*: string
     family*: string
     paramsB*: int             ## parameter count in billions (0 if unknown)
-    contextLength*: int
+    contextLength*: int       ## input limit
+    maxOutputTokens*: int     ## per-request output cap (provider-enforced;
+                              ## sending more triggers 400 from many APIs)
     modality*: string         ## "text" | "multimodal"
     capabilities*: seq[string]
     license*: string
@@ -63,6 +65,8 @@ proc jsonToCanonical(id: string, e: JsonNode): CanonicalModel =
   if pb != nil and pb.kind == JInt: result.paramsB = pb.getInt()
   let ctx = e{"context_length"}
   if ctx != nil and ctx.kind == JInt: result.contextLength = ctx.getInt()
+  let mout = e{"max_output_tokens"}
+  if mout != nil and mout.kind == JInt: result.maxOutputTokens = mout.getInt()
   result.modality = e{"modality"}.getStr("")
   let caps = e{"capabilities"}
   if caps != nil and caps.kind == JArray:
