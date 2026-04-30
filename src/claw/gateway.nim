@@ -967,6 +967,77 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       lines.add("Total tokens since boot: " & $al2.liveTokensTotal)
     return "**Agent " & name & "**\n\n" & codeBlock(lines.join("\n"))
 
+  elif cmd == "/session" or cmd.startsWith("/session "):
+    # Conversation-state management. Each user has a separate session
+    # per agent (keyed by `nc_<id>`), stored as JSONL on disk under
+    # the agent's office. Clearing wipes both in-memory buffer and
+    # disk files — the agent forgets that user entirely on next turn.
+    let parts = strutils.splitWhitespace(cmd)
+    if parts.len < 2 or parts[1] == "help":
+      return "**`/session` — conversation-state management**\n\n" &
+             "  `/session clear <agent>`\n" &
+             "    Clear YOUR session with that agent. The agent will\n" &
+             "    forget your conversation history on next turn.\n" &
+             "    Example: `/session clear lexi`\n\n" &
+             "  `/session clear <agent> <nc:id>`   🔒 Admin\n" &
+             "    Clear another user's session with that agent. Useful\n" &
+             "    for resetting test conversations or recovering from\n" &
+             "    corrupted state.\n" &
+             "    Example: `/session clear lexi nc:7`\n\n" &
+             "Note: clears the conversation, NOT the agent's `memory_store`\n" &
+             "entries (those persist by design — that's their purpose)."
+    let sub = parts[1]
+    if sub == "clear":
+      if parts.len < 3:
+        return "Usage: `/session clear <agent>` (your session with that\n" &
+               "agent) or `/session clear <agent> <nc:id>` (Admin+ — " &
+               "another user's session)."
+      let agentName = parts[2]
+      let agentKey = agentName.toLowerAscii
+      if not gCtx.offices.hasKey(agentKey):
+        return "Agent `" & agentName & "` is not in office or doesn't " &
+               "exist. Try `/agent list` to see who's available."
+      let al2 = gCtx.offices[agentKey]
+      # Resolve target nc:id. With no arg, it's the caller's own.
+      var targetNc = ""
+      if parts.len >= 4:
+        if callerPermGate < pmAdmin:
+          return "Only Admin or SuperAdmin can clear another user's " &
+                 "session. (Use `/session clear " & agentName &
+                 "` to clear your own.)"
+        if not parts[3].startsWith("nc:"):
+          return "Error: third argument must be an `nc:id` " &
+                 "(e.g. `nc:7`), got `" & parts[3] & "`."
+        targetNc = parts[3]
+      else:
+        # Resolve caller to nc:id via the same path as resolveCallerPermission.
+        let workspace = cfg[].workspacePath()
+        let g = loadWorld(workspace)
+        if g != nil:
+          let channelKey =
+            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+              msg.channel & ":" & msg.metadata["app_id"]
+            else: msg.channel
+          let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+          if uint32(entID) > 0:
+            targetNc = toAlias(entID)
+        if targetNc == "":
+          return "Couldn't resolve your own `nc:id` from this channel. " &
+                 "If you're an Admin clearing someone else's session, " &
+                 "pass their nc:id explicitly: " &
+                 "`/session clear " & agentName & " nc:N`."
+      # The session manager keys on `nc_<num>` (underscore form), not
+      # `nc:<num>` (colon form used in display).
+      let sessionKey = targetNc.replace(":", "_")
+      al2.sessions.clearSession(sessionKey)
+      return "Cleared **" & agentName & "**'s session with `" &
+             targetNc & "` (key `" & sessionKey & "`).\n\n" &
+             "On the next message, the agent starts a fresh thread — " &
+             "no prior history, no carried-over summary. " &
+             "`memory_store` entries are untouched."
+    return "Unknown /session subcommand: `" & sub & "`.\n" &
+           "Try `/session clear <agent>` or `/session help`."
+
   elif cmd == "/restart":
     if callerPermGate < pmAdmin:
       return "Only Admin or SuperAdmin can restart the gateway."
@@ -1317,6 +1388,13 @@ Options:
     usage: "/restart", group: "admin",
     menuHint: "Restart gateway", permission: pmAdmin,
     examples: @["/restart"]))
+  register(SystemCommand(
+    name: "/session",
+    summary: "Clear conversation state with an agent. Wipes session JSONL + meta on disk; `memory_store` entries are untouched.",
+    usage: "/session clear <agent> [<nc:id>]",
+    group: "admin", menuHint: "Clear session",
+    permission: pmInternal,
+    examples: @["/session clear lexi", "/session clear lexi nc:7"]))
   register(SystemCommand(
     name: "/co",
     summary: "Company management. `/co update` rebuilds BASE.json from BASE.nims; `/co cost` shows token + USD spend across all agents.",
