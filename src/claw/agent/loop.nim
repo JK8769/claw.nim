@@ -488,14 +488,18 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
   var clean: seq[providers_types.Message] = @[]
   var droppedOrphans = 0
   var strippedTcs = 0
+  # `lastHadToolCalls` stays TRUE across a run of consecutive tool
+  # messages immediately following an assistant.tool_calls turn, so
+  # the second/third/Nth tool message in a multi-tool turn doesn't
+  # get falsely dropped (which was the bug — using `clean[^1]` reset
+  # to the just-added tool message after the first tool, marking
+  # all subsequent siblings as orphans).
+  var lastHadToolCalls = false
   var i = 0
   while i < messages.len:
     var m = messages[i]
     if m.role == "tool":
-      let prevHadTcs =
-        clean.len > 0 and clean[^1].role == "assistant" and
-        clean[^1].tool_calls.len > 0
-      if not prevHadTcs:
+      if not lastHadToolCalls:
         inc droppedOrphans
         inc i
         continue
@@ -535,6 +539,12 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
           m.content = "[tool execution interrupted — results not preserved]"
         inc strippedTcs
     clean.add(m)
+    # Update flag AFTER adding `m` to clean, using the (possibly
+    # stripped) state. So if we just stripped tool_calls from this
+    # assistant, the following tool messages will correctly become
+    # orphans on the next iteration.
+    lastHadToolCalls =
+      (m.role == "assistant" and m.tool_calls.len > 0)
     inc i
   if droppedOrphans > 0 or strippedTcs > 0:
     warnCF("agent", "Sanitized history",
