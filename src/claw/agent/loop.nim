@@ -1,5 +1,6 @@
 import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets]
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
+import ../providers/models_catalog
 import ../skill_grant
 import ../billing/[subscription as sub_mod, usage as usage_mod]
 import context as agent_context
@@ -158,6 +159,27 @@ proc estimateTokens(messages: seq[providers_types.Message]): int =
     total += m.content.len div 4
   return total
 
+proc resolveContextWindow*(modelName: string, fallback: int): int =
+  ## Look up the model's actual context window from the canonical
+  ## catalog (`res/models.json`). The previous code conflated this
+  ## with `max_tokens` (the OUTPUT cap, defaults to 8192) — that
+  ## meant Lexi was running at <1% of what deepseek-v4-flash actually
+  ## supports (1M tokens) before history-trimming kicked in.
+  ##
+  ## Tries (in order):
+  ##   1. exact id (e.g. "deepseek/deepseek-v4-flash")
+  ##   2. as canonical id with `<vendor>/` prefix scan
+  ##   3. fallback to caller-supplied default
+  if modelName.len == 0: return fallback
+  let cat = effectiveCatalog()
+  if cat.canonical.hasKey(modelName):
+    let ctx = cat.canonical[modelName].contextLength
+    if ctx > 0: return ctx
+  for canonicalId, canonical in cat.canonical.pairs:
+    if canonicalId.endsWith("/" & modelName):
+      if canonical.contextLength > 0: return canonical.contextLength
+  fallback
+
 proc summarizeBatch(al: AgentLoop, batch: seq[providers_types.Message], existingSummary: string): Future[string] {.async.} =
   var prompt = "Provide a concise summary of this conversation segment, preserving core context and key points.\n"
   if existingSummary != "":
@@ -190,7 +212,13 @@ proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
 
   if finalSummary != "":
     al.sessions.setSummary(sessionKey, finalSummary)
-    al.sessions.truncateHistory(sessionKey, 4)
+    # Keep more raw turns visible after summarisation. The previous
+    # value (4 messages = ~2 user/assistant pairs) was set when the
+    # context budget was being treated as 8k, so the live window had
+    # to stay tiny. With a 1M-token model and token-based triggering,
+    # 30 leaves Lexi enough recent context to recall last hour's work
+    # without the LLM seeing everything since the dawn of the session.
+    al.sessions.truncateHistory(sessionKey, 30)
     al.sessions.save(al.sessions.getOrCreate(sessionKey))
 
 const MaxJournalSize = 1_000_000 # 1MB before rotation
@@ -269,9 +297,16 @@ proc maybeSummarize(al: AgentLoop, sessionKey: string) =
 
   let history = al.sessions.getHistory(sessionKey)
   let tokenEstimate = estimateTokens(history)
+  # 75% of the model's actual context window. Pure token-based —
+  # no message-count short-circuit. The old `history.len > 20` cap
+  # fired at <1% of a 1M-token model's capacity and was responsible
+  # for the "Lexi forgets everything" pattern: long analytical
+  # threads got summarised every ~10-20 messages, and each rewrite
+  # diluted the previous summary, so older facts vanished into a
+  # one-paragraph blob.
   let threshold = (al.contextWindow * 75) div 100
 
-  if history.len > 20 or tokenEstimate > threshold:
+  if tokenEstimate > threshold:
     al.summarizing[sessionKey] = true
     release(al.summarizingLock)
     discard (proc() {.async.} =
@@ -1748,7 +1783,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     entity: entity,
     identity: identity,
     model: if model != "": model else: cfg.agents.defaults.model,
-    contextWindow: cfg.agents.defaults.max_tokens,
+    contextWindow: resolveContextWindow(
+      if model != "": model else: cfg.agents.defaults.model,
+      max(cfg.agents.defaults.max_tokens, 32000)),
     temperature: cfg.agents.defaults.temperature,
     maxIterations: cfg.agents.defaults.max_tool_iterations,
     liveTasks: initTable[string, TaskSnapshot](),
