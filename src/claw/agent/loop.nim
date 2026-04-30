@@ -463,6 +463,70 @@ proc trySelfHealHiddenTool(al: AgentLoop, toolName, dispatchKind: string): Optio
        "turn. Its actual schema is:\n\n" & schemaJson &
        "\n\nRetry the call with these parameter names.")
 
+proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
+  ## Strict OpenAI/DeepSeek-style protocol enforcement before sending
+  ## a message list to a provider. Two failure modes are handled:
+  ##
+  ## 1) Tool message without a preceding assistant.tool_calls — orphan.
+  ##    Drop it.
+  ##
+  ## 2) Assistant.tool_calls whose tool_call_ids aren't all covered by
+  ##    immediately-following `tool` messages — incomplete pairing.
+  ##    Strip the tool_calls field. Otherwise the provider rejects
+  ##    with 400 "An assistant message with 'tool_calls' must be
+  ##    followed by tool messages responding to each tool_call_id".
+  ##
+  ## Causes of incomplete pairing in practice:
+  ##   - Legacy sessions that stored tool results as `role: "user"`
+  ##   - The gateway crashed mid-tool-execution
+  ##   - A tool threw an exception and the loop bailed before adding
+  ##     the result message
+  ##   - Some agent-loop branch added a non-tool message between an
+  ##     assistant.tool_calls turn and its tool responses
+  ##
+  ## In-place modification of the seq.
+  var clean: seq[providers_types.Message] = @[]
+  var droppedOrphans = 0
+  var strippedTcs = 0
+  var i = 0
+  while i < messages.len:
+    var m = messages[i]
+    if m.role == "tool":
+      let prevHadTcs =
+        clean.len > 0 and clean[^1].role == "assistant" and
+        clean[^1].tool_calls.len > 0
+      if not prevHadTcs:
+        inc droppedOrphans
+        inc i
+        continue
+    elif m.role == "assistant" and m.tool_calls.len > 0:
+      var expected = initHashSet[string]()
+      for tc in m.tool_calls:
+        if tc.id.len > 0: expected.incl(tc.id)
+      var responded = initHashSet[string]()
+      var j = i + 1
+      while j < messages.len and messages[j].role == "tool":
+        if messages[j].tool_call_id.len > 0:
+          responded.incl(messages[j].tool_call_id)
+        inc j
+      var allCovered = true
+      for need in expected:
+        if need notin responded:
+          allCovered = false
+          break
+      if not allCovered:
+        m.tool_calls = @[]
+        if m.content.len == 0:
+          m.content = "[tool execution interrupted — results not preserved]"
+        inc strippedTcs
+    clean.add(m)
+    inc i
+  if droppedOrphans > 0 or strippedTcs > 0:
+    warnCF("agent", "Sanitized history",
+           {"orphan_tools_dropped": $droppedOrphans,
+            "incomplete_tool_calls_stripped": $strippedTcs}.toTable)
+    messages = clean
+
 proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_types.Message], opts: ProcessOptions, logicalUserID: string, allowedTools: seq[string], snapshot: TaskSnapshot): Future[(string, int, seq[providers_types.Message])] {.async.} =
   ## `allowedTools` is the dispatch-time allowlist for THIS turn (role.grant +
   ## allowed_skills expansion). Passed by value so concurrent turns on the
@@ -480,63 +544,10 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   let useXmlTools = isXmlToolProvider(al.model)
   let toolCtx = buildToolContext(al, opts, logicalUserID)
 
-  # Sanitize history before sending to the provider. Two failure modes
-  # to handle:
-  #
-  # 1) Tool message without a preceding assistant.tool_calls — orphan.
-  #    Drop it. (Original behaviour.)
-  #
-  # 2) Assistant.tool_calls without all tool_call_ids covered by
-  #    immediately-following `tool` messages — incomplete pairing.
-  #    Strip the tool_calls field; otherwise the provider rejects with
-  #    400 "An assistant message with 'tool_calls' must be followed by
-  #    tool messages responding to each tool_call_id". This happens
-  #    when (a) tool results were stored as `role: "user"` in legacy
-  #    sessions and lost their pairing on replay, or (b) the gateway
-  #    crashed mid-tool-execution and the session has the assistant
-  #    turn but not the tool results.
-  block:
-    var clean: seq[providers_types.Message] = @[]
-    var droppedOrphans = 0
-    var strippedTcs = 0
-    var i = 0
-    while i < currentMessages.len:
-      var m = currentMessages[i]
-      if m.role == "tool":
-        let prevHadTcs =
-          clean.len > 0 and clean[^1].role == "assistant" and
-          clean[^1].tool_calls.len > 0
-        if not prevHadTcs:
-          inc droppedOrphans
-          inc i
-          continue
-      elif m.role == "assistant" and m.tool_calls.len > 0:
-        var expected = initHashSet[string]()
-        for tc in m.tool_calls:
-          if tc.id.len > 0: expected.incl(tc.id)
-        var responded = initHashSet[string]()
-        var j = i + 1
-        while j < currentMessages.len and currentMessages[j].role == "tool":
-          if currentMessages[j].tool_call_id.len > 0:
-            responded.incl(currentMessages[j].tool_call_id)
-          inc j
-        var allCovered = true
-        for need in expected:
-          if need notin responded:
-            allCovered = false
-            break
-        if not allCovered:
-          m.tool_calls = @[]
-          if m.content.len == 0:
-            m.content = "[tool execution interrupted — results not preserved]"
-          inc strippedTcs
-      clean.add(m)
-      inc i
-    if droppedOrphans > 0 or strippedTcs > 0:
-      warnCF("agent", "Sanitized history",
-             {"orphan_tools_dropped": $droppedOrphans,
-              "incomplete_tool_calls_stripped": $strippedTcs}.toTable)
-      currentMessages = clean
+  # See `sanitizeForProvider` below for the rules. Run once before
+  # entering the iteration loop so anything stale from getHistory
+  # gets cleaned up upfront.
+  sanitizeForProvider(currentMessages)
 
   while iteration < al.maxIterations and finalContent == "":
     iteration += 1
@@ -624,6 +635,14 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       # implement the toggle the provider ignores the option.
       options["thinking"] = %al.thinking.get
     
+    # Re-sanitize before EACH provider call. The opening sanitize at
+    # runLLMIteration's top covered loaded history, but mid-loop
+    # state can drift: a tool can throw between adding the assistant
+    # turn and adding the tool result, or a nudge can land between
+    # assistant.tool_calls and its tool responses. Without this, the
+    # broken state hits the provider as a 400 on the very next
+    # iteration of the outer while-loop.
+    sanitizeForProvider(currentMessages)
     var response: LLMResponse
     try:
       response = await al.provider.chat(currentMessages, toolDefs, al.model, options)
