@@ -144,6 +144,32 @@ type
     content*: ClawContent  ## optional handbook (markdown)
     summary*: string
 
+  ClawMode* = object
+    ## A focus mode — temporary specialisation an agent can enter for
+    ## a single subagent task. Distinct from `agent` (separate identity)
+    ## and from `competency` (persistent role profile).
+    ##
+    ## A mode is "the same agent, different hat": Lexi-as-Plan still IS
+    ## Lexi (her soul, role, reportsTo all preserved), but the spawn
+    ## that runs in Plan mode gets a tool subset + prompt addendum
+    ## that constrains her to the planning shape.
+    ##
+    ## Example:
+    ##   mode "Plan":
+    ##     description "Software architect — write step-by-step plans, no implementation."
+    ##     uses "read_file", "find", "grep"
+    ##     model "deepseek-v4-pro"
+    ##     promptAddendum """
+    ##       In this mode, your job is to PLAN, not implement. Output
+    ##       step-by-step plans with explicit ordering and trade-offs.
+    ##     """
+    name*: string             ## e.g. "Plan", "Explore"
+    description*: string      ## one-liner the LLM sees when picking a mode
+    uses*: seq[string]        ## tool whitelist for this mode (intersected with parent's grants)
+    deny*: seq[string]        ## additional denylist on top of `uses`
+    model*: string            ## optional model override (same provider as parent's model)
+    promptAddendum*: string   ## prepended to the parent agent's system prompt
+
   ClawTeam* = object
     ## A named group of agents with a shared function.
     name*: string
@@ -174,6 +200,7 @@ type
     skills*: seq[ClawSkill]
     memoranda*: seq[ClawMemorandum]
     competencies*: seq[ClawCompetency]
+    modes*: seq[ClawMode]
     teams*: seq[ClawTeam]
     labs*: seq[ClawLab]
     portal*: ClawPortal
@@ -508,6 +535,33 @@ template competency*(nm: string, body: untyped) =
     template summary(s: string) {.used.} = c.summary = s
     body
     spec.competencies.add(c)
+
+template mode*(nm: string, body: untyped) =
+  ## Declare a focus mode an agent can enter for a single subagent
+  ## task. The mode adds a tool subset + prompt addendum on top of
+  ## the calling agent's identity — same agent, different hat.
+  ##
+  ## Example:
+  ##   mode "Plan":
+  ##     description "Software architect — write step-by-step plans, no implementation."
+  ##     uses "read_file", "find", "grep"
+  ##     model "deepseek-v4-pro"
+  ##     promptAddendum """
+  ##       In this mode, you PLAN. Output a step-by-step plan with
+  ##       explicit ordering and trade-offs. You do NOT modify files.
+  ##     """
+  block:
+    var m = ClawMode(name: nm)
+    template description(d: string) {.used.} = m.description = d
+    template uses(uss: varargs[string]) {.used.} =
+      for x in uss: m.uses.add(x)
+    template deny(ds: varargs[string]) {.used.} =
+      for x in ds: m.deny.add(x)
+    template model(s: string) {.used.} = m.model = s
+    template promptAddendum(s: string) {.used.} = m.promptAddendum = s
+    template prompt(s: string) {.used.} = m.promptAddendum = s
+    body
+    spec.modes.add(m)
 
 template team*(nm: string, body: untyped) =
   ## Declare a team — a named group of agents working on a shared function.
@@ -993,6 +1047,17 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
         }
       }
     },
+    "modes": (proc(): JsonNode =
+      result = newJArray()
+      for m in spec.modes:
+        result.add(%*{
+          "name": m.name,
+          "description": m.description,
+          "uses": m.uses,
+          "deny": m.deny,
+          "model": m.model,
+          "promptAddendum": m.promptAddendum,
+        }))(),
   }
 
 proc buildProviders(spec: ClawSpec): JsonNode =
