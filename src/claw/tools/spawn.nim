@@ -16,10 +16,10 @@ type
   SpawnTool* = ref object of ContextualTool
     manager*: SubagentManager
     cachedDescription: string  ## Built the first time `description`
-                               ## runs and reused after. Modes are
-                               ## fixed at construction, so the per-
-                               ## iteration `toolToSchema` path doesn't
-                               ## need to re-render the mode list.
+                               ## runs and reused after. Focus modes
+                               ## are fixed at construction, so the
+                               ## per-iteration `toolToSchema` path
+                               ## doesn't need to re-render the list.
 
 proc newSpawnTool*(manager: SubagentManager): SpawnTool =
   SpawnTool(
@@ -28,23 +28,24 @@ proc newSpawnTool*(manager: SubagentManager): SpawnTool =
 
 method name*(t: SpawnTool): string = "spawn"
 method description*(t: SpawnTool): string =
-  ## Includes the registered modes so the LLM sees what focus modes
-  ## are available without the operator maintaining a parallel doc.
-  ## Cached after first build — modes don't change at runtime.
+  ## Includes the registered focus modes so the LLM sees what's
+  ## available without the operator maintaining a parallel doc.
+  ## Cached after first build — focus modes don't change at runtime.
   if t.cachedDescription.len > 0: return t.cachedDescription
   var d = "Spawn a focused subtask of yourself. The subagent runs as " &
           "you (same identity, same authority) but with an optional " &
-          "MODE that constrains its tools and adds a focused prompt. " &
-          "Use this when you want to do a chunk of work in parallel " &
-          "or in isolation — same agent wearing a different hat.\n\n" &
+          "FOCUS_MODE that constrains its tools and adds a focused " &
+          "prompt. Use this when you want to do a chunk of work in " &
+          "parallel or in isolation — same agent wearing a different " &
+          "hat.\n\n" &
           "Pass `await: true` to block on the result and return it " &
           "directly (cognitively simplest). Pass `await: false` (or " &
           "omit) for fire-and-forget — the result arrives later as a " &
           "separate notification."
   if t.manager != nil:
-    let modes = t.manager.availableModes()
+    let modes = t.manager.availableFocusModes()
     if modes.len > 0:
-      d.add("\n\nAvailable modes:")
+      d.add("\n\nAvailable focus_modes:")
       for m in modes:
         d.add("\n  - `" & m.name & "`: " & m.description)
   t.cachedDescription = d
@@ -62,9 +63,9 @@ method parameters*(t: SpawnTool): Table[string, JsonNode] =
         "type": "string",
         "description": "Short label for display (e.g. 'plan-v6-refactor', 'find-auth-handling')"
       },
-      "mode": {
+      "focus_mode": {
         "type": "string",
-        "description": "Focus mode the subagent runs in (Plan / Explore / etc — see tool description for what's available). Empty = default mode (full tool access)."
+        "description": "Focus mode the subagent runs in (Plan / Explore / etc — see tool description for what's available). Empty = default focus_mode (full tool access)."
       },
       "await": {
         "type": "boolean",
@@ -72,7 +73,7 @@ method parameters*(t: SpawnTool): Table[string, JsonNode] =
       },
       "agent": {
         "type": "string",
-        "description": "Optional override to run AS A DIFFERENT AGENT (e.g. delegate to Atlas). Different from `mode` — this swaps identity, mode just changes focus within your own identity."
+        "description": "Optional override to run AS A DIFFERENT AGENT (e.g. delegate to Atlas). Different from `focus_mode` — this swaps identity; focus_mode just changes focus within your own identity."
       }
     },
     "required": %["task"]
@@ -90,7 +91,9 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
     agentName = args["agent"].getStr().strip()
     if agentName == "": return "Error: 'agent' must not be empty"
 
-  let mode = if args.hasKey("mode"): args["mode"].getStr().strip() else: ""
+  let focusMode =
+    if args.hasKey("focus_mode"): args["focus_mode"].getStr().strip()
+    else: ""
   let waitForResult = args.hasKey("await") and
                       args["await"].kind == JBool and
                       args["await"].getBool()
@@ -98,18 +101,18 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
   if t.manager == nil:
     return "Error: Spawn tool not connected to SubagentManager"
 
-  if mode.len > 0 and not t.manager.hasMode(mode):
-    let available = t.manager.availableModes()
+  if focusMode.len > 0 and not t.manager.hasFocusMode(focusMode):
+    let available = t.manager.availableFocusModes()
     var names: seq[string]
     for m in available: names.add(m.name)
-    return "Error: unknown mode '" & mode & "'. " &
+    return "Error: unknown focus_mode '" & focusMode & "'. " &
            (if names.len > 0: "Available: " & names.join(", ")
-            else: "No modes are configured for this company.")
+            else: "No focus_modes are configured for this company.")
 
   let taskObj = t.manager.spawn(task, label, t.channel, t.chatID,
                                 t.sessionKey, t.senderID, t.recipientID,
                                 t.role, t.agentName, t.agentID,
-                                t.logicalUserID, agentName, mode)
+                                t.logicalUserID, agentName, focusMode)
 
   if waitForResult:
     # Synchronous shape: poll until the task finishes, then return its
@@ -133,5 +136,5 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
     return taskObj.result
 
   return "Spawned subagent '" & label & "' with ID " & taskObj.id &
-         (if mode.len > 0: " in mode '" & mode & "'" else: "") &
+         (if focusMode.len > 0: " in focus_mode '" & focusMode & "'" else: "") &
          " for task: " & task

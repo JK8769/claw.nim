@@ -26,7 +26,8 @@ type
     originAgentID*: string
     originLogicalUserID*: string
     agentOverride*: string
-    mode*: string             ## Focus-mode name (from cfg.modes); empty = default.
+    focus_mode*: string       ## Focus-mode name (from cfg.focus_modes);
+                              ## empty = default.
     status*: string
     result*: string
     created*: int64
@@ -44,7 +45,7 @@ type
                               ## parent agent's `max_tool_iterations`
                               ## so subagents have the same headroom
                               ## as their orchestrator.
-    modes*: Table[string, cfg_mod.ModeConfig]
+    focus_modes*: Table[string, cfg_mod.FocusMode]
                               ## Focus modes available to subagent tasks,
                               ## keyed by name. Looked up at spawn time.
 
@@ -53,7 +54,7 @@ proc newSubagentManager*(provider: providers_types.LLMProvider,
                          tools: tools_registry.ToolRegistry = nil,
                          graph: WorldGraph = nil,
                          maxIterations: int = 20,
-                         modes: seq[cfg_mod.ModeConfig] = @[]): SubagentManager =
+                         focus_modes: seq[cfg_mod.FocusMode] = @[]): SubagentManager =
   var sm = SubagentManager(
     tasks: initTable[string, SubagentTask](),
     provider: provider,
@@ -63,42 +64,43 @@ proc newSubagentManager*(provider: providers_types.LLMProvider,
     graph: graph,
     nextID: 1,
     maxIterations: maxIterations,
-    modes: initTable[string, cfg_mod.ModeConfig]()
+    focus_modes: initTable[string, cfg_mod.FocusMode]()
   )
-  for m in modes: sm.modes[m.name] = m
+  for m in focus_modes: sm.focus_modes[m.name] = m
   initLock(sm.lock)
   return sm
 
-proc availableModes*(sm: SubagentManager): seq[cfg_mod.ModeConfig] =
-  ## List the registered modes — used by the spawn tool to render its
-  ## description (so the LLM sees what modes are available without
-  ## the operator having to maintain a parallel list).
-  for m in sm.modes.values: result.add(m)
+proc availableFocusModes*(sm: SubagentManager): seq[cfg_mod.FocusMode] =
+  ## List the registered focus modes — used by the spawn tool to
+  ## render its description (so the LLM sees what modes are available
+  ## without the operator having to maintain a parallel list).
+  for m in sm.focus_modes.values: result.add(m)
 
-proc resolveMode*(sm: SubagentManager, name: string): cfg_mod.ModeConfig =
-  ## Look up a mode by name with case-folded fallback. The DSL declares
-  ## modes Capitalised (`focus "Plan"`); the LLM is statistically likely
-  ## to emit `plan`, `Plan `, or `PLAN`. Match exactly first, then walk
-  ## the keys with `cmpIgnoreCase` so reasonable typings still resolve.
-  if name.len == 0: return cfg_mod.ModeConfig()
+proc resolveFocusMode*(sm: SubagentManager, name: string): cfg_mod.FocusMode =
+  ## Look up a focus mode by name with case-folded fallback. The DSL
+  ## declares modes Capitalised (`focus_mode "Plan"`); the LLM is
+  ## statistically likely to emit `plan`, `Plan `, or `PLAN`. Match
+  ## exactly first, then walk the keys with `cmpIgnoreCase` so
+  ## reasonable typings still resolve.
+  if name.len == 0: return cfg_mod.FocusMode()
   let trimmed = name.strip
-  if sm.modes.hasKey(trimmed): return sm.modes[trimmed]
-  for k, v in sm.modes:
+  if sm.focus_modes.hasKey(trimmed): return sm.focus_modes[trimmed]
+  for k, v in sm.focus_modes:
     if cmpIgnoreCase(k, trimmed) == 0: return v
-  cfg_mod.ModeConfig()
+  cfg_mod.FocusMode()
 
-proc hasMode*(sm: SubagentManager, name: string): bool {.inline.} =
-  ## Companion to `resolveMode`. A non-empty name resolves iff the
-  ## resulting ModeConfig has a non-empty `name` field — empty name
-  ## is the sentinel "no mode resolved" we get from `ModeConfig()`.
-  name.len > 0 and resolveMode(sm, name).name.len > 0
+proc hasFocusMode*(sm: SubagentManager, name: string): bool {.inline.} =
+  ## Companion to `resolveFocusMode`. A non-empty name resolves iff
+  ## the resulting FocusMode has a non-empty `name` field — empty
+  ## name is the sentinel "no mode resolved" we get from `FocusMode()`.
+  name.len > 0 and resolveFocusMode(sm, name).name.len > 0
 
 proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
   task.status = "running"
   task.created = getTime().toUnix * 1000
 
   # Resolve focus mode (empty / unknown = default, no override).
-  let mode = resolveMode(sm, task.mode)
+  let mode = resolveFocusMode(sm, task.focus_mode)
 
   # Model resolution: mode override > agent profile override > parent's default.
   let model =
@@ -266,7 +268,7 @@ proc spawn*(sm: SubagentManager,
             originSenderID, originRecipientID, originRole,
             originAgentName, originAgentID, originLogicalUserID: string,
             agentOverride: string = "",
-            mode: string = ""): SubagentTask =
+            focus_mode: string = ""): SubagentTask =
   acquire(sm.lock)
   let taskID = "subagent-" & $sm.nextID
   sm.nextID += 1
@@ -285,7 +287,7 @@ proc spawn*(sm: SubagentManager,
     originAgentID: originAgentID,
     originLogicalUserID: originLogicalUserID,
     agentOverride: agentOverride,
-    mode: mode,
+    focus_mode: focus_mode,
     status: "running",
     created: getTime().toUnix * 1000
   )

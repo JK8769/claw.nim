@@ -200,7 +200,7 @@ type
     skills*: seq[ClawSkill]
     memoranda*: seq[ClawMemorandum]
     competencies*: seq[ClawCompetency]
-    modes*: seq[ClawMode]
+    focus_modes*: seq[ClawMode]
     teams*: seq[ClawTeam]
     labs*: seq[ClawLab]
     portal*: ClawPortal
@@ -536,19 +536,20 @@ template competency*(nm: string, body: untyped) =
     body
     spec.competencies.add(c)
 
-template focus*(nm: string, body: untyped) =
+template focus_mode*(nm: string, body: untyped) =
   ## Declare a focus mode an agent can enter for a single subagent
   ## task. Adds a tool subset + prompt addendum on top of the calling
   ## agent's identity — same agent, different hat.
   ##
-  ## Named `focus` (not `mode`) because nimscript already exports a
-  ## global `mode*: ScriptMode` which shadows any same-named template
-  ## at the BASE.nims call site. The semantic — "focusing the agent
-  ## on this kind of work" — is faithful; the runtime type stays
-  ## `ClawMode` / `cfg.modes` because there's no collision there.
+  ## The keyword is `focus_mode` (not bare `mode`) because NimScript
+  ## already exports a global `mode*: ScriptMode` which shadows a
+  ## same-named template at the BASE.nims call site. `focus_mode`
+  ## clears the collision while keeping the canonical word in the
+  ## DSL, the JSON config, the runtime, and the LLM tool parameter
+  ## — one term everywhere.
   ##
   ## Example:
-  ##   focus "Plan":
+  ##   focus_mode "Plan":
   ##     summary "Software architect — write step-by-step plans, no implementation."
   ##     uses "read_file", "find", "grep"
   ##     model "deepseek-v4-pro"
@@ -570,7 +571,7 @@ template focus*(nm: string, body: untyped) =
     template promptAddendum(s: string) {.used.} = m.promptAddendum = s
     template prompt(s: string) {.used.} = m.promptAddendum = s
     body
-    spec.modes.add(m)
+    spec.focus_modes.add(m)
 
 template team*(nm: string, body: untyped) =
   ## Declare a team — a named group of agents working on a shared function.
@@ -1056,9 +1057,9 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
         }
       }
     },
-    "modes": (proc(): JsonNode =
+    "focus_modes": (proc(): JsonNode =
       result = newJArray()
-      for m in spec.modes:
+      for m in spec.focus_modes:
         result.add(%*{
           "name": m.name,
           "description": m.description,

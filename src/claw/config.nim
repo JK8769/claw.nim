@@ -171,10 +171,11 @@ type
   TrustConfig* = object
     roles*: seq[TrustRoleConfig]
 
-  ModeConfig* = object
-    ## Focus mode declaration loaded from BASE.json. Mirrors
-    ## `clawdsl.ClawMode` — temporary specialisation an agent
-    ## enters for a single subagent task.
+  FocusMode* = object
+    ## Focus-mode declaration loaded from BASE.json. Same canonical
+    ## name as the DSL keyword (`focus_mode "Plan":`) and the spawn
+    ## tool parameter (`focus_mode: "Plan"`) — one word, one concept,
+    ## one place each consumer reads it from.
     name*: string
     description*: string
     uses*: seq[string]
@@ -192,7 +193,7 @@ type
     gateway*: GatewayConfig
     tools*: ToolsConfig
     trust*: TrustConfig
-    modes*: seq[ModeConfig]
+    focus_modes*: seq[FocusMode]
 
 proc expandHome*(path: string): string =
   if path == "": return path
