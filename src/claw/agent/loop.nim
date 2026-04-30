@@ -2,6 +2,7 @@ import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets]
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
 import ../providers/models_catalog
 import ../providers/sanitize
+import ../providers/tool_loop
 export sanitize.sanitizeForProvider
 import ../skill_grant
 import ../billing/[subscription as sub_mod, usage as usage_mod]
@@ -848,7 +849,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         elif loopResult == lrWarn:
           let msg = loopDetector.message()
           warnCF("agent", "Tool loop warning", {"tool": tc.name, "streak": $loopDetector.streak}.toTable)
-          currentMessages.add(providers_types.Message(role: "tool", content: msg, tool_call_id: tc.id, name: tc.name))
+          appendToolResult(currentMessages, tc, msg)
           continue  # Skip execution, deliver the warning as the tool result
 
         infoCF("agent", "Tool call: " & tc.name, {"tool": tc.name, "iteration": $iteration, "role": al.role}.toTable)
@@ -884,7 +885,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         # Record in tool call log for forced summary context
         let resultPreview = if result.len > 200: result[0..199] & "..." else: result
         toolCallLog.add("[" & $iteration & "] " & tc.name & " → " & resultPreview)
-        let toolResultMsg = providers_types.Message(role: "tool", content: result, tool_call_id: tc.id, name: tc.name)
+        let toolResultMsg = makeToolResult(tc, result)
         currentMessages.add(toolResultMsg)
         al.sessions.addFullMessage(opts.sessionKey, toolResultMsg)
 

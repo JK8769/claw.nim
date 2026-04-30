@@ -1,6 +1,7 @@
 import std/[asyncdispatch, tables, locks, times, json, strutils]
 import ../providers/types as providers_types
 import ../providers/sanitize
+import ../providers/tool_loop
 import ../bus
 import ../bus_types
 import ../agent/xml_tools
@@ -142,10 +143,10 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
           tool_calls: response.tool_calls))
 
         for tc in response.tool_calls:
-          let result = await sm.tools.executeWithContext(tc.name, tc.arguments, toolCtx)
-          currentMessages.add(providers_types.Message(role: providers_types.RoleTool, content: result, tool_call_id: tc.id, name: tc.name))
-          let preview = if result.len > 80: result[0..79] & "..." else: result
-          toolCallLog.add("[" & $iteration & "] " & tc.name & " → " & preview)
+          let res = await sm.tools.executeWithContext(
+            tc.name, tc.arguments, toolCtx)
+          appendToolResult(currentMessages, tc, res)
+          toolCallLog.add(formatToolLogEntry(tc, res, iteration))
 
     acquire(sm.lock)
     task.status = "completed"
