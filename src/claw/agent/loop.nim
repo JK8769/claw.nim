@@ -504,16 +504,31 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
       for tc in m.tool_calls:
         if tc.id.len > 0: expected.incl(tc.id)
       var responded = initHashSet[string]()
+      var followingTools = 0
       var j = i + 1
       while j < messages.len and messages[j].role == "tool":
+        inc followingTools
         if messages[j].tool_call_id.len > 0:
           responded.incl(messages[j].tool_call_id)
         inc j
-      var allCovered = true
-      for need in expected:
-        if need notin responded:
-          allCovered = false
-          break
+      # Two-pronged check:
+      #  (a) COUNT: at least as many tool messages must immediately
+      #      follow as the assistant has tool_calls. Catches the case
+      #      where tool_calls were emitted but no responses got
+      #      appended (mid-loop crash, etc.) OR where tool_calls have
+      #      empty/missing IDs (which would make the ID-coverage check
+      #      vacuously true). The provider counts tool messages
+      #      structurally; we must too.
+      #  (b) ID COVERAGE: each non-empty tool_call_id in the assistant
+      #      message must appear in some following tool message's
+      #      tool_call_id. Catches reordering / mismatch even when
+      #      counts line up.
+      var allCovered = followingTools >= m.tool_calls.len
+      if allCovered:
+        for need in expected:
+          if need notin responded:
+            allCovered = false
+            break
       if not allCovered:
         m.tool_calls = @[]
         if m.content.len == 0:
