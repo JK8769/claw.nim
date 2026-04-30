@@ -488,12 +488,11 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
   var clean: seq[providers_types.Message] = @[]
   var droppedOrphans = 0
   var strippedTcs = 0
-  # `lastHadToolCalls` stays TRUE across a run of consecutive tool
-  # messages immediately following an assistant.tool_calls turn, so
-  # the second/third/Nth tool message in a multi-tool turn doesn't
-  # get falsely dropped (which was the bug — using `clean[^1]` reset
-  # to the just-added tool message after the first tool, marking
-  # all subsequent siblings as orphans).
+  # `lastHadToolCalls` reflects whether the most recent NON-tool
+  # message in `clean` was an assistant with tool_calls. Tool messages
+  # themselves don't reset the flag — they share their parent's
+  # context. Only when a non-tool message is added does the flag
+  # update to reflect that new parent context.
   var lastHadToolCalls = false
   var i = 0
   while i < messages.len:
@@ -503,7 +502,11 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
         inc droppedOrphans
         inc i
         continue
-    elif m.role == "assistant" and m.tool_calls.len > 0:
+      clean.add(m)
+      inc i
+      continue   # flag intentionally NOT updated — stays true for siblings
+    # Below this line, m is guaranteed NOT to be a tool message.
+    if m.role == "assistant" and m.tool_calls.len > 0:
       var expected = initHashSet[string]()
       for tc in m.tool_calls:
         if tc.id.len > 0: expected.incl(tc.id)
@@ -519,10 +522,9 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
       #  (a) COUNT: at least as many tool messages must immediately
       #      follow as the assistant has tool_calls. Catches the case
       #      where tool_calls were emitted but no responses got
-      #      appended (mid-loop crash, etc.) OR where tool_calls have
-      #      empty/missing IDs (which would make the ID-coverage check
-      #      vacuously true). The provider counts tool messages
-      #      structurally; we must too.
+      #      appended OR where tool_calls have empty/missing IDs
+      #      (which would make the ID-coverage check vacuously true).
+      #      The provider counts tool messages structurally; we must too.
       #  (b) ID COVERAGE: each non-empty tool_call_id in the assistant
       #      message must appear in some following tool message's
       #      tool_call_id. Catches reordering / mismatch even when
@@ -539,10 +541,6 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
           m.content = "[tool execution interrupted — results not preserved]"
         inc strippedTcs
     clean.add(m)
-    # Update flag AFTER adding `m` to clean, using the (possibly
-    # stripped) state. So if we just stripped tool_calls from this
-    # assistant, the following tool messages will correctly become
-    # orphans on the next iteration.
     lastHadToolCalls =
       (m.role == "assistant" and m.tool_calls.len > 0)
     inc i
