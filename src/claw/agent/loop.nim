@@ -354,18 +354,62 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   let useXmlTools = isXmlToolProvider(al.model)
   let toolCtx = buildToolContext(al, opts, logicalUserID)
 
-  # Sanitize: remove orphaned tool messages (tool without preceding tool_calls)
+  # Sanitize history before sending to the provider. Two failure modes
+  # to handle:
+  #
+  # 1) Tool message without a preceding assistant.tool_calls — orphan.
+  #    Drop it. (Original behaviour.)
+  #
+  # 2) Assistant.tool_calls without all tool_call_ids covered by
+  #    immediately-following `tool` messages — incomplete pairing.
+  #    Strip the tool_calls field; otherwise the provider rejects with
+  #    400 "An assistant message with 'tool_calls' must be followed by
+  #    tool messages responding to each tool_call_id". This happens
+  #    when (a) tool results were stored as `role: "user"` in legacy
+  #    sessions and lost their pairing on replay, or (b) the gateway
+  #    crashed mid-tool-execution and the session has the assistant
+  #    turn but not the tool results.
   block:
     var clean: seq[providers_types.Message] = @[]
-    var lastHadToolCalls = false
-    for m in currentMessages:
+    var droppedOrphans = 0
+    var strippedTcs = 0
+    var i = 0
+    while i < currentMessages.len:
+      var m = currentMessages[i]
       if m.role == "tool":
-        if not lastHadToolCalls:
-          continue  # Skip orphaned tool result
+        let prevHadTcs =
+          clean.len > 0 and clean[^1].role == "assistant" and
+          clean[^1].tool_calls.len > 0
+        if not prevHadTcs:
+          inc droppedOrphans
+          inc i
+          continue
+      elif m.role == "assistant" and m.tool_calls.len > 0:
+        var expected = initHashSet[string]()
+        for tc in m.tool_calls:
+          if tc.id.len > 0: expected.incl(tc.id)
+        var responded = initHashSet[string]()
+        var j = i + 1
+        while j < currentMessages.len and currentMessages[j].role == "tool":
+          if currentMessages[j].tool_call_id.len > 0:
+            responded.incl(currentMessages[j].tool_call_id)
+          inc j
+        var allCovered = true
+        for need in expected:
+          if need notin responded:
+            allCovered = false
+            break
+        if not allCovered:
+          m.tool_calls = @[]
+          if m.content.len == 0:
+            m.content = "[tool execution interrupted — results not preserved]"
+          inc strippedTcs
       clean.add(m)
-      lastHadToolCalls = (m.role == "assistant" and m.tool_calls.len > 0)
-    if clean.len != currentMessages.len:
-      warnCF("agent", "Removed orphaned tool messages from history", {"removed": $(currentMessages.len - clean.len)}.toTable)
+      inc i
+    if droppedOrphans > 0 or strippedTcs > 0:
+      warnCF("agent", "Sanitized history",
+             {"orphan_tools_dropped": $droppedOrphans,
+              "incomplete_tool_calls_stripped": $strippedTcs}.toTable)
       currentMessages = clean
 
   while iteration < al.maxIterations and finalContent == "":
