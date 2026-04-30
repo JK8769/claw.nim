@@ -89,11 +89,11 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
   if useXmlTools and sm.tools != nil:
     let systemPrompt = "You are a subagent. Complete the given task independently and report the result.\n\n" & 
                       buildToolInstructions(sm.tools)
-    currentMessages.add(providers_types.Message(role: "system", content: systemPrompt))
+    currentMessages.add(providers_types.Message(role: providers_types.RoleSystem, content: systemPrompt))
   else:
-    currentMessages.add(providers_types.Message(role: "system", content: "You are a subagent. Complete the given task independently and report the result."))
+    currentMessages.add(providers_types.Message(role: providers_types.RoleSystem, content: "You are a subagent. Complete the given task independently and report the result."))
   
-  currentMessages.add(providers_types.Message(role: "user", content: task.task))
+  currentMessages.add(providers_types.Message(role: providers_types.RoleUser, content: task.task))
 
   var iteration = 0
   let maxIterations = sm.maxIterations
@@ -120,7 +120,7 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
           break
 
         currentMessages.add(providers_types.Message(
-          role: "assistant", content: response.content,
+          role: providers_types.RoleAssistant, content: response.content,
           reasoning_content: response.reasoning_content))
 
         var xmlResults: seq[XmlToolResult] = @[]
@@ -130,20 +130,20 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
           let preview = if result.len > 80: result[0..79] & "..." else: result
           toolCallLog.add("[" & $iteration & "] " & xmlCall.name & " → " & preview)
 
-        currentMessages.add(providers_types.Message(role: "user", content: formatToolResults(xmlResults)))
+        currentMessages.add(providers_types.Message(role: providers_types.RoleUser, content: formatToolResults(xmlResults)))
       else:
         if response.tool_calls.len == 0:
           task.result = response.content
           break
 
         currentMessages.add(providers_types.Message(
-          role: "assistant", content: response.content,
+          role: providers_types.RoleAssistant, content: response.content,
           reasoning_content: response.reasoning_content,
           tool_calls: response.tool_calls))
 
         for tc in response.tool_calls:
           let result = await sm.tools.executeWithContext(tc.name, tc.arguments, toolCtx)
-          currentMessages.add(providers_types.Message(role: "tool", content: result, tool_call_id: tc.id, name: tc.name))
+          currentMessages.add(providers_types.Message(role: providers_types.RoleTool, content: result, tool_call_id: tc.id, name: tc.name))
           let preview = if result.len > 80: result[0..79] & "..." else: result
           toolCallLog.add("[" & $iteration & "] " & tc.name & " → " & preview)
 

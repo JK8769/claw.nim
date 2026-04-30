@@ -44,7 +44,7 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
   var i = 0
   while i < messages.len:
     var m = messages[i]
-    if m.role == "tool":
+    if m.isTool:
       if not lastHadToolCalls:
         inc droppedOrphans
         inc i
@@ -53,14 +53,14 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
       inc i
       continue   # flag intentionally NOT updated
     # Below: m is NOT a tool message.
-    if m.role == "assistant" and m.tool_calls.len > 0:
+    if m.hasToolCalls:
       var expected = initHashSet[string]()
       for tc in m.tool_calls:
         if tc.id.len > 0: expected.incl(tc.id)
       var responded = initHashSet[string]()
       var followingTools = 0
       var j = i + 1
-      while j < messages.len and messages[j].role == "tool":
+      while j < messages.len and messages[j].isTool:
         inc followingTools
         if messages[j].tool_call_id.len > 0:
           responded.incl(messages[j].tool_call_id)
@@ -77,8 +77,7 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
           m.content = "[tool execution interrupted — results not preserved]"
         inc strippedTcs
     clean.add(m)
-    lastHadToolCalls =
-      (m.role == "assistant" and m.tool_calls.len > 0)
+    lastHadToolCalls = m.hasToolCalls
     inc i
   if droppedOrphans > 0 or strippedTcs > 0:
     warnCF("agent", "Sanitized history",
