@@ -1005,10 +1005,23 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                "(specific session, Admin+ if not your own)."
       let agentName = parts[2]
       let agentKey = agentName.toLowerAscii
-      if not gCtx.offices.hasKey(agentKey):
-        return "Agent `" & agentName & "` is not in office or doesn't " &
-               "exist. Try `/agent list` to see who's available."
-      let al2 = gCtx.offices[agentKey]
+      # Validate against declared agents — `gCtx.offices` is lazy-loaded
+      # so an agent who hasn't received a message since gateway start
+      # has no entry there yet. Don't reject just because the office
+      # isn't materialised; reject only if the name isn't a real agent.
+      var declared = false
+      for a in cfg[].agents.named:
+        if a.name.toLowerAscii == agentKey:
+          declared = true
+          break
+      if not declared:
+        return "Agent `" & agentName & "` is not declared in this " &
+               "company. Try `/agent list` to see who's available."
+      # Load the office on demand (idempotent — returns the existing
+      # AgentLoop if it's already up). This is the same path the
+      # message dispatcher uses, so `/session status atlas` works
+      # whether or not Atlas has handled a message in this run.
+      let al2 = ensureOffice(agentName)
 
       # Three modes:
       #   1. nc:id specified  → that session's detail (Admin+ if not own)
@@ -1087,10 +1100,19 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                "another user's session)."
       let agentName = parts[2]
       let agentKey = agentName.toLowerAscii
-      if not gCtx.offices.hasKey(agentKey):
-        return "Agent `" & agentName & "` is not in office or doesn't " &
-               "exist. Try `/agent list` to see who's available."
-      let al2 = gCtx.offices[agentKey]
+      # Same lazy-office handling as `/session status` — accept any
+      # declared agent, materialise the office on demand. Without this
+      # an agent who hasn't received a message since gateway start
+      # would be unreachable for `/session clear`.
+      var declared = false
+      for a in cfg[].agents.named:
+        if a.name.toLowerAscii == agentKey:
+          declared = true
+          break
+      if not declared:
+        return "Agent `" & agentName & "` is not declared in this " &
+               "company. Try `/agent list` to see who's available."
+      let al2 = ensureOffice(agentName)
       # Resolve target nc:id. With no arg, it's the caller's own.
       var targetNc = ""
       if parts.len >= 4:
