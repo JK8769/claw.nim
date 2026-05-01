@@ -2,7 +2,7 @@
 ## Import this in a .nims file and run with `nim e MyCompany.nims`.
 ## Generates ~/.nimclaw-<OrgName>/ with BASE.json, workspace, skills, etc.
 
-import std/[json, os, strutils, tables, options]
+import std/[json, os, strutils, tables, options, sets]
 
 # ── Spec Types ────────────────────────────────────────────────────
 
@@ -687,18 +687,87 @@ proc getProviderDefault(name: string): ProviderDefault =
 
 # ── BASE.json Builder ─────────────────────────────────────────────
 
+# ── Persistent nc:id allocator ────────────────────────────────────
+#
+# nc:ids are stable identities, like database primary keys: assigned
+# once per entity, never reassigned, never recycled. Without this
+# discipline, adding an agent in BASE.nims shifts every existing
+# entity's nc:id by one, which orphans their session/memory/workstation
+# files (which are stored at filesystem paths keyed by nc:id).
+#
+# The persistent record IS the existing BASE.json's @graph — that's
+# the prior-state snapshot from the last build. At the start of a
+# rebuild we load it as a name → nc:id table; subsequent calls to
+# `assignNcId(name)` reuse the prior assignment if known, otherwise
+# allocate the next unused integer.
+#
+# nc:1 is reserved for the org and is never reassigned to anyone else.
+var
+  gPriorIds: Table[string, int]    ## name (lowerAscii) → prior nc:id, from existing BASE.json
+  gAssignedIds: Table[string, int] ## allocations made during this build
+  gUsedIds: HashSet[int]            ## ids known to be in use during this build
+
+proc resetEntityIdAllocator() =
+  gPriorIds = initTable[string, int]()
+  gAssignedIds = initTable[string, int]()
+  gUsedIds = initHashSet[int]()
+  gUsedIds.incl(1)  # nc:1 reserved for the org
+
+proc loadPriorEntityIds*(serviceDir: string) =
+  ## Read the existing BASE.json @graph (if any) and use it as the
+  ## stable baseline for this build. First-time builds (no prior file)
+  ## fall through to plain allocation order.
+  resetEntityIdAllocator()
+  let basePath = serviceDir / "BASE.json"
+  if not fileExists(basePath): return
+  var j: JsonNode
+  try:
+    j = parseJson(readFile(basePath))
+  except CatchableError:
+    return  # malformed prior file — start fresh, don't crash
+  if not j.hasKey("@graph") or j["@graph"].kind != JArray: return
+  for ent in j["@graph"]:
+    if ent.kind != JObject: continue
+    let id = ent{"id"}.getStr()
+    let name = ent{"name"}.getStr()
+    if id.len == 0 or name.len == 0: continue
+    if not id.startsWith("nc:"): continue
+    var n: int
+    try:
+      n = parseInt(id["nc:".len .. ^1])
+    except CatchableError:
+      continue
+    gPriorIds[name.toLowerAscii] = n
+    gUsedIds.incl(n)
+
+proc assignNcId(name: string): int =
+  ## Returns the nc:id integer for `name`, preserving prior assignments.
+  ## Always returns the same int for the same name within one build.
+  ## New entities (no prior assignment, not yet seen this build) get
+  ## the lowest unused integer ≥ 2 — `nc:1` stays reserved for the org.
+  let key = name.toLowerAscii
+  if key in gAssignedIds: return gAssignedIds[key]
+  if key in gPriorIds:
+    let id = gPriorIds[key]
+    gAssignedIds[key] = id
+    return id
+  var id = 2
+  while id in gUsedIds: inc id
+  gAssignedIds[key] = id
+  gUsedIds.incl(id)
+  return id
+
 proc resolveEntityId(spec: ClawSpec, name: string): string =
-  ## Resolve a person/agent name to its nc:ID.
-  ## Assignment: nc:1 = org, nc:2.. = agents, then persons.
-  var nextId = 2
+  ## Resolve a person/agent name to its nc:ID. Stable across rebuilds:
+  ## prior assignments live in BASE.json's @graph (loaded by
+  ## `loadPriorEntityIds`); this proc consults that record before
+  ## allocating new IDs. Adding new entities never shifts existing ones.
   for a in spec.agents:
     if a.name.toLowerAscii == name.toLowerAscii:
-      return "nc:" & $nextId
-    inc nextId
+      return "nc:" & $assignNcId(a.name)
   for p in spec.persons:
     if p.name.toLowerAscii == name.toLowerAscii:
-      return "nc:" & $nextId
-    inc nextId
+      return "nc:" & $assignNcId(p.name)
   return "nc:?" # unresolved — will be visible in output
 
 proc buildIdentifiers(ids: seq[tuple[channel, id: string]]): JsonNode =
@@ -720,12 +789,12 @@ proc buildRelations(spec: ClawSpec, rels: seq[ClawRelation]): JsonNode =
 
 proc buildGraph(spec: ClawSpec): JsonNode =
   result = newJArray()
-  var nextId = 2
 
-  # Agents
+  # Agents — nc:id preserved across rebuilds via `assignNcId`, which
+  # consults the prior BASE.json @graph loaded by `loadPriorEntityIds`.
   for a in spec.agents:
     var entity = %*{
-      "id": "nc:" & $nextId,
+      "id": "nc:" & $assignNcId(a.name),
       "kind": "AI",
       "name": a.name,
     }
@@ -768,12 +837,11 @@ proc buildGraph(spec: ClawSpec): JsonNode =
     if a.serves.len > 0:
       entity["serves"] = buildRelations(spec, a.serves)
     result.add(entity)
-    inc nextId
 
-  # Persons
+  # Persons — same stable allocation
   for p in spec.persons:
     var entity = %*{
-      "id": "nc:" & $nextId,
+      "id": "nc:" & $assignNcId(p.name),
       "kind": "Person",
       "name": p.name,
     }
@@ -789,9 +857,8 @@ proc buildGraph(spec: ClawSpec): JsonNode =
       # invite-attached metadata later (plans, quotas, etc.).
       entity["custom"] = %*{"allowed_skills": arr}
     result.add(entity)
-    inc nextId
 
-  # Organization (nc:1) — added last but has id nc:1
+  # Organization (nc:1) — always reserved, never reassigned
   var orgEntity = %*{
     "id": "nc:1",
     "kind": "Corporate",
@@ -1801,6 +1868,13 @@ proc build*(s: var ClawSpec) =
 
   let serviceDir = getHomeDir() / ".nimclaw-" & s.org.name
   let workspace = serviceDir / "workspace"
+
+  # Load prior nc:id assignments from existing BASE.json @graph BEFORE
+  # any code path touches `assignNcId` / `resolveEntityId`. First build
+  # (no prior file) starts from empty assignments, allocating in
+  # declaration order. Subsequent builds preserve every entity's nc:id
+  # — adding new agents/persons never reshuffles existing ones.
+  loadPriorEntityIds(serviceDir)
 
   echo "Building service: " & s.org.name
   echo "  Target: " & serviceDir
