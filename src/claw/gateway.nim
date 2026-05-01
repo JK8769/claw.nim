@@ -976,12 +976,16 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     if parts.len < 2 or parts[1] == "help":
       return "**`/session` — conversation-state management**\n\n" &
              "  `/session status <agent>`\n" &
-             "    Show YOUR session's context utilisation with that agent\n" &
-             "    — message count, token estimate, % of context window,\n" &
-             "    and how close you are to the 75% summarisation threshold.\n" &
+             "    Regular user: show YOUR session's context utilisation\n" &
+             "    with that agent — message count, token estimate,\n" &
+             "    % of context window, threshold.\n" &
+             "    🔒 Admin: show ALL of the agent's sessions across all\n" &
+             "    users (operator overview, sorted by token weight).\n" &
              "    Example: `/session status lexi`\n\n" &
-             "  `/session status <agent> <nc:id>`   🔒 Admin\n" &
-             "    Same, for another user's session.\n\n" &
+             "  `/session status <agent> <nc:id>`\n" &
+             "    Detail view of a specific session. 🔒 Admin required\n" &
+             "    if the nc:id isn't your own.\n" &
+             "    Example: `/session status lexi nc:5`\n\n" &
              "  `/session clear <agent>`\n" &
              "    Clear YOUR session with that agent. The agent will\n" &
              "    forget your conversation history on next turn.\n" &
@@ -996,29 +1000,69 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     let sub = parts[1]
     if sub == "status":
       if parts.len < 3:
-        return "Usage: `/session status <agent>` (your session with that\n" &
-               "agent) or `/session status <agent> <nc:id>` (Admin+ — " &
-               "another user's session)."
+        return "Usage: `/session status <agent>` (Admin+: all sessions; " &
+               "regular: your own) or `/session status <agent> <nc:id>` " &
+               "(specific session, Admin+ if not your own)."
       let agentName = parts[2]
       let agentKey = agentName.toLowerAscii
       if not gCtx.offices.hasKey(agentKey):
         return "Agent `" & agentName & "` is not in office or doesn't " &
                "exist. Try `/agent list` to see who's available."
       let al2 = gCtx.offices[agentKey]
-      # Resolve target nc:id — caller's own by default; another user
-      # only with Admin+. Same gating as `/session clear` because the
-      # session metadata is per-user-private.
-      var targetNc = ""
+
+      # Three modes:
+      #   1. nc:id specified  → that session's detail (Admin+ if not own)
+      #   2. no nc:id, Admin+ → ALL sessions for the agent (operator overview)
+      #   3. no nc:id, plain  → caller's own session detail
       if parts.len >= 4:
-        if callerPermGate < pmAdmin:
-          return "Only Admin or SuperAdmin can view another user's " &
-                 "session. (Use `/session status " & agentName &
-                 "` to see your own.)"
         if not parts[3].startsWith("nc:"):
           return "Error: third argument must be an `nc:id` " &
                  "(e.g. `nc:5`), got `" & parts[3] & "`."
-        targetNc = parts[3]
+        let targetNc = parts[3]
+        # Resolve caller's own nc:id to compare; non-Admin can only
+        # view their own.
+        var callerNc = ""
+        let workspace0 = cfg[].workspacePath()
+        let g0 = loadWorld(workspace0)
+        if g0 != nil:
+          let channelKey0 =
+            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+              msg.channel & ":" & msg.metadata["app_id"]
+            else: msg.channel
+          let (entID0, _) = g0.resolveUserGraph(channelKey0, msg.sender_id)
+          if uint32(entID0) > 0:
+            callerNc = toAlias(entID0)
+        if callerPermGate < pmAdmin and targetNc != callerNc:
+          return "Only Admin or SuperAdmin can view another user's " &
+                 "session. (Use `/session status " & agentName &
+                 "` to see your own.)"
+        let sessionKey = targetNc.replace(":", "_")
+        let s = al2.sessionStatus(sessionKey)
+        return formatSessionStatus(s)
+
+      # No nc:id arg — Admin+ gets the operator overview, regular caller
+      # gets their own detail. The Admin overview is the answer to
+      # "how is Lexi doing across ALL users?"
+      if callerPermGate >= pmAdmin:
+        let workspace2 = cfg[].workspacePath()
+        let g2 = loadWorld(workspace2)
+        # Build a sessionKey → display-name lookup so the table reads
+        # "nc:5  Jerry" instead of just nc-id digits. Walk the graph
+        # entities, key by their nc-as-underscore form.
+        var nameByKey = initTable[string, string]()
+        if g2 != nil:
+          for entID, ent in g2.entities:
+            let alias = toAlias(entID)
+            let key = alias.replace(":", "_")
+            if ent.name.len > 0:
+              nameByKey[key] = ent.name
+        let statuses = al2.allSessionStatuses()
+        return formatSessionList(statuses, al2.agentName, al2.model,
+                                  al2.contextWindow, (al2.contextWindow * 75) div 100,
+                                  nameByKey)
       else:
+        # Plain user — their own session.
+        var targetNc = ""
         let workspace = cfg[].workspacePath()
         let g = loadWorld(workspace)
         if g != nil:
@@ -1033,9 +1077,9 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           return "Couldn't resolve your own `nc:id` from this channel. " &
                  "Pass it explicitly: " &
                  "`/session status " & agentName & " nc:N`."
-      let sessionKey = targetNc.replace(":", "_")
-      let s = al2.sessionStatus(sessionKey)
-      return formatSessionStatus(s)
+        let sessionKey = targetNc.replace(":", "_")
+        let s = al2.sessionStatus(sessionKey)
+        return formatSessionStatus(s)
     elif sub == "clear":
       if parts.len < 3:
         return "Usage: `/session clear <agent>` (your session with that\n" &

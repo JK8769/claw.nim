@@ -1,4 +1,4 @@
-import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets]
+import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets, algorithm]
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
 import ../providers/models_catalog
 import ../providers/sanitize
@@ -213,6 +213,60 @@ proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
     pctOfContext: if cw > 0: (tokens * 100) div cw else: 0,
     summaryLen: summary.len,
     summarizing: summarising)
+
+proc allSessionStatuses*(al: AgentLoop): seq[SessionStatus] =
+  ## One `SessionStatus` per loaded session. Used by the operator-level
+  ## `/session status <agent>` (no nc:id) to surface every conversation
+  ## the agent is carrying, sorted by token weight so the heaviest
+  ## thread is visible first.
+  for key in al.sessions.sessions.keys:
+    result.add(al.sessionStatus(key))
+  # Sort heaviest first — operator usually wants to know which session
+  # is closest to the summarisation threshold.
+  result.sort(proc(a, b: SessionStatus): int =
+    cmp(b.tokenEstimate, a.tokenEstimate))
+
+proc formatSessionList*(statuses: seq[SessionStatus],
+                        agentName, model: string,
+                        contextWindow, threshold: int,
+                        nameByKey: Table[string, string] = initTable[string, string]()): string =
+  ## Compact one-line-per-session table for the operator overview.
+  ## Detail (full bar, summary state, etc.) lives in `formatSessionStatus`
+  ## — drill down via `/session status <agent> <nc:id>`.
+  result = "**" & agentName & "** (" & model & ") — " & $statuses.len &
+           " session(s) loaded\n\n"
+  if statuses.len == 0:
+    result.add("No sessions yet for this agent.\n")
+    return
+  # Compact bar: 12 cells wide, no threshold marker.
+  const barWidth = 12
+  for s in statuses:
+    let filled =
+      if contextWindow <= 0: 0
+      else: max(0, min(barWidth, (s.tokenEstimate * barWidth) div contextWindow))
+    var bar = ""
+    for i in 0 ..< barWidth:
+      if i < filled: bar.add("█")
+      else: bar.add("░")
+    let displayName = nameByKey.getOrDefault(s.sessionKey, "")
+    let nameCol =
+      if displayName.len > 0: displayName
+      else: s.sessionKey
+    # Right-pad nameCol to a stable width for alignment in monospaced
+    # rendering. Markdown clients usually preserve spaces inside code-
+    # fenced blocks; for chat bubbles, the table is still readable
+    # without strict alignment.
+    var paddedName = nameCol
+    while paddedName.len < 12: paddedName.add(" ")
+    result.add("  `" & s.sessionKey & "` " & paddedName &
+               " " & align($s.messageCount & " msg", 9) &
+               " · ~" & align($s.tokenEstimate & "t", 10) &
+               " (" & align($s.pctOfContext & "%", 4) & ")  [" & bar & "]")
+    if s.summarizing: result.add(" ⚙️")
+    result.add("\n")
+  result.add("\nThreshold: " & $threshold & " tokens (75% of " &
+             $contextWindow & "). Use `/session status " & agentName &
+             " nc:N` for detail on a specific session.\n")
 
 proc formatSessionStatus*(s: SessionStatus): string =
   ## Markdown-friendly rendering of a `SessionStatus` for chat output.
