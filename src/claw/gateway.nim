@@ -975,6 +975,13 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     let parts = strutils.splitWhitespace(cmd)
     if parts.len < 2 or parts[1] == "help":
       return "**`/session` — conversation-state management**\n\n" &
+             "  `/session status <agent>`\n" &
+             "    Show YOUR session's context utilisation with that agent\n" &
+             "    — message count, token estimate, % of context window,\n" &
+             "    and how close you are to the 75% summarisation threshold.\n" &
+             "    Example: `/session status lexi`\n\n" &
+             "  `/session status <agent> <nc:id>`   🔒 Admin\n" &
+             "    Same, for another user's session.\n\n" &
              "  `/session clear <agent>`\n" &
              "    Clear YOUR session with that agent. The agent will\n" &
              "    forget your conversation history on next turn.\n" &
@@ -987,7 +994,49 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "Note: clears the conversation, NOT the agent's `memory_store`\n" &
              "entries (those persist by design — that's their purpose)."
     let sub = parts[1]
-    if sub == "clear":
+    if sub == "status":
+      if parts.len < 3:
+        return "Usage: `/session status <agent>` (your session with that\n" &
+               "agent) or `/session status <agent> <nc:id>` (Admin+ — " &
+               "another user's session)."
+      let agentName = parts[2]
+      let agentKey = agentName.toLowerAscii
+      if not gCtx.offices.hasKey(agentKey):
+        return "Agent `" & agentName & "` is not in office or doesn't " &
+               "exist. Try `/agent list` to see who's available."
+      let al2 = gCtx.offices[agentKey]
+      # Resolve target nc:id — caller's own by default; another user
+      # only with Admin+. Same gating as `/session clear` because the
+      # session metadata is per-user-private.
+      var targetNc = ""
+      if parts.len >= 4:
+        if callerPermGate < pmAdmin:
+          return "Only Admin or SuperAdmin can view another user's " &
+                 "session. (Use `/session status " & agentName &
+                 "` to see your own.)"
+        if not parts[3].startsWith("nc:"):
+          return "Error: third argument must be an `nc:id` " &
+                 "(e.g. `nc:5`), got `" & parts[3] & "`."
+        targetNc = parts[3]
+      else:
+        let workspace = cfg[].workspacePath()
+        let g = loadWorld(workspace)
+        if g != nil:
+          let channelKey =
+            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+              msg.channel & ":" & msg.metadata["app_id"]
+            else: msg.channel
+          let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+          if uint32(entID) > 0:
+            targetNc = toAlias(entID)
+        if targetNc == "":
+          return "Couldn't resolve your own `nc:id` from this channel. " &
+                 "Pass it explicitly: " &
+                 "`/session status " & agentName & " nc:N`."
+      let sessionKey = targetNc.replace(":", "_")
+      let s = al2.sessionStatus(sessionKey)
+      return formatSessionStatus(s)
+    elif sub == "clear":
       if parts.len < 3:
         return "Usage: `/session clear <agent>` (your session with that\n" &
                "agent) or `/session clear <agent> <nc:id>` (Admin+ — " &

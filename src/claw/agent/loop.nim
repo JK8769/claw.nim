@@ -93,6 +93,23 @@ type
     tokensOut*: int          ## completion_tokens
     model*: string           ## model name used for this turn (for cost calc)
 
+  SessionStatus* = object
+    ## Snapshot of one session's context-window utilisation. Returned
+    ## by `sessionStatus` and rendered into a human-readable string by
+    ## `formatSessionStatus`. Surfaced via `/session status` so an
+    ## operator can see how close a thread is to triggering the
+    ## summariser without grepping logs.
+    sessionKey*: string
+    agentName*: string
+    model*: string
+    messageCount*: int
+    tokenEstimate*: int
+    contextWindow*: int       ## from `resolveContextWindow` for the model
+    threshold*: int           ## tokens at which `maybeSummarize` fires (75%)
+    pctOfContext*: int        ## tokenEstimate / contextWindow × 100
+    summaryLen*: int          ## chars in stored summary, 0 if none
+    summarizing*: bool        ## currently running a summarisation pass
+
   AgentLoop* = ref object
     cfg*: Config
     bus*: MessageBus
@@ -171,6 +188,69 @@ proc estimateTokens(messages: seq[providers_types.Message]): int =
   for m in messages:
     total += m.content.len div 4
   return total
+
+proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
+  ## Read-only snapshot of a session's context utilisation. Same
+  ## numbers `maybeSummarize` uses internally — exposed publicly so
+  ## the gateway's `/session status` command (and any future dashboard)
+  ## can surface them to the operator without duplicating the math.
+  let history = al.sessions.getHistory(sessionKey)
+  let summary = al.sessions.getSummary(sessionKey)
+  let tokens = estimateTokens(history)
+  let cw = al.contextWindow
+  let thr = (cw * 75) div 100
+  acquire(al.summarizingLock)
+  let summarising = al.summarizing.getOrDefault(sessionKey, false)
+  release(al.summarizingLock)
+  result = SessionStatus(
+    sessionKey: sessionKey,
+    agentName: al.agentName,
+    model: al.model,
+    messageCount: history.len,
+    tokenEstimate: tokens,
+    contextWindow: cw,
+    threshold: thr,
+    pctOfContext: if cw > 0: (tokens * 100) div cw else: 0,
+    summaryLen: summary.len,
+    summarizing: summarising)
+
+proc formatSessionStatus*(s: SessionStatus): string =
+  ## Markdown-friendly rendering of a `SessionStatus` for chat output.
+  ## Bar is 20 cells wide, with a `▼` marker at the 75% threshold so
+  ## the operator can see at a glance how close they are to summarising.
+  const barWidth = 20
+  const thresholdCell = (barWidth * 75) div 100  # = 15
+  let filled =
+    if s.contextWindow <= 0: 0
+    else: max(0, min(barWidth, (s.tokenEstimate * barWidth) div s.contextWindow))
+  var bar = ""
+  for i in 0 ..< barWidth:
+    if i < filled: bar.add("█")
+    else: bar.add("░")
+  # Marker line above the bar showing the 75% point
+  var marker = ""
+  for i in 0 ..< barWidth:
+    if i == thresholdCell: marker.add("▼")
+    else: marker.add(" ")
+  result = "**" & s.agentName & "** (" & s.model & ") · session `" &
+           s.sessionKey & "`\n"
+  result.add("Messages: " & $s.messageCount & "\n")
+  result.add("Tokens:   ~" & $s.tokenEstimate & " / " & $s.contextWindow &
+             "  (" & $s.pctOfContext & "% of context)\n")
+  result.add("           " & marker & "  ← 75% threshold\n")
+  result.add("          [" & bar & "]\n")
+  if s.summaryLen > 0:
+    result.add("Summary:  " & $s.summaryLen &
+               " chars (history was compacted at least once)\n")
+  else:
+    result.add("Summary:  none yet\n")
+  if s.summarizing:
+    result.add("Status:   summarising in background\n")
+  elif s.tokenEstimate >= s.threshold:
+    result.add("Status:   over threshold — summarisation will fire on next turn\n")
+  else:
+    let toGo = s.threshold - s.tokenEstimate
+    result.add("Status:   active (~" & $toGo & " tokens to threshold)\n")
 
 proc resolveContextWindow*(modelName: string, fallback: int): int =
   ## Look up the model's INPUT limit from the canonical catalog
@@ -383,7 +463,16 @@ proc updateStatus*(al: AgentLoop, ctx: TaskContext, status: string, detail: stri
   al.logAction(ctx, atStatus, 0, meta)
 
 
-proc maybeSummarize(al: AgentLoop, sessionKey: string) =
+proc maybeSummarize(al: AgentLoop, opts: ProcessOptions) =
+  ## Token-based summariser trigger. Fires when live history exceeds
+  ## 75% of the model's context window — same threshold surfaced by
+  ## `/session status` so the operator can see it coming.
+  ##
+  ## Publishes a one-line meta-message to the chat when summarisation
+  ## starts and another when it completes. Without these notifications
+  ## the user sees a long pause mid-conversation as if the agent froze;
+  ## with them, they know the system is compacting earlier history.
+  let sessionKey = opts.sessionKey
   acquire(al.summarizingLock)
   if al.summarizing.hasKey(sessionKey) and al.summarizing[sessionKey]:
     release(al.summarizingLock)
@@ -403,11 +492,32 @@ proc maybeSummarize(al: AgentLoop, sessionKey: string) =
   if tokenEstimate > threshold:
     al.summarizing[sessionKey] = true
     release(al.summarizingLock)
+
+    let pct = if al.contextWindow > 0:
+                (tokenEstimate * 100) div al.contextWindow
+              else: 0
+    let canNotify = al.bus != nil and
+                    opts.channel.len > 0 and
+                    opts.chatID.len > 0
+    if canNotify:
+      let notice = "🗜️ Compacting earlier history (~" & $pct &
+                   "% of context, threshold 75%). Recent turns stay " &
+                   "verbatim; older content is being condensed into a " &
+                   "structured summary. This takes ~10–30 seconds."
+      al.bus.publishOutbound(newOutbound(opts.channel, al.agentName,
+                                         opts.chatID, notice,
+                                         "", opts.appID))
+
     discard (proc() {.async.} =
       await summarizeSession(al, sessionKey)
       acquire(al.summarizingLock)
       al.summarizing[sessionKey] = false
       release(al.summarizingLock)
+      if canNotify:
+        al.bus.publishOutbound(newOutbound(opts.channel, al.agentName,
+                                           opts.chatID,
+                                           "✓ Compaction complete.",
+                                           "", opts.appID))
     )()
   else:
     release(al.summarizingLock)
@@ -1398,7 +1508,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
 
     if opts.enableSummary:
-      al.maybeSummarize(opts.sessionKey)
+      al.maybeSummarize(opts)
 
     infoCF("agent", "Response: " & truncate(finalContent, 120), {"session_key": opts.session_key, "iterations": $iteration}.toTable)
     
