@@ -107,13 +107,24 @@ proc attachmentsDir*(sm: SessionManager, key: string): string =
 # ── Load / migrate ─────────────────────────────────────────────────
 
 proc readAllJsonl(path: string): seq[SessionMessage] =
+  ## Hydrate every line of a session log into a SessionMessage.
+  ##
+  ## Uses jsony's `fromJson`, which fills missing fields with their type's
+  ## zero value. This is critical for backward compatibility: older
+  ## entries on disk (written before `reasoning_content` / `tool_calls` /
+  ## `tool_call_id` / `name` were added to the schema) lack those keys.
+  ## std/json's strict `.to()` raised "key not found" on every such line
+  ## and silently dropped it — meaning a session that hadn't been written
+  ## to since the schema grew would load as zero messages, even though
+  ## the JSONL on disk was intact. That bug surfaced as `/session status`
+  ## showing 0-msg rows for legitimately full sessions.
   if not fileExists(path): return
   try:
     for line in lines(path):
       let trimmed = line.strip()
       if trimmed.len == 0: continue
       try:
-        result.add(parseJson(trimmed).to(SessionMessage))
+        result.add(trimmed.fromJson(SessionMessage))
       except CatchableError: discard
   except IOError: discard
 
