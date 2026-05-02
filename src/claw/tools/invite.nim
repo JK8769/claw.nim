@@ -172,6 +172,25 @@ method execute*(t: RedeemInviteTool, args: Table[string, JsonNode]): Future[stri
     allInvites[code] = inv
   saveInvites(workspace, allInvites)
 
+  # Sweep stale guests.json entries across offices. The redemption
+  # path above wrote to guests.json (legacy behaviour), but since
+  # the entity is now graph-resident with stable identifiers, those
+  # per-agent ledger entries are stale by definition. Match by
+  # identifier (not name — names aren't unique). The most relevant
+  # identifier here is the entity in the graph that just got linked.
+  if graph != nil:
+    var resolvedID = WorldEntityID(0)
+    for id, ent in graph.entities.pairs:
+      for key, value in ent.identifiers.pairs:
+        if value == t.senderID and
+           (key == t.channel or key.startsWith(t.channel & ":")):
+          resolvedID = id
+          break
+      if uint32(resolvedID) > 0: break
+    if uint32(resolvedID) > 0:
+      discard pruneGuestsAcrossOffices(
+        workspace, graph.entities[resolvedID].identifiers)
+
   return "Successfully redeemed Pin Code! The user '" & inv.customerName & "' is now authenticated as a Customer for this Agent. You may now assist them normally."
 
 proc newRedeemInviteTool*(): RedeemInviteTool =

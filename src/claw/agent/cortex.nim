@@ -719,22 +719,25 @@ proc saveGuests*(officeDir: string, guests: Table[string, GuestContact]) =
   writeFile(path, node.pretty())
 
 proc pruneGuestsAcrossOffices*(workspace: string,
-                                entityName: string,
-                                identifiers: Table[string, string] =
-                                  initTable[string, string]()): int =
-  ## Sweep every per-agent `guests.json` ledger for stale entries that
-  ## belong to a now-graph-resident entity, and prune them. An entry
-  ## matches if EITHER:
-  ##   - its `name` equals `entityName`, OR
-  ##   - any of its (channel, senderID) pairs collides with an entry in
-  ##     `identifiers` (which holds the graph entity's stable identifiers
-  ##     as `<channelKey> → <senderID>`).
+                                identifiers: Table[string, string]): int =
+  ## Sweep every per-agent `guests.json` ledger for stale entries whose
+  ## channel identifiers collide with `identifiers` — the now-graph-
+  ## resident entity's stable channel bindings (`<channelKey>` →
+  ## `<senderID>`). When a guest's `(channel, senderID)` overlaps the
+  ## graph entity's, the guest entry is the same person and is now
+  ## stale; prune it.
   ##
-  ## Called from `/user add`, `/user register`, `tryBind`, the gateway-
-  ## level invite intercept, and `redeem_invite` — anywhere a stable
-  ## graph identity supersedes an ephemeral guest record. Idempotent;
-  ## returns the total number of entries pruned across all offices for
-  ## logging / display.
+  ## Matching is by IDENTIFIER ONLY — names are not unique (two
+  ## customers named "Alice" can coexist), so a name match would
+  ## delete the wrong entry. Identifiers (channel-level open_id /
+  ## NKN address / etc.) are unique per channel and are the correct
+  ## key for "is this the same person?".
+  ##
+  ## Called from `tryBind`, the gateway-level invite intercept, and
+  ## `redeem_invite` — anywhere a stable graph identity is stamped
+  ## onto an entity, after its identifiers are known. Idempotent;
+  ## returns the total number of entries pruned across all offices.
+  if identifiers.len == 0: return 0
   let officesDir = workspace / "offices"
   if not dirExists(officesDir): return 0
   for kind, path in walkDir(officesDir):
@@ -745,20 +748,22 @@ proc pruneGuestsAcrossOffices*(workspace: string,
     var toRemove: seq[string]
     for key, g in guests:
       var matches = false
-      if g.name == entityName: matches = true
-      else:
-        for chan, vals in g.identifiers:
+      for chan, vals in g.identifiers:
+        if matches: break
+        for v in vals:
           if matches: break
-          for v in vals:
-            if identifiers.hasKey(chan) and identifiers[chan] == v:
+          # Direct match: the guest's (channel, senderID) appears
+          # verbatim in the entity's identifier table.
+          if identifiers.hasKey(chan) and identifiers[chan] == v:
+            matches = true; break
+          # Per-app channel match: guest entry may use bare `feishu`
+          # while the graph stores `feishu:<app_id>`. Match when the
+          # senderID is the same and one channel key is a prefix of
+          # the other (with `:` boundary).
+          for entChan, entVal in identifiers:
+            if entVal != v: continue
+            if entChan.startsWith(chan & ":") or chan.startsWith(entChan & ":"):
               matches = true; break
-            # Also try base channel match — guest entry might use bare
-            # `feishu` while the graph stores `feishu:<app_id>`.
-            for entChan, entVal in identifiers:
-              if entVal != v: continue
-              if entChan.startsWith(chan & ":") or chan.startsWith(entChan & ":"):
-                matches = true; break
-            if matches: break
       if matches: toRemove.add(key)
     if toRemove.len > 0:
       for k in toRemove: guests.del(k)

@@ -234,6 +234,12 @@ proc tryBind*(graph: WorldGraph, workspace: string,
     if k.len > 0 and v.len > 0: pairs.add((k, v))
   persistPersonIdentifiers(
     workspace.parentDir / "BASE.nims", ent.name, pairs)
+  # Sweep per-agent guests.json across every office for entries whose
+  # `(channel, senderID)` collides with the just-stamped identifiers.
+  # Those entries represent the same person who's now graph-resident
+  # and are stale by definition. Identifier match only — names aren't
+  # unique.
+  discard pruneGuestsAcrossOffices(workspace, ent.identifiers)
   some(matched)
 
 proc rebind*(graph: WorldGraph, workspace: string,

@@ -1826,6 +1826,14 @@ Options:
                   g.saveWorld()
                   persistPersonIdentifiers(
                     getNimClawDir() / "BASE.nims", ent.name, persisted)
+                  # Sweep stale guests.json entries that match the
+                  # customer's now-stamped identifiers. The customer
+                  # may have ended up in an agent's per-office ledger
+                  # if they messaged before the gate (or if the
+                  # redeem_invite tool path fired); their guest entry
+                  # is now stale because they have a real graph
+                  # identity. Identifier match only — names not unique.
+                  discard pruneGuestsAcrossOffices(workspace, ent.identifiers)
                   # Burn / decrement.
                   inv.usedBy = channelKey & ":" & msg.sender_id
                   inv.usedAt = getTime().toUnix()

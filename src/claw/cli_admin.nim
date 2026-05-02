@@ -2230,18 +2230,14 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
              "code automatically. Run `claw user rebind " & alias &
              "` manually."
     let c = codeOpt.get
-    # Sweep stale guests.json entries that match the new user's name —
-    # belt-and-suspenders for the case where someone with this name
-    # was a CLI-test guest before being properly added.
-    let pruned = pruneGuestsAcrossOffices(cfg.workspacePath(), newName)
-    var pruneNote = ""
-    if pruned > 0:
-      pruneNote = "\nPruned " & $pruned & " stale guest entry(ies) " &
-                  "matching this name across agent offices."
+    # No guests.json prune at this point — the entity has no channel
+    # identifiers yet (just a bind code waiting to be consumed). The
+    # prune happens at activation time inside `tryBind`, when the
+    # channel identifier first lands on the entity and we can match
+    # `(channel, senderID)` against existing guest entries.
     return "Added internal user **" & newName & "** (" & alias & ", " &
            permArg & ").\n" &
-           "Persisted to BASE.nims; the runtime graph already has them." &
-           pruneNote & "\n\n" &
+           "Persisted to BASE.nims; the runtime graph already has them.\n\n" &
            "Bind code: **" & c.code & "**\n" &
            "They send this as the first message to:\n" &
            bindTargets(cfg) & "\n" &
@@ -2365,18 +2361,16 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
                                   maxUses, allowedSkills, inviteLang)
     if not inv.ok:
       return "Error: " & inv.error
-    # Sweep stale guests.json entries that match the new customer's
-    # name. Same proactive cleanup as `/user add`.
-    let prunedR = pruneGuestsAcrossOffices(cfg.workspacePath(), inv.customerName)
+    # No guests.json prune at this point — the customer has no channel
+    # identifiers yet (just an invite code waiting to be redeemed). The
+    # prune happens at redemption time inside the gateway invite
+    # intercept, when the channel identifier lands on the entity.
     var res = "Registered customer **" & inv.customerName & "** (" &
               inv.targetNcId & ").\n" &
               "Persisted to BASE.nims; serves edge added to " &
-              inv.agentName & "."
-    if prunedR > 0:
-      res.add("\nPruned " & $prunedR & " stale guest entry(ies) " &
-              "matching this name across agent offices.")
-    res.add("\n\nInvite code: **" & inv.code & "**\n" &
-            "Max uses: " & $inv.maxUses)
+              inv.agentName & ".\n\n" &
+              "Invite code: **" & inv.code & "**\n" &
+              "Max uses: " & $inv.maxUses
     if inv.allowedSkills.len > 0:
       res.add("\nSkills: " & inv.allowedSkills.join(", "))
     if inv.materialized.len > 0:
