@@ -718,6 +718,53 @@ proc saveGuests*(officeDir: string, guests: Table[string, GuestContact]) =
     node.add(jG)
   writeFile(path, node.pretty())
 
+proc pruneGuestsAcrossOffices*(workspace: string,
+                                entityName: string,
+                                identifiers: Table[string, string] =
+                                  initTable[string, string]()): int =
+  ## Sweep every per-agent `guests.json` ledger for stale entries that
+  ## belong to a now-graph-resident entity, and prune them. An entry
+  ## matches if EITHER:
+  ##   - its `name` equals `entityName`, OR
+  ##   - any of its (channel, senderID) pairs collides with an entry in
+  ##     `identifiers` (which holds the graph entity's stable identifiers
+  ##     as `<channelKey> → <senderID>`).
+  ##
+  ## Called from `/user add`, `/user register`, `tryBind`, the gateway-
+  ## level invite intercept, and `redeem_invite` — anywhere a stable
+  ## graph identity supersedes an ephemeral guest record. Idempotent;
+  ## returns the total number of entries pruned across all offices for
+  ## logging / display.
+  let officesDir = workspace / "offices"
+  if not dirExists(officesDir): return 0
+  for kind, path in walkDir(officesDir):
+    if kind != pcDir: continue
+    let guestsPath = path / "guests.json"
+    if not fileExists(guestsPath): continue
+    var guests = loadGuests(path)
+    var toRemove: seq[string]
+    for key, g in guests:
+      var matches = false
+      if g.name == entityName: matches = true
+      else:
+        for chan, vals in g.identifiers:
+          if matches: break
+          for v in vals:
+            if identifiers.hasKey(chan) and identifiers[chan] == v:
+              matches = true; break
+            # Also try base channel match — guest entry might use bare
+            # `feishu` while the graph stores `feishu:<app_id>`.
+            for entChan, entVal in identifiers:
+              if entVal != v: continue
+              if entChan.startsWith(chan & ":") or chan.startsWith(entChan & ":"):
+                matches = true; break
+            if matches: break
+      if matches: toRemove.add(key)
+    if toRemove.len > 0:
+      for k in toRemove: guests.del(k)
+      saveGuests(path, guests)
+      result += toRemove.len
+
 proc saveMood*(officeDir: string, mood: MoodState) =
   # Scoped per-agent so multi-agent companies (e.g. Lexi + Atlas) don't
   # stomp each other's affective state on a shared file.
