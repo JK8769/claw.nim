@@ -1123,8 +1123,12 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   ##                                           turns and mix up who's asking)
   ##   DM / unknown                          → key by the sender's nc:id:
   ##     resolved graph entity               → nc_N
-  ##     first-time sender                   → add to graph as Guest,
-  ##                                           return their fresh nc:N
+  ##     first-time sender                   → record in per-agent
+  ##                                           guests.json, return
+  ##                                           guest_<channel>_<sid>.
+  ##                                           Guests get nc:ids only
+  ##                                           via invite redemption —
+  ##                                           the graph stays clean.
   ##
   ## Earlier design used a single shared session file per room. That
   ## broke when two users @mentioned the bot in the same group — the
@@ -1192,25 +1196,27 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   if uint32(entityID) == 0 and graph.nameIndex.hasKey(opts.senderID):
     entityID = graph.nameIndex[opts.senderID]
 
-  # First-time sender — mint a graph entity so everyone has a stable
-  # nc:id from the first message. Trust 10 (Guest); the runtime's normal
-  # role-transition paths (redeem_invite, SuperAdmin edit) take them up
-  # from there. The channelKey isolates per-app identity so the same
-  # Feishu open_id under a different app gets its own nc:id.
+  # First-time sender — record in the per-agent `guests.json` ledger.
+  # Guests do NOT get nc:ids; the graph is reserved for declared
+  # entities (BASE.nims) and entities promoted via invite redemption
+  # (which mints a Customer with a stable nc:id). Per-agent ledger is
+  # the right home for first-contacts because they're ephemeral, high-
+  # cardinality, and only meaningful to the agent currently talking
+  # to them.
+  #
+  # Session key uses a `guest_<channel>_<senderID>` prefix — same
+  # naming class as `grp_*` (group sessions) and `system_*` (internal):
+  # all three are non-nc-id session families. When the guest later
+  # redeems an invite, `redeem_invite` mints a graph entity with a
+  # real nc:id; subsequent messages from them resolve through
+  # `graph.resolveUserGraph` and key on `nc_<N>` instead.
   if uint32(entityID) == 0:
-    entityID = graph.addUserToGraph(
-      opts.senderID,              # logical name — the raw ID for now
-      opts.senderID,              # used as channel identifier value
-      urGuest,
-      agentId,
-      10                          # trust — same as legacy default
-    )
-    # addUserToGraph currently stores the identifier under channel "nkn"
-    # (legacy default); explicitly record it under the composite channel
-    # key so future lookups via resolveUserGraph hit correctly.
-    if graph.entities.hasKey(entityID):
-      graph.entities[entityID].identifiers[channelKey] = opts.senderID
-      graph.saveWorld()
+    if al.contextBuilder != nil:
+      let guestKey = channelKey & ":" & opts.senderID
+      if not al.contextBuilder.guests.hasKey(guestKey):
+        al.contextBuilder.guests[guestKey] = newGuest(channelKey, opts.senderID)
+        saveGuests(al.officeDir, al.contextBuilder.guests)
+    return "guest_" & opts.channel & "_" & sanitize(opts.senderID)
 
   toAlias(entityID).replace(":", "_")
 
