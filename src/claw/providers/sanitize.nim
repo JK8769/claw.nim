@@ -29,29 +29,44 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
   ## Strict pairing enforcement. Mutates `messages` in place.
   ##
   ## Two passes folded into one walk:
-  ##  1. Drop `tool` messages that aren't part of a valid tool-response run.
+  ##  1. Drop `tool` messages whose tool_call_id isn't in the set of
+  ##     pending ids from the most recent kept assistant.tool_calls.
   ##  2. Strip `tool_calls` from assistant messages whose responses are
   ##     missing or short. Empty content gets a placeholder so the
   ##     resulting message isn't both content-empty AND tool-empty.
+  ##
+  ## The pending-set design (vs a simple "lastHadToolCalls" boolean)
+  ## handles the late-tool-result case: when two assistant.tool_calls
+  ## turns appear back-to-back (because the first turn's tool result
+  ## arrived AFTER the second turn was already written — exec timeout,
+  ## user message arriving mid-execution, etc.), the first turn gets
+  ## stripped (no immediate tool followers) and the late tool message
+  ## responding to its now-removed tool_call must also be dropped.
+  ## The boolean version kept that late tool message because the
+  ## SECOND turn's tool_calls happened to keep `lastHadToolCalls=true`
+  ## — but the late tool's tool_call_id wasn't in the second turn's
+  ## expected set, so the API rejected.
   var clean: seq[providers_types.Message] = @[]
   var droppedOrphans = 0
   var strippedTcs = 0
-  # `lastHadToolCalls` reflects whether the most recent NON-tool
-  # message in `clean` was an assistant with tool_calls. Tool messages
-  # don't reset the flag — siblings in a multi-tool turn share the
-  # same parent context.
-  var lastHadToolCalls = false
+  # tool_call_ids the most recent KEPT assistant.tool_calls is still
+  # waiting on. A tool message is kept iff its tool_call_id is in this
+  # set; the id is removed once consumed. Cleared when a non-tool,
+  # non-tool_calls message lands (which severs any pending pairing).
+  var pendingIds = initHashSet[string]()
   var i = 0
   while i < messages.len:
     var m = messages[i]
     if m.isTool:
-      if not lastHadToolCalls:
+      let tcid = m.tool_call_id
+      if tcid.len == 0 or tcid notin pendingIds:
         inc droppedOrphans
         inc i
         continue
       clean.add(m)
+      pendingIds.excl(tcid)
       inc i
-      continue   # flag intentionally NOT updated
+      continue
     # Below: m is NOT a tool message.
     if m.hasToolCalls:
       var expected = initHashSet[string]()
@@ -71,13 +86,21 @@ proc sanitizeForProvider*(messages: var seq[providers_types.Message]) =
           if need notin responded:
             allCovered = false
             break
-      if not allCovered:
+      if allCovered:
+        # Reset pendingIds to this turn's expected set — supersedes
+        # any earlier pending state that wasn't satisfied.
+        pendingIds = expected
+      else:
         m.tool_calls = @[]
         if m.content.len == 0:
           m.content = "[tool execution interrupted — results not preserved]"
         inc strippedTcs
+        pendingIds.clear()
+    else:
+      # Plain assistant / user / system message — clears any pending
+      # tool_call expectations. Anything still waiting is now orphan.
+      pendingIds.clear()
     clean.add(m)
-    lastHadToolCalls = m.hasToolCalls
     inc i
   if droppedOrphans > 0 or strippedTcs > 0:
     warnCF("agent", "Sanitized history",
