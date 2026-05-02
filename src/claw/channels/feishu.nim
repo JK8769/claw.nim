@@ -1,4 +1,4 @@
-import std/[asyncdispatch, json, strutils, tables, os, osproc, strtabs, streams, times, locks, typedthreads, options, unicode, sets, posix]
+import std/[asyncdispatch, json, strutils, tables, os, osproc, strtabs, streams, times, locks, typedthreads, options, unicode, sets, posix, random]
 import unicodedb/[widths, properties]
 import base
 import ../bus, ../bus_types, ../config, ../logger
@@ -1211,8 +1211,34 @@ method send*(c: FeishuChannel, msg: OutboundMessage) {.async.} =
       # Send text as a separate follow-up (lark-cli image doesn't support caption)
       discard
   elif fileVal.len > 0:
+    # lark-cli's --file flag URL-encodes the filename when uploading
+    # to Feishu's `im/v1/files` endpoint, and that encoding mangles
+    # non-ASCII characters (`荣鑫一期.pdf` becomes `%XX` garbage in the
+    # uploaded filename). Workaround: if the file path's leaf has
+    # non-ASCII chars, copy to a temp path with an ASCII-safe name
+    # before handing to lark-cli. The original file stays put;
+    # only the temp copy is what lark-cli sees.
+    proc isAsciiLeaf(p: string): bool =
+      let name = lastPathPart(p)
+      for c in name:
+        if c.ord >= 128: return false
+      true
+    var safeFile = fileVal
+    if not isAsciiLeaf(fileVal):
+      let (_, _, ext) = splitFile(fileVal)
+      let stamp = $getTime().toUnix() & "_" & $rand(100000)
+      let safeName = "feishu_upload_" & stamp & ext
+      let tmp = getTempDir() / safeName
+      try:
+        copyFile(fileVal, tmp)
+        safeFile = tmp
+        infoCF("feishu", "Renamed non-ASCII upload",
+               {"original": fileVal, "temp": tmp}.toTable)
+      except CatchableError as e:
+        warnCF("feishu", "Could not rename non-ASCII filename — passing original through",
+               {"path": fileVal, "error": e.msg}.toTable)
     args.add("--file")
-    args.add(fileVal)
+    args.add(safeFile)
   elif options.isSome(cardOpt):
     args.add("--msg-type")
     args.add("interactive")
