@@ -1461,15 +1461,17 @@ subscribers to route events to the new agent's office.
                 "/channel auth feishu cli_a93085a978781cd5 SECRET Atlas",
                 "/channel assign cli_a948ea9ee5785cd3 Atlas"]))
   register(SystemCommand(
-    name: "/user", summary: "User management (list, show, trust, add, edit, bind, invite, remove).",
-    usage: "/user <list|show|trust|add|edit|bind|invite|remove> [<args>...]",
+    name: "/user", summary: "User management (list, show, trust, add, register, join, edit, rebind, invite, remove).",
+    usage: "/user <list|show|trust|add|register|join|edit|rebind|invite|remove> [<args>...]",
     doc: """User management.
 
 Usage:
   /user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<s>] [--reverse] [--format=<f>]
   /user show <nc-id>
   /user trust
-  /user add <name> [--permission=<p>]
+  /user add <name> [<permission>]
+  /user register <customer-name> [<agent>] [<uses>] [--lang=<l>] [--skill=<s>]... [--skills=<cs>]
+  /user join <nc-id> [<permission>]
   /user edit <nc-id> <field> <value>
   /user bind <nc-id> [--wipe]
   /user rebind <nc-id> [--wipe]
@@ -1479,7 +1481,7 @@ Usage:
 Options:
   --kind=<k>        Person | AI | Unknown | Service
   --tier=<t>        int | ext | ?
-  --permission=<p>  Filter (`list`) or assign (`add`) a permission/role
+  --permission=<p>  Filter on `list` (e.g. --permission=Member)
   --sort=<s>        nc | name | kind | permission | tier | role
   --reverse         Reverse sort order
   --format=<f>      table | json  [default: table]
@@ -1495,15 +1497,16 @@ Options:
     examples: @["/user list --kind=Unknown",
                 "/user show nc:4",
                 "/user trust",
-                "/user add Anna --permission=Member",
+                "/user add Anna",
+                "/user add Bob Admin",
+                "/user register Acme Atlas 3",
+                "/user register Alice --skill=sungrow::acme-solar",
+                "/user join nc:6 Member",
                 "/user edit nc:7 permission Member",
-                "/user bind nc:7",
                 "/user rebind nc:7",
                 "/user invite Alice",
-                "/user invite Acme Atlas 1",
-                "/user invite Alice --lang=zh",
+                "/user invite Acme Atlas 1 --lang=zh",
                 "/user invite JK Atlas --skill=njmkuser@sungrow/627305",
-                "/user invite Acme Atlas --skills=njmkuser@sungrow/627305,njmkuser@sungrow/627306",
                 "/user remove nc:7"]))
   register(SystemCommand(
     name: "/agent",
