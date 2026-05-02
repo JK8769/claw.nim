@@ -31,13 +31,20 @@ method description*(t: SpawnTool): string =
   ## Includes the registered focus modes so the LLM sees what's
   ## available without the operator maintaining a parallel doc.
   ## Cached after first build — focus modes don't change at runtime.
+  ##
+  ## Spawn is INTRA-AGENT (same identity, different hat). Use
+  ## `delegate` for cross-agent dispatch — the previous `agent:`
+  ## override on this tool was a footgun that duplicated delegate
+  ## with worse semantics; it has been removed.
   if t.cachedDescription.len > 0: return t.cachedDescription
   var d = "Spawn a focused subtask of yourself. The subagent runs as " &
-          "you (same identity, same authority) but with an optional " &
-          "FOCUS_MODE that constrains its tools and adds a focused " &
-          "prompt. Use this when you want to do a chunk of work in " &
-          "parallel or in isolation — same agent wearing a different " &
-          "hat.\n\n" &
+          "you (same identity, same authority, same model) but with " &
+          "an optional FOCUS_MODE that constrains its tools and adds " &
+          "a focused prompt. Use this when you want to do a chunk of " &
+          "work in a different mental mode — same agent wearing a " &
+          "different hat.\n\n" &
+          "For cross-agent dispatch (handing work to a peer agent), " &
+          "use the `delegate` tool instead.\n\n" &
           "Pass `await: true` to block on the result and return it " &
           "directly (cognitively simplest). Pass `await: false` (or " &
           "omit) for fire-and-forget — the result arrives later as a " &
@@ -65,15 +72,11 @@ method parameters*(t: SpawnTool): Table[string, JsonNode] =
       },
       "focus_mode": {
         "type": "string",
-        "description": "Focus mode the subagent runs in (Plan / Explore / etc — see tool description for what's available). Empty = default focus_mode (full tool access)."
+        "description": "Focus mode the subagent runs in (Plan / Implement / Review / etc — see tool description for what's available). Empty = default focus_mode (full tool access)."
       },
       "await": {
         "type": "boolean",
         "description": "If true, block until the subagent completes and return its result as the tool's value. Use this when the result informs your next decision. If false (default), fire-and-forget — return a task ID and the result arrives later."
-      },
-      "agent": {
-        "type": "string",
-        "description": "Optional override to run AS A DIFFERENT AGENT (e.g. delegate to Atlas). Different from `focus_mode` — this swaps identity; focus_mode just changes focus within your own identity."
       }
     },
     "required": %["task"]
@@ -86,10 +89,15 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
 
   let label = if args.hasKey("label"): args["label"].getStr() else: "subagent"
 
-  var agentName = ""
-  if args.hasKey("agent"):
-    agentName = args["agent"].getStr().strip()
-    if agentName == "": return "Error: 'agent' must not be empty"
+  # Reject any caller still passing `agent:`. The parameter has been
+  # removed — direct them at the right tool. Soft-fail with a clear
+  # message rather than silently dropping the override.
+  if args.hasKey("agent") and args["agent"].kind == JString and
+     args["agent"].getStr().strip().len > 0:
+    return "Error: `spawn` no longer accepts an `agent:` override. " &
+           "Use the `delegate` tool to hand work to a peer agent " &
+           "(different identity). `spawn` is intra-agent only — same " &
+           "identity, focus_mode changes the hat."
 
   let focusMode =
     if args.hasKey("focus_mode"): args["focus_mode"].getStr().strip()
@@ -112,7 +120,7 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
   let taskObj = t.manager.spawn(task, label, t.channel, t.chatID,
                                 t.sessionKey, t.senderID, t.recipientID,
                                 t.role, t.agentName, t.agentID,
-                                t.logicalUserID, agentName, focusMode)
+                                t.logicalUserID, "", focusMode)
 
   if waitForResult:
     # Synchronous shape: poll until the task finishes, then return its
@@ -135,6 +143,6 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
       await sleepAsync(AwaitPollIntervalMs)
     return taskObj.result
 
-  return "Spawned subagent '" & label & "' with ID " & taskObj.id &
+  return "Spawned subagent '" & label & "' (id " & taskObj.id & ")" &
          (if focusMode.len > 0: " in focus_mode '" & focusMode & "'" else: "") &
          " for task: " & task
