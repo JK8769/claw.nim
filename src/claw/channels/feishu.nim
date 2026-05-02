@@ -562,12 +562,66 @@ proc flattenFeishuEvent*(e: JsonNode): JsonNode =
       "mentions": message.getOrDefault("mentions")
     }
     # Resolve the nested content: Feishu sends `content` as a stringified
-    # JSON like `{"text":"@_user_1 你好"}`. Parse + substitute placeholders.
+    # JSON. For TEXT messages it's `{"text":"@_user_1 你好"}` — pull `text`.
+    # For POST (rich-text) messages it's a structured doc with rows of
+    # nodes (`{"title":"…","content":[[{"tag":"text","text":"…"}, …], …]}`)
+    # — we flatten to plain text so the agent gets a readable string
+    # instead of "[Non-text message: post]".
+    proc flattenPost(node: JsonNode): string =
+      ## Walk a Feishu post and concat plain text. Each row → one line.
+      ## Common tags: text, a (link), at (mention), img, code_block, media.
+      ## Unknown tags fall back to their `text` field if present.
+      if node == nil or node.kind != JObject: return
+      let title = node.getOrDefault("title").getStr("")
+      if title.len > 0:
+        result.add(title & "\n")
+      let rows = node.getOrDefault("content")
+      if rows == nil or rows.kind != JArray: return
+      for row in rows:
+        if row.kind != JArray: continue
+        var line = ""
+        for item in row:
+          if item.kind != JObject: continue
+          let tag = item.getOrDefault("tag").getStr("")
+          case tag
+          of "text":
+            line.add(item.getOrDefault("text").getStr(""))
+          of "a":
+            let txt = item.getOrDefault("text").getStr("")
+            let href = item.getOrDefault("href").getStr("")
+            if href.len > 0 and txt != href: line.add(txt & " (" & href & ")")
+            elif href.len > 0: line.add(href)
+            else: line.add(txt)
+          of "at":
+            let uname = item.getOrDefault("user_name").getStr("")
+            let key = item.getOrDefault("user_id").getStr("")
+            if uname.len > 0: line.add("@" & uname)
+            elif key.len > 0: line.add("@" & key)
+            else: line.add("@(unknown)")
+          of "img":
+            line.add("[image]")
+          of "media":
+            line.add("[media]")
+          of "code_block":
+            line.add("\n```\n" & item.getOrDefault("text").getStr("") & "\n```")
+          else:
+            let txt = item.getOrDefault("text").getStr("")
+            if txt.len > 0: line.add(txt)
+        if line.len > 0:
+          result.add(line & "\n")
+      result = result.strip()
+
     var resolvedText = ""
     let nestedContent = message.getOrDefault("content").getStr("")
     if nestedContent.len > 0:
       try:
-        resolvedText = parseJson(nestedContent).getOrDefault("text").getStr("")
+        let parsed = parseJson(nestedContent)
+        # Text messages: top-level `text` field
+        resolvedText = parsed.getOrDefault("text").getStr("")
+        # Post messages: nothing in `text`; flatten the structured content
+        if resolvedText.len == 0 and parsed.hasKey("content") and
+           parsed["content"].kind == JArray:
+          resolvedText = flattenPost(parsed)
       except CatchableError: discard
     let mentions = result["mentions"]
     if mentions != nil and mentions.kind == JArray and resolvedText.len > 0:
@@ -752,6 +806,14 @@ proc dispatchFeishuLine(line: string, c: FeishuChannel, app: FeishuAppInstance) 
       finalContent = "[audio: " & messageID & "]"
     elif messageType == "file":
       finalContent = "[file: " & messageID & "]"
+    elif messageType == "post":
+      # `flattenFeishuEvent` already extracted the post's text from its
+      # structured rows into `content` — keep that as the message body
+      # rather than overwriting with "[Non-text message: post]". If the
+      # extraction returned empty (unusual post shape), fall through to
+      # the catch-all below to surface the gap visibly.
+      if finalContent.len == 0:
+        finalContent = "[Non-text message: post (extraction returned empty)]"
     elif messageType == "text":
       # Mentions auto-discovery. flattenFeishuEvent already placed
       # `mentions` as a sibling field on the event with placeholders
