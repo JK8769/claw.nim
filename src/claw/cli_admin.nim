@@ -1550,34 +1550,53 @@ proc userSubscription*(ncId: string, tier: string): string =
 
 proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw user <list|show|trust|edit|rebind|merge|remove|restore|invite|register|subscription> [args]\n" &
+    return "Usage: claw user <list|show|trust|add|register|join|edit|rebind|merge|remove|restore|invite|subscription> [args]\n" &
+           "\n" &
+           "  Creating users\n" &
+           "  ──────────────\n" &
+           "  add      — new INTERNAL user (Member/Admin/Staff/Employee/SuperAdmin).\n" &
+           "             Creates entity, persists to BASE.nims, mints a bind code.\n" &
+           "             claw user add <name> [<permission>]\n" &
+           "  register — new CUSTOMER (external). Creates entity, persists to\n" &
+           "             BASE.nims, mints an invite code with optional skills.\n" &
+           "             claw user register <name> [<agent>] [<uses>] [--skill=...]\n" &
+           "  invite   — peer referral (customer-to-customer). Same backend as\n" &
+           "             register but issued by an existing customer. Use this\n" &
+           "             surface for `invite list` to see outstanding codes.\n" &
+           "             claw user invite list\n" &
+           "             claw user invite <issuer-nc:id> [<uses>] [<agent>] [<customer>]\n" &
+           "\n" &
+           "  Promoting / editing\n" &
+           "  ───────────────────\n" &
+           "  join     — promote EXISTING customer to internal-tier. Same nc:id,\n" &
+           "             no new code. BASE.nims block's permission line updated.\n" &
+           "             claw user join <nc:id> [<permission>]\n" &
+           "  edit     — single-field update (name, permission, jobTitle, kind).\n" &
+           "             claw user edit <nc:id> <field> <value>\n" &
+           "  rebind   — issue a fresh bind code for an existing internal user\n" &
+           "             (lost-device, channel migration). claw user rebind <nc:id>\n" &
+           "\n" &
+           "  Reading\n" &
+           "  ───────\n" &
            "  list     — table of every user (Person/AI/Service/Unknown).\n" &
            "             flags: --kind=<Person|AI|Unknown|Service>\n" &
            "                    --tier=<int|ext|?>\n" &
            "                    --permission=<role>\n" &
            "                    --sort=<nc|name|kind|permission|tier|role|sub|skills>\n" &
            "                    --reverse  --format=<table|json>\n" &
-           "                    --recycled  (show only soft-removed users)\n" &
-           "                    --all       (show everyone including recycled)\n" &
+           "                    --recycled  (only soft-removed)\n" &
+           "                    --all       (everyone including recycled)\n" &
            "  show     — detailed view (relationships, trust, mood) for one nc:id\n" &
            "  trust    — edge graph (agent → person) with role + trust per row\n" &
-           "  edit     — set a field on a user in BASE.nims (or graph-only)\n" &
-           "             claw user edit <nc:id> <field> <value>\n" &
-           "             fields: name, permission, jobTitle, kind\n" &
-           "  rebind   — issue a SuperAdmin binding code (for bootstrap or\n" &
-           "             lost-device recovery — prints the code)\n" &
+           "\n" &
+           "  Lifecycle\n" &
+           "  ─────────\n" &
            "  remove   — soft remove (default): keeps nc:id, entity, edges,\n" &
-           "             billing history. Recoverable via `restore`. Add\n" &
-           "             --hard to fully delete (original behavior).\n" &
-           "             optional: --reason=\"...\" for audit\n" &
-           "  restore  — undo a soft remove (strips recycled_at flag)\n" &
-           "  merge    — (SuperAdmin) fold a guest nc:id into an existing user\n" &
-           "  invite   — generate a one-time invite code (guest → user promotion)\n" &
-           "  register — reify a runtime-added User into BASE.nims (non-guests only)\n" &
+           "             billing history. Restorable. --hard for full delete.\n" &
+           "  restore  — undo a soft remove\n" &
+           "  merge    — (SuperAdmin) fold a duplicate nc:id into another user\n" &
            "  subscription — plan + token cap per customer (status/activate/\n" &
-           "             extend/suspend/resume/usage). See `user subscription`.\n" &
-           "             claw user register                 # everyone qualifying\n" &
-           "             claw user register <nc:id> [name]  # one specific, named"
+           "             extend/suspend/resume/usage)."
   let subcmd = args[0]
 
   let workspace = cfg.workspacePath()
@@ -2129,175 +2148,232 @@ proc runUserCommand*(cfg: var Config, args: seq[string], asJson: bool = false): 
            "Entity is not declared in BASE.nims — `co update` won't touch it.\n" &
            "Use `claw user register " & alias & "` to persist it."
 
-  if subcmd == "register":
-    # Reify runtime-added Person entities into BASE.nims so they survive
-    # `co update`. Two forms:
-    #   claw user register                 — everyone non-guest, not already
-    #                                         declared
-    #   claw user register <nc:id> [name]  — one specific entity, name hint
-    # Guests (trust < 40 / role guest) are intentionally excluded. The
-    # promotion path is redeem_invite; only once someone has earned a role
-    # do they graduate into the DSL as a declared User.
+  if subcmd == "add":
+    # Create a NEW internal-tier user from scratch and mint a one-shot
+    # bind code. Sister command to `register` (which creates a customer)
+    # — both create a new nc:id and a code, but `add` is for trusted
+    # operators on the company side (Member/Admin/Staff/Employee/SuperAdmin)
+    # whereas `register` is for paying customers on the external side.
+    #
+    # The new user's `person "Name":` block lands in BASE.nims with the
+    # chosen permission so `co update` preserves them. The bind code is
+    # additive — when consumed, only the channel that consumes it stamps
+    # an identifier; the user can attach further channels later via
+    # `user rebind`.
+    if args.len < 2:
+      return "Usage: claw user add <name> [<permission>]\n" &
+             "  name        required; must be unique in this company\n" &
+             "  permission  defaults to Member.\n" &
+             "              Internal-tier only: Member, Admin, Staff,\n" &
+             "              Employee, SuperAdmin.\n\n" &
+             "Examples:\n" &
+             "  claw user add Alice              # Member, default\n" &
+             "  claw user add Bob Admin\n" &
+             "  claw user add Carol SuperAdmin"
+    let newName = args[1].strip
+    if newName.len == 0 or '"' in newName:
+      return "Error: name must be non-empty and contain no double-quote."
+    let permArg = if args.len >= 3: args[2].strip else: "Member"
+    if not isInternalRole(permArg):
+      return "Error: '" & permArg & "' is not an internal-tier permission. " &
+             "Valid: Member, Admin, Staff, Employee, SuperAdmin.\n" &
+             "(For customer onboarding, use `claw user register` — the " &
+             "external-tier flow with an invite code.)"
+    if graph.nameIndex.hasKey(newName):
+      let existing = graph.nameIndex[newName]
+      return "Error: name '" & newName & "' is already taken by " &
+             toAlias(existing) & " (" & $graph.entities[existing].kind & ").\n" &
+             "Pick a different name, or use `claw user rebind " &
+             toAlias(existing) & "` to issue a fresh code for the existing user."
     let baseNimsPath = getNimClawDir() / "BASE.nims"
     if not fileExists(baseNimsPath):
       return "Error: no BASE.nims at " & baseNimsPath
-    let baseText = readFile(baseNimsPath)
+    if "person \"" & newName & "\"" in readFile(baseNimsPath):
+      return "Error: BASE.nims already declares a `person \"" & newName &
+             "\":` block. Pick a different name."
+    # Allocate the entity in the graph.
+    let newID = WorldEntityID(graph.nextID)
+    graph.nextID += 1
+    var ent = WorldEntity(
+      id: newID,
+      kind: ekPerson,
+      name: newName,
+      role: permArg,
+      identifiers: initTable[string, string](),
+      custom: newJObject()
+    )
+    graph.entities[newID] = ent
+    graph.nameIndex[newName] = newID
+    graph.saveWorld()
+    # Append the person block to BASE.nims with the permission line and
+    # an `# nc:N` tag so `user remove` can target this exact block.
+    let alias = toAlias(newID)
+    let bLines = readFile(baseNimsPath).splitLines()
+    var insertAt = bLines.len
+    for i, l in bLines:
+      if l.strip().startsWith("build(currentSourcePath"):
+        insertAt = i; break
+    var newBlock = @[
+      "", "person \"" & newName & "\":",
+      "  # " & alias,
+      "  permission \"" & permArg & "\""
+    ]
+    var merged = bLines[0 ..< insertAt]
+    for l in newBlock: merged.add(l)
+    for i in insertAt ..< bLines.len: merged.add(bLines[i])
+    writeFile(baseNimsPath, merged.join("\n"))
+    # Mint the bind code via the same path `user rebind` uses.
+    let codeOpt = rebind(graph, cfg.workspacePath(), alias, false)
+    if codeOpt.isNone:
+      return "Created " & alias & " (" & newName & ", " & permArg &
+             ") and persisted to BASE.nims, but couldn't mint a bind " &
+             "code automatically. Run `claw user rebind " & alias &
+             "` manually."
+    let c = codeOpt.get
+    return "Added internal user **" & newName & "** (" & alias & ", " &
+           permArg & ").\n" &
+           "Persisted to BASE.nims; the runtime graph already has them.\n\n" &
+           "Bind code: **" & c.code & "**\n" &
+           "They send this as the first message to:\n" &
+           bindTargets(cfg) & "\n" &
+           "First reply consumes the code and stamps the channel\n" &
+           "identifier on " & alias & ". Code expires after 24 hours.\n" &
+           "Run `claw co update` afterwards to regenerate BASE.json."
 
-    proc declaredPersonNames(src: string): HashSet[string] =
-      ## Person names already in BASE.nims so we don't duplicate blocks.
-      for raw in src.splitLines():
-        let s = raw.strip()
-        if s.startsWith("person \""):
-          let rest = s["person \"".len .. ^1]
-          let close = rest.find('"')
-          if close > 0: result.incl(rest[0 ..< close])
+  if subcmd == "join":
+    # Promote an EXISTING customer (or other external-tier user) to
+    # internal-tier. No new nc:id, no new code — they already have a
+    # channel binding from their original onboarding. This is the
+    # one-command shortcut for the common "Customer became staff,
+    # promote them" flow.
+    #
+    # Internally: (1) update the BASE.nims block's permission line if
+    # one exists, otherwise add it; (2) update the graph entity's role;
+    # (3) clean up customer-side state (subscription record, invite
+    # ledger entries) — same hook the legacy `user edit permission`
+    # already runs when transitioning external→internal.
+    if args.len < 2:
+      return "Usage: claw user join <nc:id> [<permission>]\n" &
+             "  nc:id       required; the existing user to promote\n" &
+             "  permission  defaults to Member.\n" &
+             "              Internal-tier only: Member, Admin, Staff,\n" &
+             "              Employee, SuperAdmin.\n\n" &
+             "Examples:\n" &
+             "  claw user join nc:6              # 杰哥 → Member\n" &
+             "  claw user join nc:7 Admin"
+    let alias = args[1].strip
+    if not alias.startsWith("nc:"):
+      return "Error: target must be an nc:id (e.g. nc:6). " &
+             "`claw user list` shows them."
+    let id = parseAlias(alias)
+    if uint32(id) == 0 or not graph.entities.hasKey(id):
+      return "Error: " & alias & " not found in graph."
+    let existing = graph.entities[id]
+    if existing.kind != ekPerson:
+      return "Error: " & alias & " is a " & $existing.kind & " entity " &
+             "(not a Person). `join` only promotes Person entities."
+    let permArg = if args.len >= 3: args[2].strip else: "Member"
+    if not isInternalRole(permArg):
+      return "Error: '" & permArg & "' is not an internal-tier permission. " &
+             "Valid: Member, Admin, Staff, Employee, SuperAdmin."
+    if existing.role.toLowerAscii == permArg.toLowerAscii:
+      return alias & " is already " & permArg & ". No change."
+    if isInternalRole(existing.role):
+      return alias & " is already internal-tier (" & existing.role &
+             "). To change the specific permission, use " &
+             "`claw user edit " & alias & " permission " & permArg & "`."
+    # Delegate to the unified `edit` path so the cleanup hooks run
+    # consistently (subscription clear, invite ledger archival, etc.).
+    return runUserCommand(cfg, @["edit", alias, "permission", permArg])
 
-    proc relationLinesForUser(graph: WorldGraph, userID: WorldEntityID):
-        seq[tuple[agent, kind, role, etiquette: string, trust: int]] =
-      ## Walk every agent; collect any serves/reportsTo link that targets
-      ## this user, so we can splice it into the corresponding agent
-      ## block. `kind` is "serves" | "reportsTo" — preserved from runtime.
-      for id, ent in graph.entities.pairs:
-        if ent.kind != ekAI: continue
-        for link in ent.reportsTo:
-          if link.targetID == userID and link.annotation.isSome:
-            let a = link.annotation.get
-            result.add((agent: ent.name, kind: "reportsTo",
-                         role: $a.role, etiquette: a.etiquette,
-                         trust: a.trustLevel))
-        for link in ent.serves:
-          if link.targetID == userID and link.annotation.isSome:
-            let a = link.annotation.get
-            result.add((agent: ent.name, kind: "serves",
-                         role: $a.role, etiquette: a.etiquette,
-                         trust: a.trustLevel))
-
-    proc insertRelationIntoAgentBlock(path, agentName: string,
-                                      relLines: string): bool =
-      ## Splice a relation sub-block into an existing `agent "<Name>":`
-      ## block. Returns true if the agent was found AND the relation
-      ## text wasn't already present.
-      let text = readFile(path)
-      let lines = text.splitLines()
-      let marker = "agent \"" & agentName & "\""
-      var start = -1
-      for i, l in lines:
-        if l.strip().startsWith(marker):
-          start = i
-          break
-      if start < 0: return false
-      var endIdx = start + 1
-      while endIdx < lines.len:
-        let l = lines[endIdx]
-        if l.len == 0 or l.startsWith(" ") or l.startsWith("\t"):
-          inc endIdx
-        else:
-          break
-      # Idempotent: if the relation text is already inside, skip.
-      let body = lines[start + 1 ..< endIdx].join("\n")
-      if relLines.strip() in body: return false
-      # Insert at block end, before the first trailing blank.
-      var insertAt = endIdx
-      while insertAt > start + 1 and lines[insertAt - 1].strip().len == 0:
-        dec insertAt
-      var updated = lines[0 ..< insertAt]
-      for r in relLines.splitLines(): updated.add(r)
-      for i in insertAt ..< lines.len: updated.add(lines[i])
-      writeFile(path, updated.join("\n"))
-      true
-
-    proc appendPersonBlock(path, personName: string,
-                           idents: seq[(string, string)]): bool =
-      ## Append a `person "Name":` block just before `build(...)`. No-op
-      ## if the name is already declared.
-      let text = readFile(path)
-      if "person \"" & personName & "\"" in text: return false
-      var block_content = "person \"" & personName & "\":\n"
-      for (chan, sid) in idents:
-        block_content.add("  identifier \"" & chan & "\", \"" & sid & "\"\n")
-      let buildLine = "build(currentSourcePath())"
-      let insertion = "\n# ── User (registered via `claw user register`) ───────\n" &
-                      block_content & "\n"
-      let updated =
-        if buildLine in text:
-          text.replace(buildLine, insertion & buildLine)
-        else:
-          text & insertion
-      writeFile(path, updated)
-      true
-
-    proc registerOne(ent: WorldEntity, id: WorldEntityID, name: string,
-                     declared: HashSet[string]): string =
-      if name in declared:
-        return "  ~ " & name & " already declared — skipped"
-      # Collect this entity's channel identifiers for the block body.
-      var idents: seq[(string, string)]
-      for chan, sid in ent.identifiers.pairs:
-        idents.add((chan, sid))
-      if not appendPersonBlock(baseNimsPath, name, idents):
-        return "  ~ " & name & " already in BASE.nims"
-      var msgs = @["  + person \"" & name & "\" appended (" & $idents.len &
-                    " identifier(s))"]
-      # Splice any relation this user has into the matching agent block.
-      for rel in relationLinesForUser(graph, id):
-        let relText =
-          "  " & rel.kind & " \"" & name & "\":\n" &
-          "    role \"" & rel.role & "\"\n" &
-          "    trustLevel " & $rel.trust &
-          (if rel.etiquette.len > 0:
-             "\n    etiquette \"" & rel.etiquette.replace("\"", "\\\"") & "\""
-           else: "")
-        if insertRelationIntoAgentBlock(baseNimsPath, rel.agent, relText):
-          msgs.add("    + " & rel.agent & "." & rel.kind & " → " & name &
-                    " (role=" & rel.role & ", trust=" & $rel.trust & ")")
-      msgs.join("\n")
-
-    let declared = declaredPersonNames(baseText)
-
-    if args.len >= 2:
-      # Specific nc:id form.
-      let target = args[1]
-      if not target.startsWith("nc:"):
-        return "Error: target must be an nc:id (e.g. nc:4)."
-      let id = parseAlias(target)
-      if uint32(id) == 0 or not graph.entities.hasKey(id) or
-         graph.entities[id].kind != ekPerson:
-        return "Error: " & target & " is not a Person in the graph."
-      let ent = graph.entities[id]
-      let trust = maxTrustFor(graph, id)
-      if trust < 40 and ent.role.toLowerAscii notin ["boss", "master",
-                                                      "admin", "superadmin"]:
-        return "Error: " & target & " is still a guest (trust " & $trust &
-               "). Have them redeem an invite first to earn a role."
-      let nameHint = if args.len >= 3: args[2] else: ent.name
-      return "Registering " & target & " as \"" & nameHint & "\":\n" &
-             registerOne(ent, id, nameHint, declared)
-
-    # Bulk form — everyone non-guest, not already declared.
-    var lines: seq[string] = @["Bulk-registering all non-guest, undeclared Persons:"]
-    var count = 0
-    for id, ent in graph.entities.pairs:
-      if ent.kind != ekPerson: continue
-      if ent.name in declared: continue
-      # Exclude guests. Master/boss/admin role on the entity itself
-      # (SuperAdmin-style graph-level role) is always kept; otherwise
-      # require some agent relationship with trust >= 40.
-      let trust = maxTrustFor(graph, id)
-      if trust < 40 and ent.role.toLowerAscii notin ["boss", "master",
-                                                      "admin", "superadmin"]:
-        continue
-      inc count
-      lines.add("\n" & toAlias(id) & " (" & ent.name & "):")
-      # Use the raw entity.name; specific form lets operators rename.
-      lines.add(registerOne(ent, id, ent.name,
-                             declaredPersonNames(readFile(baseNimsPath))))
-    if count == 0:
-      return "No non-guest, undeclared Persons to register.\n" &
-             "(Run `claw user list` to see who's eligible; redeem an invite\n" &
-             "to promote a guest first.)"
-    lines.add("\nRegistered " & $count & " user(s). Run `claw co update` to\n" &
-              "regenerate BASE.json with the new declarations.")
-    return lines.join("\n")
+  if subcmd == "register":
+    # Create a NEW customer (external-tier) user and mint an invite
+    # code. The code's first-message redemption authenticates the
+    # customer, attaches their channel identifier to the pre-allocated
+    # entity, and (for credential-scoped skill grants) wires up the
+    # per-skill member record.
+    #
+    # Sister command to `add` (which creates an internal user). Both
+    # allocate a new nc:id, a BASE.nims block, and a code; this one is
+    # for paying customers on the external side, with optional skill
+    # grants and language pre-stamping.
+    #
+    # For *customer-to-customer* peer referrals, see `user invite` —
+    # same backend, but issued by an existing customer rather than an
+    # operator, with restricted defaults.
+    if args.len < 2:
+      return "Usage:\n" &
+             "  claw user register <name> [<agent>] [<uses>] \\\n" &
+             "                     [--skill=<grant>]... [--skills=<g1,g2,…>] [--lang=<l>]\n\n" &
+             "Positional defaults: uses=1, agent=<company default>.\n" &
+             "Issuer is stamped automatically (the operator running this).\n\n" &
+             "Skill grants (repeatable):\n" &
+             "  --skill=sungrow                 unscoped\n" &
+             "  --skill=sungrow::acme-solar     credential-scoped — materialises\n" &
+             "                                  a member record so the customer is\n" &
+             "                                  ready post-redeem\n\n" &
+             "Examples:\n" &
+             "  claw user register Alice                     # 1 use, default agent\n" &
+             "  claw user register Acme Atlas 3              # 3 uses, Atlas\n" &
+             "  claw user register Bob Atlas 1 \\\n" &
+             "                     --skill=sungrow::acme-solar"
+    let customerName = args[1].strip
+    var agentArg = ""
+    var maxUses = 1
+    var allowedSkills: seq[string]
+    var inviteLang = ""
+    # Walk the remaining args; positional 2 = agent, 3 = uses.
+    var positionalIdx = 0
+    for a in args[2 .. ^1]:
+      if a.startsWith("--skill="):
+        let g = a["--skill=".len .. ^1].strip()
+        if g.len > 0: allowedSkills.add(g)
+      elif a.startsWith("--skills="):
+        for s in a["--skills=".len .. ^1].split(','):
+          let s2 = s.strip()
+          if s2.len > 0: allowedSkills.add(s2)
+      elif a.startsWith("--lang="):
+        inviteLang = a["--lang=".len .. ^1].strip()
+      else:
+        case positionalIdx:
+        of 0: agentArg = a
+        of 1:
+          try: maxUses = parseInt(a)
+          except ValueError:
+            return "Error: <uses> must be an integer, got '" & a & "'."
+        else: discard
+        inc positionalIdx
+    let agentName =
+      if agentArg.len > 0: agentArg
+      elif cfg.agents.named.len > 0: cfg.agents.named[0].name
+      else: ""
+    # The caller's nc:id is the issuer for provenance. CLI form has no
+    # caller context; chat form passes it through `runUserCommand`
+    # via the args list (TODO: add explicit issuer arg). For now leave
+    # blank — `mintCustomerInvite` accepts an empty issuer.
+    let inv = mintCustomerInvite(cfg.workspacePath(), "",
+                                  customerName, agentName,
+                                  maxUses, allowedSkills, inviteLang)
+    if not inv.ok:
+      return "Error: " & inv.error
+    var res = "Registered customer **" & inv.customerName & "** (" &
+              inv.targetNcId & ").\n" &
+              "Persisted to BASE.nims; serves edge added to " &
+              inv.agentName & ".\n\n" &
+              "Invite code: **" & inv.code & "**\n" &
+              "Max uses: " & $inv.maxUses
+    if inv.allowedSkills.len > 0:
+      res.add("\nSkills: " & inv.allowedSkills.join(", "))
+    if inv.materialized.len > 0:
+      res.add("\nMaterialised member records: " & inv.materialized.join(", "))
+    if inviteLang.len > 0:
+      res.add("\nLanguage: " & inviteLang)
+    res.add("\n\nForward this single line to the customer:\n")
+    let brand = resolveCompanyBrand(graph)
+    res.add(inviteCodeMessage(brand, inv.code, inviteLang) & "\n")
+    res.add("\nThey DM it (or just the code) to any channel routing to '" &
+            inv.agentName & "'. Gateway authenticates pre-LLM.")
+    return res
 
   if subcmd == "remove" or subcmd == "delete":
     # Two-level remove:

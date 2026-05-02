@@ -499,56 +499,54 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     let parts = rawParts
     if parts.len < 2 or parts[1] == "help":
       return "**`/user` — user management**\n\n" &
-             "**Subcommands**\n\n" &
-             "  `/user list` [filters]\n" &
-             "    Roster of all users in this company. Filters:\n" &
-             "      `--kind=<Person|AI|Unknown|Service>`\n" &
-             "      `--tier=<int|ext|?>`\n" &
-             "      `--permission=<role>`\n" &
-             "      `--sort=<nc|name|kind|permission|tier|role>`\n" &
-             "      `--reverse`  `--format=<table|json>`\n" &
-             "    Example: `/user list --kind=Unknown` (guests to classify)\n\n" &
-             "  `/user show <nc:id>`\n" &
-             "    Detailed view of one user — declared permission, tier,\n" &
-             "    job title, every identifier, outbound + inbound\n" &
-             "    relationships (trust + etiquette), mood for agents.\n" &
-             "    Example: `/user show nc:4`\n\n" &
-             "  `/user trust`\n" &
-             "    Edge list of the trust graph: one row per declared\n" &
-             "    agent→person edge (agent, edge kind, person, tier,\n" &
-             "    role, trust, etiquette). Shows per-agent divergence\n" &
-             "    that `/user list` collapses.\n" &
-             "    Example: `/user trust`\n\n" &
+             "**Creating users**\n\n" &
+             "  `/user add <name> [<permission>]`   🔒 Admin\n" &
+             "    Create a NEW internal-tier user (Member/Admin/Staff/\n" &
+             "    Employee/SuperAdmin). Persists to BASE.nims, mints a\n" &
+             "    one-shot bind code so they attach a channel identifier\n" &
+             "    on their first message.\n" &
+             "    Examples:\n" &
+             "      `/user add Alice`          — Member (default)\n" &
+             "      `/user add Bob Admin`\n\n" &
+             "  `/user register <name> [<agent>] [<uses>] [--skill=...]`\n" &
+             "    Create a NEW customer (external-tier). Persists to\n" &
+             "    BASE.nims, mints an invite code with optional skill\n" &
+             "    grants. Operator-issued.\n" &
+             "    Examples:\n" &
+             "      `/user register Alice`\n" &
+             "      `/user register Acme Atlas 3 --skill=sungrow::acme-solar`\n\n" &
              "  `/user invite <customer-name> [<agent>] [<uses>]`\n" &
-             "    Pre-allocates a Customer Person entity + mints a\n" &
-             "    one-shot access code (`nc:X/CODE`). Returns three\n" &
-             "    paste-ready sentence templates the customer can\n" &
-             "    forward to their channel. On first message, the\n" &
-             "    gateway authenticates them before the LLM.\n" &
-             "    Examples:\n" &
-             "      `/user invite Alice`          — Atlas, 1 use\n" &
-             "      `/user invite Acme Atlas 3`   — Atlas, 3 redemptions\n\n" &
+             "    Peer referral — same backend as `register` but the\n" &
+             "    issuer is an existing customer (customer-to-customer\n" &
+             "    onboarding). Use `invite list` to see outstanding codes.\n\n" &
+             "**Promoting / editing**\n\n" &
+             "  `/user join <nc:id> [<permission>]`   🔒 Admin\n" &
+             "    Promote an EXISTING customer to internal-tier. Same\n" &
+             "    nc:id, no new code (they already have a channel\n" &
+             "    binding). BASE.nims block's permission line is updated.\n" &
+             "    Example: `/user join nc:6 Member`\n\n" &
              "  `/user edit <nc:id> <field> <value>`   🔒 Admin\n" &
-             "    Update name, permission, jobTitle, or kind on an\n" &
-             "    existing user. Writes BASE.nims directly (run\n" &
-             "    `/co update` after to refresh BASE.json). Use this\n" &
-             "    to promote a Customer to Member, classify an Unknown\n" &
-             "    guest, etc. For identifiers (NKN/Telegram/etc) use\n" &
-             "    `/user bind` instead — those should be stamped by\n" &
-             "    the user actually messaging from that channel.\n" &
+             "    Single-field update — `name`, `permission`, `jobTitle`,\n" &
+             "    `kind`. For identifiers, use `/user rebind` instead.\n" &
              "    Examples:\n" &
-             "      `/user edit nc:7 permission Member`\n" &
              "      `/user edit nc:5 jobTitle \"Field Engineer\"`\n\n" &
+             "  `/user rebind <nc:id> [--wipe]`   🔒 SuperAdmin\n" &
+             "    Issue a fresh bind code for an existing internal user.\n" &
+             "    Use for lost-device recovery or channel migration.\n\n" &
+             "**Reading**\n\n" &
+             "  `/user list` [filters]\n" &
+             "    Roster of users. `--kind=`, `--tier=`, `--permission=`,\n" &
+             "    `--sort=`, `--reverse`, `--recycled`, `--all`.\n\n" &
+             "  `/user show <nc:id>`\n" &
+             "    Detailed view (relationships, trust, mood) for one user.\n\n" &
+             "  `/user trust`\n" &
+             "    Edge list — one row per agent→person edge.\n\n" &
+             "**Lifecycle**\n\n" &
              "  `/user remove <nc:id>`   🔒 Admin\n" &
-             "    Deletes an entity from the graph AND from BASE.nims\n" &
-             "    (person block + any reportsTo/serves references\n" &
-             "    cascaded). Prefer this over manual DSL edits for\n" &
-             "    cleaning up stale Unknown auto-registers or dupes.\n" &
-             "    Example: `/user remove nc:7`\n\n" &
-             "Access:  `list`/`show`/`trust`/`invite` — any internal\n" &
-             "         `add`/`edit`/`remove` — Admin or SuperAdmin\n" &
-             "         `bind`/`rebind` — SuperAdmin only (works for any\n" &
-             "                            internal-tier role)"
+             "    Soft remove (default) preserves history; `--hard` deletes.\n\n" &
+             "Access:  `list`/`show`/`trust`/`register`/`invite` — any internal\n" &
+             "         `add`/`join`/`edit`/`remove` — Admin or SuperAdmin\n" &
+             "         `rebind` — SuperAdmin only"
     let sub = parts[1]
     let subArgs = if parts.len > 2: parts[2 .. ^1] else: @[]
     # Per-subcommand ACL: the entry gate above lets through any
@@ -573,8 +571,21 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     if sub == "add":
       if callerPermGate < pmAdmin:
         return "Only Admin or SuperAdmin can add internal users. " &
-               "(For customer onboarding, use `/user invite` — any " &
-               "internal staff member can mint a customer invite.)"
+               "(For customer onboarding, use `/user register`.)"
+      var cfgCopy = cfg[]
+      let body = runUserCommand(cfgCopy, @[sub] & subArgs)
+      return codeBlock(body)
+    if sub == "register":
+      # Operator-issued customer creation — same access as the legacy
+      # `/user invite` (any internal can mint a customer code).
+      var cfgCopy = cfg[]
+      let body = runUserCommand(cfgCopy, @[sub] & subArgs)
+      return codeBlock(body)
+    if sub == "join":
+      if callerPermGate < pmAdmin:
+        return "Only Admin or SuperAdmin can promote users. " &
+               "(`/user join <nc:id> [<permission>]` — promotes an " &
+               "existing customer to internal-tier.)"
       var cfgCopy = cfg[]
       let body = runUserCommand(cfgCopy, @[sub] & subArgs)
       return codeBlock(body)
@@ -594,15 +605,18 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       let body = runUserCommand(cfgCopy, @["rebind"] & subArgs)
       return codeBlock(body)
     if sub == "invite":
-      # Rewrite to the legacy /invite alias below — same helper path,
-      # chat-specific paste-template formatting. Open to any internal.
+      # Customer-to-customer peer referral. Routes to the existing
+      # `/invite` alias for paste-template formatting; the backend
+      # (mintCustomerInvite) is shared with `register`. Open to any
+      # internal — when we add Customer-tier callers (peer-issued
+      # referrals), this is where the relaxed gate will live.
       let cmdRewrite = "/invite " & subArgs.join(" ")
       var fakeMsg = msg
       fakeMsg.content = cmdRewrite
       return await handleSystemCommand(cfg, fakeMsg, al)
     return "Unknown /user subcommand: `" & sub & "`.\n" &
-           "Available: `list`, `show`, `trust`, `add`, `edit`, " &
-           "`bind`, `invite`, `remove`."
+           "Available: `list`, `show`, `trust`, `add`, `register`, " &
+           "`join`, `edit`, `rebind`, `invite`, `remove`."
 
   elif cmd.startsWith("/invite"):
     # Legacy alias for `/user invite`. Entry gate has confirmed
