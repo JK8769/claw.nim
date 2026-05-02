@@ -1203,42 +1203,61 @@ method send*(c: FeishuChannel, msg: OutboundMessage) {.async.} =
     let idType = if msg.chat_id.startsWith("ou_"): "--user-id" else: "--chat-id"
     args = @["im", "+messages-send", idType, msg.chat_id]
 
-  # Choose content format: image > file > card > markdown > post
-  if imageVal.len > 0:
-    args.add("--image")
-    args.add(imageVal)
-    if msg.content.len > 0:
-      # Send text as a separate follow-up (lark-cli image doesn't support caption)
-      discard
-  elif fileVal.len > 0:
-    # lark-cli's --file flag URL-encodes the filename when uploading
-    # to Feishu's `im/v1/files` endpoint, and that encoding mangles
-    # non-ASCII characters (`荣鑫一期.pdf` becomes `%XX` garbage in the
-    # uploaded filename). Workaround: if the file path's leaf has
-    # non-ASCII chars, copy to a temp path with an ASCII-safe name
-    # before handing to lark-cli. The original file stays put;
-    # only the temp copy is what lark-cli sees.
-    proc isAsciiLeaf(p: string): bool =
-      let name = lastPathPart(p)
-      for c in name:
-        if c.ord >= 128: return false
-      true
-    var safeFile = fileVal
-    if not isAsciiLeaf(fileVal):
-      let (_, _, ext) = splitFile(fileVal)
+  # lark-cli's `--file` / `--image` / `--video` / `--audio` flags
+  # require the path to be RELATIVE and within the current working
+  # directory ("--file: --file must be a relative path within the
+  # current directory, got <absolute path>"). The framework hands
+  # absolute paths everywhere — fix the impedance mismatch by
+  # rewriting any absolute path to a `./<basename>` plus a working
+  # directory we set on the lark-cli subprocess via startProcess's
+  # workingDir parameter.
+  #
+  # When the path's basename has non-ASCII chars, lark-cli's
+  # filename URL-encoding ALSO mangles the uploaded filename
+  # (`荣鑫一期.pdf` → `%XX` garbage). Sidestep by copying to a temp
+  # path with an ASCII-safe name; the original file stays put.
+  proc isAsciiLeaf(p: string): bool =
+    for c in lastPathPart(p):
+      if c.ord >= 128: return false
+    true
+  proc prepareUpload(rawPath: string): tuple[workDir, relPath: string] =
+    ## Returns the working dir and `./<basename>` form lark-cli wants.
+    ## If `rawPath`'s leaf has non-ASCII, copies to a temp ASCII path
+    ## first and uses that.
+    var p = rawPath
+    if not isAsciiLeaf(p):
+      let (_, _, ext) = splitFile(p)
       let stamp = $getTime().toUnix() & "_" & $rand(100000)
       let safeName = "feishu_upload_" & stamp & ext
       let tmp = getTempDir() / safeName
       try:
-        copyFile(fileVal, tmp)
-        safeFile = tmp
+        copyFile(p, tmp)
+        p = tmp
         infoCF("feishu", "Renamed non-ASCII upload",
-               {"original": fileVal, "temp": tmp}.toTable)
+               {"original": rawPath, "temp": tmp}.toTable)
       except CatchableError as e:
-        warnCF("feishu", "Could not rename non-ASCII filename — passing original through",
-               {"path": fileVal, "error": e.msg}.toTable)
+        warnCF("feishu", "Non-ASCII rename failed; passing original",
+               {"path": rawPath, "error": e.msg}.toTable)
+    (parentDir(p), "./" & lastPathPart(p))
+
+  # Track workingDir for the lark-cli subprocess. Empty means inherit
+  # parent's CWD (correct for text/markdown/card sends).
+  var uploadWorkDir = ""
+
+  # Choose content format: image > file > card > markdown > post
+  if imageVal.len > 0:
+    let (wd, rel) = prepareUpload(imageVal)
+    uploadWorkDir = wd
+    args.add("--image")
+    args.add(rel)
+    if msg.content.len > 0:
+      # Send text as a separate follow-up (lark-cli image doesn't support caption)
+      discard
+  elif fileVal.len > 0:
+    let (wd, rel) = prepareUpload(fileVal)
+    uploadWorkDir = wd
     args.add("--file")
-    args.add(safeFile)
+    args.add(rel)
   elif options.isSome(cardOpt):
     args.add("--msg-type")
     args.add("interactive")
@@ -1252,10 +1271,14 @@ method send*(c: FeishuChannel, msg: OutboundMessage) {.async.} =
   args.add("--as")
   args.add("bot")
 
-  infoCF("feishu", "Sending via lark-cli", {"cmd": args.join(" "), "chat": msg.chat_id}.toTable)
+  infoCF("feishu", "Sending via lark-cli",
+         {"cmd": args.join(" "), "chat": msg.chat_id,
+          "workdir": uploadWorkDir}.toTable)
 
   try:
-    let p = startProcess(c.larkCliBin, args = args, env = env, options = {poUsePath})
+    let p = startProcess(c.larkCliBin, args = args, env = env,
+                         workingDir = uploadWorkDir,
+                         options = {poUsePath})
     let output = p.outputStream.readAll()
     let errOutput = p.errorStream.readAll()
     let code = p.waitForExit(30000)
