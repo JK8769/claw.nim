@@ -1764,7 +1764,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     provider, workspace, msgBus, toolsRegistry, nil,
     maxIterations =
       max(1, cfg.agents.defaults.max_tool_iterations),
-    focus_modes = cfg.focus_modes)
+    focus_modes = cfg.focus_modes,
+    namedAgents = cfg.agents.named)
   regTagged(newSpawnTool(subagentManager), ["agent", "automation"], "spawn autonomous sub-agents for tasks")
 
   # --- Hardware (unified) ---

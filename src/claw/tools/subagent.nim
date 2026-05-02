@@ -48,13 +48,19 @@ type
     focus_modes*: Table[string, cfg_mod.FocusMode]
                               ## Focus modes available to subagent tasks,
                               ## keyed by name. Looked up at spawn time.
+    agentModels*: Table[string, string]
+                              ## Lowercased agent name → model. Used when
+                              ## a spawn carries `agent: "Devon"` so the
+                              ## subagent runs with Devon's CONFIGURED
+                              ## model, not the literal string "Devon".
 
 proc newSubagentManager*(provider: providers_types.LLMProvider,
                          workspace: string, bus: MessageBus,
                          tools: tools_registry.ToolRegistry = nil,
                          graph: WorldGraph = nil,
                          maxIterations: int = 20,
-                         focus_modes: seq[cfg_mod.FocusMode] = @[]): SubagentManager =
+                         focus_modes: seq[cfg_mod.FocusMode] = @[],
+                         namedAgents: seq[cfg_mod.NamedAgentConfig] = @[]): SubagentManager =
   var sm = SubagentManager(
     tasks: initTable[string, SubagentTask](),
     provider: provider,
@@ -64,9 +70,13 @@ proc newSubagentManager*(provider: providers_types.LLMProvider,
     graph: graph,
     nextID: 1,
     maxIterations: maxIterations,
-    focus_modes: initTable[string, cfg_mod.FocusMode]()
+    focus_modes: initTable[string, cfg_mod.FocusMode](),
+    agentModels: initTable[string, string]()
   )
   for m in focus_modes: sm.focus_modes[m.name] = m
+  for a in namedAgents:
+    if a.name.len > 0 and a.model.len > 0:
+      sm.agentModels[a.name.toLowerAscii] = a.model
   initLock(sm.lock)
   return sm
 
@@ -102,11 +112,26 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
   # Resolve focus mode (empty / unknown = default, no override).
   let mode = resolveFocusMode(sm, task.focus_mode)
 
-  # Model resolution: mode override > agent profile override > parent's default.
+  # Model resolution priority:
+  #   1. Focus mode's `model` declaration (if non-empty)
+  #   2. Agent override → look up that agent's CONFIGURED model in
+  #      `agentModels`. The spawn tool's `agent:` arg carries the
+  #      agent's NAME, not a model id; passing it raw to the provider
+  #      produces a 400 like "supported API model names are
+  #      deepseek-v4-pro / deepseek-v4-flash, but you passed Devon".
+  #      Fall back to the parent provider's default if the name isn't
+  #      in the table (e.g. typo or a renamed agent that wasn't
+  #      reloaded), so the spawn still runs rather than 400-ing.
+  #   3. Parent provider's default model.
   let model =
-    if mode.model.len > 0: mode.model
-    elif task.agentOverride.len > 0: task.agentOverride
-    else: sm.provider.getDefaultModel()
+    if mode.model.len > 0:
+      mode.model
+    elif task.agentOverride.len > 0:
+      let key = task.agentOverride.toLowerAscii
+      if sm.agentModels.hasKey(key): sm.agentModels[key]
+      else: sm.provider.getDefaultModel()
+    else:
+      sm.provider.getDefaultModel()
   let useXmlTools = isXmlToolProvider(model)
   let strategy = inferStrategy(model)
   # Pre-compute the mode's filtered tool whitelist once — it's invariant
