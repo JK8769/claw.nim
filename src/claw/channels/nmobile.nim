@@ -1364,10 +1364,24 @@ proc poll(c: NMobileChannel) {.async.} =
       await sleepAsync(2000)
 
 const
-  NknClientMaxAgeSec = 14_400   ## 4h blind cycle cap (same as feishu).
   NknClientStaleSec  = 900      ## 15min silent → treat as dead.
+                                ## When the sub-client has never received an
+                                ## event (`lastEventAt == 0`), this is
+                                ## measured as time-since-spawn so a "born
+                                ## dead" client (TCP connected, NKN handshake
+                                ## broken) gets cycled the same as one that
+                                ## went silent mid-session.
   NknWatchdogTickSec = 60       ## Scan cadence.
   NknDefaultNumSubClients = 4   ## nkn-sdk-go refuses NewMultiClient with 0.
+
+  # Note: there is intentionally NO max-age "force refresh" constant
+  # for NKN. The 4h periodic cycle was inherited from the Feishu
+  # watchdog (where bot tenant access tokens expire on a ~2h cadence
+  # and a defensive force-refresh is earned). NKN sub-clients are
+  # seeded deterministically from the wallet seed and have no token
+  # concept; cycling them on a clock costs a 30-60s reconnect storm
+  # for no benefit. The staleness check above catches real failures
+  # — including born-dead clients via the lastEvt==0 fallback below.
 
 proc nkyYellowBook*(cfg: Config, lang = "en"): string =
   ## Build a "phone directory" of agent NKN addresses — printed to a
@@ -1417,13 +1431,24 @@ proc clientWatchdog(c: NMobileChannel) {.thread.} =
       let lastEvt = c.clientLastEventAt.getOrDefault(clientAddr, 0.0)
       if spawned <= 0: continue
       let age = now - spawned
-      let staleness = if lastEvt > 0: now - lastEvt else: 0.0
+      # Staleness measures how long since the sub-client last
+      # surfaced an event. When `lastEvt > 0`, it's the wall-clock
+      # gap. When `lastEvt == 0` (no event has ever arrived since
+      # spawn — e.g. TCP connected but NKN relay handshake broken),
+      # we fall back to age-since-spawn so a born-dead client gets
+      # cycled at the same threshold as a silent live one. Without
+      # this, a born-dead client would never trigger the staleness
+      # check and stayed alive only because of the periodic 4h
+      # force-refresh — which we removed because NKN has no token
+      # expiry to defend against.
+      let staleness = if lastEvt > 0: now - lastEvt else: age
       var reason = ""
-      if age > NknClientMaxAgeSec.float:
-        reason = "4h cycle (age=" & $int(age) & "s)"
-      elif lastEvt > 0 and staleness > NknClientStaleSec.float:
-        reason = "no events " & $int(staleness) & "s (alive " &
-                 $int(age) & "s)"
+      if staleness > NknClientStaleSec.float:
+        reason = if lastEvt > 0:
+                   "no events " & $int(staleness) & "s (alive " &
+                   $int(age) & "s)"
+                 else:
+                   "born dead — " & $int(age) & "s alive, no events ever"
       if reason.len == 0: continue
       let sub = c.clientIdentifiers.getOrDefault(clientAddr, "")
       infoCF("nmobile", "Watchdog cycling client",
