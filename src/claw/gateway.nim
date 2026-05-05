@@ -2207,20 +2207,26 @@ Options:
         if response == "" and shouldRespond:
           if plainContent.startsWith("/"):
             # System commands are operator-level actions — gateway/config
-            # control, not conversation. They're accepted ONLY when the
-            # message is addressed to the company (corporate entity).
-            # A customer DMing `atlas.<pubkey>` or `cli_<app>_agent` with
-            # `/restart` gets silently dropped; the agent never sees it
-            # and the gateway doesn't act on it. The company main-line
-            # address is the single intended surface for these commands.
-            # Slash commands accepted only when addressed to the
-            # company surface — same `companyRoute` flag computed at
-            # the top of the loop, no need to re-resolve.
-            if not companyRoute:
+            # control, not conversation. The company main-line address
+            # is the canonical surface for them: a customer DMing
+            # `atlas.<pubkey>` or `cli_<app>_agent` with `/restart` gets
+            # silently dropped, the agent never sees it, and the
+            # gateway doesn't act on it.
+            #
+            # Carve-out for SuperAdmin/Admin senders: when an operator
+            # types `/model` in their normal DM with an agent (the most
+            # natural place to ask "what model is this agent using
+            # right now?"), the command should still work. The gate's
+            # purpose is keeping CUSTOMERS from triggering operator
+            # actions — that's preserved by checking permission, not
+            # just chat routing.
+            let callerPerm = resolveCallerPermission(cfg, msg)
+            if not companyRoute and callerPerm notin {pmSuperAdmin, pmAdmin}:
               infoCF("claw", "Dropped slash command — not routed to company",
                      {"sender": msg.sender_id,
                       "recipient": msg.recipient_id,
                       "channel": msg.channel,
+                      "perm": $callerPerm,
                       "cmd": plainContent[0 ..< min(plainContent.len, 48)]}.toTable)
               continue  # skip the rest of handling; no reply to non-op paths
             # Fast path: system commands run in a spawned task so they
