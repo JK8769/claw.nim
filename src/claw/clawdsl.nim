@@ -1743,8 +1743,16 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
   # provider_auth and model_list are read-only diagnostics — neither exposes
   # secrets nor writes .env (CLI-only). Useful for any agent to check LLM
   # connectivity and enumerate available models (including live refresh).
+  # `cron` is universal because long-running async work (anygen tasks,
+  # scheduled checks, customer follow-ups) needs deferred execution
+  # without blocking the agent loop. Without cron in the default set,
+  # tool results that emit `next_action.tool="cron"` (e.g. anygen submit)
+  # silently dead-end: the agent sees the instruction, has no `cron` tool
+  # in scope, and improvises (paste the URL, ask the customer to retry).
+  # Operators who want to bar a specific agent from scheduling can still
+  # `deny "cron"` on that agent.
   const defaultTools = ["read_file", "write_file", "list_dir", "reply",
-                        "clock", "provider_auth", "model_list"]
+                        "clock", "provider_auth", "model_list", "cron"]
 
   # Auto-granted when the company declares ≥1 focus_mode. Without `spawn`
   # the focus_modes are unreachable — there's no path from an LLM tool
