@@ -13,6 +13,24 @@ const
   # needing direct access to that agent's tools.
   ExternalAllowedTools* = ["reply", "forward", "redeem_invite",
                            "update_contact", "delegate"]
+  # Heartbeat allowlist: maintenance-shaped tools only. The heartbeat
+  # session ("Check if there are any tasks I should be aware of...")
+  # has been the dominant token sink because the agent saw all 30+
+  # tool schemas every tick and reached for them open-endedly (clock
+  # was the top one — redundant with the time already in the prompt;
+  # mcp_sungrow_* polled APIs on every tick; redeem_invite was being
+  # hallucinated). The minimum useful set for "scan inbox, deliver
+  # queued forwards, review memory, escalate if urgent":
+  #   - read_file / list_dir   review HEARTBEAT.md, scan mail/
+  #   - forward                deliver queued cross-user messages
+  #   - update_contact         apply pending name updates
+  #   - reply                  high-priority output (per prompt's
+  #                            "do NOT communicate unless urgent")
+  #   - delegate               hand urgent work to a peer agent
+  # If a faster cadence on a specific tool is needed, schedule a
+  # separate cron task — that cost is visible as cron, not heartbeat.
+  HeartbeatAllowedTools* = ["read_file", "list_dir", "forward",
+                            "update_contact", "reply", "delegate"]
   MaxToolNameLen* = 64
   MaxResultSize* = 30_000
 

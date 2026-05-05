@@ -672,6 +672,15 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let toolDefs =
       if useXmlTools:
         @[]
+      elif opts.senderID == "system:heartbeat":
+        # Heartbeat ticks see a tight maintenance allowlist instead
+        # of every registered tool. The session is "is anything
+        # pending?" — exposing 30+ schemas (sungrow polling, code
+        # editors, etc.) just inflates per-tick token cost and
+        # encourages open-ended tool calls. See registry.nim's
+        # `HeartbeatAllowedTools` for the rationale + member list.
+        al.tools.getDefinitionsFiltered(strategy,
+          @(tools_registry.HeartbeatAllowedTools))
       else:
         let roleLow = opts.userRole.toLowerAscii()
         # Per-agent allowlist takes priority (from ClawDSL uses)

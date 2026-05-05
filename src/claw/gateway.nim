@@ -1570,9 +1570,20 @@ Options:
   if not gCtx.offices.hasKey("lexi"):
     gCtx.offices["lexi"] = makeAgentLoop("Lexi")
   let lexiWorkspace = cfg[].workspacePath() / "offices" / "lexi"
+  # Heartbeat cadence: 4 hours. Lexi's heartbeat is a "is anything
+  # pending" check (mailbox scan, queued forwards, memory review),
+  # not a polling loop — running it 35×/day at 30min cadence pegged
+  # ~20% of total token spend with no user-visible value beyond what
+  # a less frequent check delivers. The per-tick cost is also tightened
+  # by the heartbeat-specific tool allowlist in agent/loop.nim, which
+  # only sends maintenance-shaped tools (read_file, list_dir, forward,
+  # delegate, reply, update_contact) instead of all 30+ schemas. If
+  # operators need something time-sensitive (alarms, fleet status),
+  # use the cron tool to schedule a separate task at a faster cadence
+  # — that cost shows up as cron, not heartbeat.
   let hbService = newHeartbeatService(lexiWorkspace, proc(p: string): Future[void] {.async.} =
     discard await gCtx.offices["lexi"].processDirect(p, "system:heartbeat")
-  , 1800, true)
+  , 14400, true)
 
   # IPC setup — stdio (Zen mode) or socket (headless daemon)
   var stdioServer: StdioServer = nil
