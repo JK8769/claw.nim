@@ -184,10 +184,38 @@ proc registerTool*(al: AgentLoop, tool: Tool) =
   al.tools.register(tool)
 
 proc estimateTokens(messages: seq[providers_types.Message]): int =
-  var total = 0
+  ## Heuristic: total characters across every field that goes on the
+  ## wire to the LLM, divided by 4. Counts:
+  ##   - content
+  ##   - reasoning_content (DeepSeek V4 / o1 thinking traces — echoed
+  ##     back on subsequent turns; not free)
+  ##   - tool_calls (JSON-serialised for the API; for tool-heavy
+  ##     sessions this is the dominant byte source — Jerry's nc_5
+  ##     was 672K tokens of tool_calls vs 147K of content)
+  ##   - tool_call_id + name (small but real)
+  ##
+  ## Earlier this proc only summed `content`. That undercounted by
+  ## 5-7× on tool-heavy sessions, which meant the 75% threshold
+  ## check in `maybeSummarize` never fired even when the session was
+  ## already over 900K tokens going to DeepSeek on every call.
+  var totalChars = 0
   for m in messages:
-    total += m.content.len div 4
-  return total
+    totalChars += m.content.len
+    totalChars += m.reasoning_content.len
+    totalChars += m.tool_call_id.len
+    totalChars += m.name.len
+    for tc in m.tool_calls:
+      totalChars += tc.id.len
+      totalChars += tc.`type`.len
+      totalChars += tc.function.name.len
+      totalChars += tc.function.arguments.len
+      totalChars += tc.name.len
+      # `arguments` is also a Table[string, JsonNode]; serialise to
+      # approximate the on-wire size when it's populated.
+      for k, v in tc.arguments.pairs:
+        totalChars += k.len
+        totalChars += ($v).len
+  return totalChars div 4
 
 proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
   ## Read-only snapshot of a session's context utilisation. Same
