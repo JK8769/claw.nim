@@ -476,22 +476,48 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
   elif cmd.startsWith("/model"):
     let parts = cmd.split(" ", 1)
     if parts.len < 2 or parts[1].strip().len == 0:
-      var msg = "Current model: `" & al.model & "` (provider: `" & cfg.default_provider & "`)\n\n"
+      var output = "Configured primary: `" & al.model & "` (provider: `" & cfg.default_provider & "`)\n"
+
+      # Show the actually-active entry for THIS session — diverges from
+      # the configured primary whenever the session has fallen back.
+      # Without this, the operator can't tell from /model whether their
+      # current chat is still on DeepSeek or has ratcheted to kimi.
+      if al.provider of FallbackLLMProvider:
+        let fp = FallbackLLMProvider(al.provider)
+        let cur = fp.currentEntryFor(msg.session_key)
+        if cur.exhausted:
+          output &= "Active for this session: ⚠️ chain exhausted (all providers have failed). Restart the gateway or fix a provider.\n\n"
+        else:
+          let stickyMarker =
+            if cur.idx == 0: " (primary, fresh probe)"
+            else: " (sticky fallback — primary previously failed for this session)"
+          output &= "Active for this session: `" & cur.name & "` / `" & cur.model & "`" & stickyMarker & "\n\n"
+        output &= "**Fallback chain:**\n"
+        for i, entry in fp.entries:
+          let marker =
+            if cur.exhausted and i == fp.entries.high: " ← exhausted"
+            elif i == cur.idx: " ← THIS SESSION"
+            elif i == 0: " (primary)"
+            else: ""
+          output &= "  [" & $i & "] `" & entry.name & "` / `" & entry.model & "`" & marker & "\n"
+        output &= "\n"
+
       let graph = loadWorld(cfg[].workspacePath())
       if graph.providers != nil and graph.providers.kind == JObject and graph.providers.len > 0:
+        output &= "**Configured providers** (BASE.nims):\n"
         for key, pNode in graph.providers.getFields():
           let rawKey = pNode{"apiKey"}.getStr("")
           let hasKey = if rawKey.len > 0: "+" else: "-"
-          msg &= "**" & key & "** " & hasKey & "\n"
+          output &= "**" & key & "** " & hasKey & "\n"
           if pNode.hasKey("models") and pNode["models"].kind == JArray:
             for m in pNode["models"]:
               let modelId = m.getStr()
-              let marker = if modelId == al.model: " <- current" else: ""
-              msg &= "  `" & key & ":" & modelId & "`" & marker & "\n"
+              let marker = if modelId == al.model: " <- configured" else: ""
+              output &= "  `" & key & ":" & modelId & "`" & marker & "\n"
           else:
-            msg &= "  (no models listed)\n"
-      msg &= "\nUsage: `/model <provider:model>`\n  `/model list <provider>` -- query models from API"
-      return msg
+            output &= "  (no models listed)\n"
+      output &= "\nUsage: `/model <provider:model>` to switch primary; `/model list [<provider>]` to query the provider's /models API"
+      return output
     let modelStr = parts[1].strip()
 
     # /model list [provider]

@@ -103,6 +103,23 @@ proc getStickyStart(p: FallbackLLMProvider, sessionKey: string): int =
   defer: release(p.sessionLock)
   result = p.sessionEntry.getOrDefault(sessionKey, 0)
 
+proc currentEntryFor*(p: FallbackLLMProvider, sessionKey: string):
+                     tuple[idx: int, name: string, model: string,
+                           exhausted: bool] =
+  ## Public introspection: which entry is THIS session currently sticky
+  ## on? Used by `/model` (and any future status surface) to show the
+  ## actually-active provider/model rather than just the configured
+  ## primary — they diverge whenever the session has fallen back.
+  ##
+  ## Returns `exhausted=true` when the session has ratcheted past every
+  ## entry (i.e. all providers have failed for this session and the
+  ## next call would raise "chain exhausted"). Operators see this as
+  ## a "restart gateway / fix provider" signal.
+  let i = p.getStickyStart(sessionKey)
+  if i >= p.entries.len:
+    return (i, "exhausted", "", true)
+  (i, p.entries[i].name, p.entries[i].model, false)
+
 proc advanceSticky(p: FallbackLLMProvider, sessionKey: string, newIdx: int) =
   ## Ratchet the session forward to newIdx. Never moves backward — even
   ## if a transient probe somehow succeeds at a lower index, we keep
