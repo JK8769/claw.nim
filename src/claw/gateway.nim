@@ -139,14 +139,44 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
   let officeKey = agentName.toLowerAscii()
 
   if job.payload.deliver:
-    gCtx.msgBus.publishOutbound(newOutbound(job.payload.channel, agentName, job.payload.to, job.payload.message))
+    var meta = initTable[string, string]()
+    if job.payload.replyToMessageID.len > 0:
+      meta["message_id"] = job.payload.replyToMessageID
+    if job.payload.appID.len > 0:
+      meta["app_id"] = job.payload.appID
+    gCtx.msgBus.publishOutbound(newOutbound(
+      job.payload.channel, agentName, job.payload.to, job.payload.message,
+      job.payload.replyToMessageID, job.payload.appID, meta))
   else:
     if not gCtx.offices.hasKey(officeKey):
       gCtx.offices[officeKey] = makeAgentLoop(agentName)
     let sender = if job.payload.senderID != "": job.payload.senderID else: "system:scheduler"
-    let agentResponse = await gCtx.offices[officeKey].processDirect(job.payload.message, sender, sender, channel = job.payload.channel)
+    # Reconstruct the inbound shape a real user message would have, so
+    # the agent loop's outbound (and any reply tool the agent calls)
+    # has the same routing handles — chat_id, message_id, app_id —
+    # that drove the original conversation. processDirect's "direct"
+    # chat-id default and stripped metadata loses the message_id;
+    # without it, Feishu replies fall back to messages-send and hit
+    # the wrong-app routing error this fix targets.
+    var meta = initTable[string, string]()
+    if job.payload.replyToMessageID.len > 0:
+      meta["message_id"] = job.payload.replyToMessageID
+    if job.payload.appID.len > 0:
+      meta["app_id"] = job.payload.appID
+    let inbound = bus_types.InboundMessage(
+      channel: job.payload.channel,
+      sender_id: sender,
+      recipient_id: agentName,
+      chat_id: job.payload.to,
+      content: job.payload.message,
+      session_key: sender,
+      metadata: meta
+    )
+    let agentResponse = await gCtx.offices[officeKey].processMessage(inbound)
     if agentResponse != "":
-      gCtx.msgBus.publishOutbound(newOutbound(job.payload.channel, agentName, job.payload.to, agentResponse))
+      gCtx.msgBus.publishOutbound(newOutbound(
+        job.payload.channel, agentName, job.payload.to, agentResponse,
+        job.payload.replyToMessageID, job.payload.appID, meta))
 
 proc cronHandler(job: cron_service.CronJob): Future[void] =
   return cronHandlerLogic(job)

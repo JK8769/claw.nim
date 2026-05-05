@@ -19,6 +19,19 @@ type
     agentName*: string
     agentID*: string
     model*: string
+    # Snapshotted from the agent's session at scheduling time so the
+    # cron-fired turn can route its reply via the correct platform
+    # primitives. Without these, a cron-fired reply falls back to
+    # `messages-send --chat-id …` which (on Feishu) fails for chats
+    # whose owning bot/app is one of several registered for the
+    # company — the platform's API requires the bot to be a member of
+    # the chat under the *active* app, and lark-cli's app selection
+    # for `messages-send` doesn't always pick the right one. Threading
+    # the original message_id lets the reply use `messages-reply
+    # --message-id …`, which threads off the original inbound and
+    # picks up the correct app automatically.
+    replyToMessageID*: string
+    appID*: string
 
   CronJobState* = object
     nextRunAtMs*: Option[int64]

@@ -84,6 +84,11 @@ proc addJob(t: CronTool, args: Table[string, JsonNode]): Future[string] {.async.
   acquire(t.lock)
   let channel = t.channel
   let chatID = t.chatID
+  # Snapshot the message_id and app_id from the live session so the
+  # cron-fired turn can reply via `messages-reply` rather than
+  # `messages-send` — see CronPayload's docstring for why.
+  let replyToMessageID = t.replyToMessageID
+  let appID = t.appID
   release(t.lock)
 
   if channel == "" or chatID == "":
@@ -95,7 +100,7 @@ proc addJob(t: CronTool, args: Table[string, JsonNode]): Future[string] {.async.
   let scheduleOpt = parseScheduleArgs(args)
   if scheduleOpt.isNone:
     return "Error: one of at_seconds, every_seconds, or cron_expr is required"
-  
+
   let schedule = scheduleOpt.get()
   let deliver = if args.hasKey("deliver"): args["deliver"].getBool() else: true
   let messagePreview = truncate(message, 30)
@@ -110,7 +115,9 @@ proc addJob(t: CronTool, args: Table[string, JsonNode]): Future[string] {.async.
       senderID: t.logicalUserID,
       agentName: t.agentName,
       agentID: t.agentID,
-      model: "" # Default to current
+      model: "", # Default to current
+      replyToMessageID: replyToMessageID,
+      appID: appID
     )
     let job = await t.cronService.addJob(messagePreview, schedule, payload)
     return strutils.format("Created job '$1' (id: $2)", job.name, job.id)
