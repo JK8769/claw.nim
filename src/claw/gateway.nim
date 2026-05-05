@@ -8,6 +8,7 @@ import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/
 import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
+import tools/registry as tools_registry
 import providers/http, providers/types as providers_types,
        providers/fallback, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
@@ -1627,7 +1628,7 @@ Options:
   # use the cron tool to schedule a separate task at a faster cadence
   # — that cost shows up as cron, not heartbeat.
   let hbService = newHeartbeatService(lexiWorkspace, proc(p: string): Future[void] {.async.} =
-    discard await gCtx.offices["lexi"].processDirect(p, "system:heartbeat")
+    discard await gCtx.offices["lexi"].processDirect(p, tools_registry.SystemHeartbeatSender)
   , 14400, true)
 
   # IPC setup — stdio (Zen mode) or socket (headless daemon)

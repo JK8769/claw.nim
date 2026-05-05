@@ -700,7 +700,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let toolDefs =
       if useXmlTools:
         @[]
-      elif opts.senderID == "system:heartbeat":
+      elif opts.senderID == tools_registry.SystemHeartbeatSender:
         # Heartbeat ticks see a tight maintenance allowlist instead
         # of every registered tool. The session is "is anything
         # pending?" — exposing 30+ schemas (sungrow polling, code
