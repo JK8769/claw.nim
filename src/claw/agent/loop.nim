@@ -2,6 +2,7 @@ import std/[json, strutils, asyncdispatch, tables, locks, os, options, sets, alg
 import ../bus, ../bus_types, ../config, ../logger, ../providers/types as providers_types, ../session, ../utils
 import ../providers/models_catalog
 import ../providers/sanitize
+import ../providers/fallback as providers_fallback
 import ../providers/tool_loop
 export sanitize.sanitizeForProvider
 import ../skill_grant
@@ -454,7 +455,7 @@ proc resolveMaxOutputTokens*(modelName: string, requested: int): int =
   if modelCap > 0 and requested > modelCap: return modelCap
   requested
 
-proc summarizeBatch(al: AgentLoop, batch: seq[providers_types.Message], existingSummary: string): Future[string] {.async.} =
+proc summarizeBatch(al: AgentLoop, batch: seq[providers_types.Message], existingSummary: string, sessionKey: string = ""): Future[string] {.async.} =
   ## Structured facts-sheet summary instead of narrative prose. Each
   ## summarisation cycle UPDATES sections (carry forward + add new
   ## entries + mark resolved) rather than rewriting prose, so concrete
@@ -521,7 +522,10 @@ CARRY-FORWARD RULES:
   for m in batch:
     prompt.add(m.role & ": " & m.content & "\n")
 
-  let response = await al.provider.chat(@[providers_types.Message(role: providers_types.RoleUser, content: prompt)], @[], al.model, initTable[string, JsonNode]())
+  var summaryOpts = initTable[string, JsonNode]()
+  if sessionKey.len > 0:
+    summaryOpts[providers_fallback.SessionKeyOption] = %sessionKey
+  let response = await al.provider.chat(@[providers_types.Message(role: providers_types.RoleUser, content: prompt)], @[], al.model, summaryOpts)
   return response.content
 
 const SummaryChunkBudgetTokens* = 100_000
@@ -535,7 +539,8 @@ const SummaryChunkBudgetTokens* = 100_000
 
 proc summarizeBatchOrChunked(al: AgentLoop,
                               batch: seq[providers_types.Message],
-                              existingSummary: string): Future[string] {.async.} =
+                              existingSummary: string,
+                              sessionKey: string = ""): Future[string] {.async.} =
   ## Single-shot summarise; if the LLM call rejects the request as
   ## over its context window, transparently fall back to chunked:
   ## walk the batch in ~SummaryChunkBudgetTokens chunks, fold each
@@ -548,7 +553,7 @@ proc summarizeBatchOrChunked(al: AgentLoop,
   ## on its own size and the session stays stuck at the live-tail
   ## limit forever.
   try:
-    return await al.summarizeBatch(batch, existingSummary)
+    return await al.summarizeBatch(batch, existingSummary, sessionKey)
   except IOError as e:
     let msg = e.msg
     let isOverflow = "context length" in msg or
@@ -575,7 +580,7 @@ proc summarizeBatchOrChunked(al: AgentLoop,
     infoCF("agent", "Summariser chunk",
            {"start": $i, "end": $j, "of_total": $batch.len,
             "chars": $chunkChars}.toTable)
-    running = await al.summarizeBatch(chunk, running)
+    running = await al.summarizeBatch(chunk, running, sessionKey)
     i = j
   return running
 
@@ -596,7 +601,7 @@ proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
 
   if validMessages.len == 0: return
 
-  let finalSummary = await al.summarizeBatchOrChunked(validMessages, summary)
+  let finalSummary = await al.summarizeBatchOrChunked(validMessages, summary, sessionKey)
 
   if finalSummary != "":
     al.sessions.setSummary(sessionKey, finalSummary)
@@ -899,7 +904,11 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
     var options = {
       "max_tokens": %al.maxResponseTokens,
-      "temperature": %al.temperature
+      "temperature": %al.temperature,
+      # Sticky-fallback hint for FallbackLLMProvider. Stripped before
+      # the underlying http provider sees it; non-fallback providers
+      # ignore unknown options. See providers/fallback.nim.
+      providers_fallback.SessionKeyOption: %opts.sessionKey
     }.toTable
     if al.thinking.isSome:
       # Surfaced to the HTTP provider, which translates it into the
@@ -907,7 +916,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       # `thinking: {type: enabled|disabled}`). For models that don't
       # implement the toggle the provider ignores the option.
       options["thinking"] = %al.thinking.get
-    
+
     # Re-sanitize before EACH provider call. The opening sanitize at
     # runLLMIteration's top covered loaded history, but mid-loop
     # state can drift: a tool can throw between adding the assistant
@@ -1074,7 +1083,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
             summaryMessages.add(providers_types.Message(role: providers_types.RoleUser, content: summaryPrompt))
             try:
               let summaryDefs: seq[ToolDefinition] = @[]
-              let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature}.toTable
+              let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature, providers_fallback.SessionKeyOption: %opts.sessionKey}.toTable
               let summaryResp = await al.provider.chat(summaryMessages, summaryDefs, al.model, summaryOpts)
               if summaryResp.content.len > 0:
                 finalContent = summaryResp.content
@@ -1166,7 +1175,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           summaryMessages.add(providers_types.Message(role: providers_types.RoleUser, content: loopPrompt))
           try:
             let toolDefs: seq[ToolDefinition] = @[]
-            let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature}.toTable
+            let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature, providers_fallback.SessionKeyOption: %opts.sessionKey}.toTable
             let summaryResp = await al.provider.chat(summaryMessages, toolDefs, al.model, summaryOpts)
             if summaryResp.content.len > 0:
               finalContent = summaryResp.content
@@ -1245,7 +1254,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     summaryMessages.add(providers_types.Message(role: providers_types.RoleUser, content: exhaustPrompt))
     try:
       let toolDefs: seq[ToolDefinition] = @[]
-      let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature}.toTable
+      let summaryOpts = {"max_tokens": %4096, "temperature": %al.temperature, providers_fallback.SessionKeyOption: %opts.sessionKey}.toTable
       let summaryResp = await al.provider.chat(summaryMessages, toolDefs, al.model, summaryOpts)
       if summaryResp.content.len > 0:
         let cleaned = extractTextFromResponse(summaryResp.content)
