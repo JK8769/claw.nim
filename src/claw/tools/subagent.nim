@@ -28,6 +28,20 @@ type
     agentOverride*: string
     focus_mode*: string       ## Focus-mode name (from cfg.focus_modes);
                               ## empty = default.
+    awaitMode*: bool          ## True when the parent called spawn with
+                              ## `await=true` and is polling task.result
+                              ## directly. The completion-announce
+                              ## publishInbound below is suppressed in
+                              ## that mode because the parent already
+                              ## consumes the result via spawn's return
+                              ## value — republishing it on the bus is
+                              ## redundant AND ends up at the gateway's
+                              ## company-line reception gate (the
+                              ## synthetic inbound has no `recipient_id`
+                              ## binding to a specific agent), so the
+                              ## customer's chat receives a stray "this
+                              ## is the company main line…" message
+                              ## right when the spawn finishes.
     status*: string
     result*: string
     created*: int64
@@ -278,11 +292,23 @@ proc runTask*(sm: SubagentManager, task: SubagentTask) {.async.} =
                       toolCallLog.join("\n"))
     release(sm.lock)
 
-  if sm.bus != nil:
-    let announceContent = strutils.format("Task '$1' completed.\n\nResult:\n$2", task.label, task.result)
+  if sm.bus != nil and not task.awaitMode:
+    # Fire-and-forget path: parent didn't pass `await=true`, so it
+    # isn't polling task.result. The only way to deliver the result
+    # is to republish it as a synthetic inbound that the parent
+    # agent's loop will pick up on its next bus drain.
+    #
+    # `recipient_id` MUST be set to the originating agent — otherwise
+    # the gateway's `companyRoute = msg.recipient_id.len == 0` flag
+    # flips on, the inbound is treated as a corporate-line message,
+    # and the reception gate sends "this is the company main line"
+    # to the customer's chat instead of routing to the agent.
+    let announceContent = strutils.format(
+      "Task '$1' completed.\n\nResult:\n$2", task.label, task.result)
     sm.bus.publishInbound(InboundMessage(
       channel: task.originChannel,
       sender_id: "system:subagent:" & task.id,
+      recipient_id: task.originAgentName,
       chat_id: task.originChatID,
       content: announceContent,
       session_key: task.originSessionKey
@@ -293,7 +319,8 @@ proc spawn*(sm: SubagentManager,
             originSenderID, originRecipientID, originRole,
             originAgentName, originAgentID, originLogicalUserID: string,
             agentOverride: string = "",
-            focus_mode: string = ""): SubagentTask =
+            focus_mode: string = "",
+            awaitMode: bool = false): SubagentTask =
   acquire(sm.lock)
   let taskID = "subagent-" & $sm.nextID
   sm.nextID += 1
@@ -313,6 +340,7 @@ proc spawn*(sm: SubagentManager,
     originLogicalUserID: originLogicalUserID,
     agentOverride: agentOverride,
     focus_mode: focus_mode,
+    awaitMode: awaitMode,
     status: "running",
     created: getTime().toUnix * 1000
   )

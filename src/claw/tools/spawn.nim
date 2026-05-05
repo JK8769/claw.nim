@@ -120,7 +120,8 @@ method execute*(t: SpawnTool, args: Table[string, JsonNode]): Future[string] {.a
   let taskObj = t.manager.spawn(task, label, t.channel, t.chatID,
                                 t.sessionKey, t.senderID, t.recipientID,
                                 t.role, t.agentName, t.agentID,
-                                t.logicalUserID, "", focusMode)
+                                t.logicalUserID, "", focusMode,
+                                awaitMode = waitForResult)
 
   if waitForResult:
     # Synchronous shape: poll until the task finishes, then return its
