@@ -183,6 +183,83 @@ proc stop*(al: AgentLoop) =
 proc registerTool*(al: AgentLoop, tool: Tool) =
   al.tools.register(tool)
 
+const MaxBytesPerMessage* = 32_000
+  ## Per-message hard cap on the LLM-facing serialised size (~8K
+  ## tokens). Single tool results bigger than this are replaced with
+  ## an abbreviated stub when fetching the history for the LLM.
+  ##
+  ## Why: even after summariser runs, the *verbatim live tail* keeps
+  ## the most recent ~30 messages full-fidelity. When those messages
+  ## are tool results from data-heavy MCP servers (sungrow plant
+  ## history dumps, anygen task blobs, multi-page reports), each can
+  ## be 50–100KB on its own — 30 such messages overflow any
+  ## provider's context window even though message COUNT is small.
+  ##
+  ## The on-disk JSONL keeps the original bytes for audit; only the
+  ## copy handed to the LLM is shrunk. The stub preserves role +
+  ## tool name + tool_call_id + first ~800 chars of the original
+  ## content, so the agent can still tell what a given result was
+  ## for and re-call the tool if it actually needs the data.
+  ##
+  ## Long-term replacement: MCP tools should emit
+  ## `{summary, key_metrics, ref_path}` by default and only return
+  ## verbatim data on explicit request (Anthropic's `_meta`
+  ## annotation pattern — see HANDBOOK note on context engineering).
+  ## Until each MCP is migrated, this cap is the safety net.
+
+proc capMessageSize*(msg: providers_types.Message): providers_types.Message =
+  ## Replace an oversized message's content with an abbreviated stub.
+  ## See `MaxBytesPerMessage` doc for rationale. Returns the input
+  ## unchanged if the serialised size is under the cap.
+  var totalBytes = msg.content.len + msg.reasoning_content.len +
+                   msg.tool_call_id.len + msg.name.len
+  for tc in msg.tool_calls:
+    totalBytes += tc.id.len + tc.`type`.len + tc.function.name.len +
+                  tc.function.arguments.len + tc.name.len
+    for k, v in tc.arguments.pairs:
+      totalBytes += k.len + ($v).len
+  if totalBytes <= MaxBytesPerMessage: return msg
+
+  let preview =
+    if msg.content.len > 800: msg.content[0 ..< 800] & "…"
+    else: msg.content
+  var stub = "[abbreviated for context budget — original "
+  stub.add($totalBytes)
+  stub.add(" bytes")
+  if msg.name.len > 0:
+    stub.add(", tool=")
+    stub.add(msg.name)
+  stub.add(". Re-call the tool if you need the full payload. ")
+  stub.add("First chars: ")
+  stub.add(preview)
+  stub.add("]")
+
+  result = providers_types.Message(
+    role: msg.role,
+    content: stub,
+    # Drop reasoning_content entirely — it's a thinking trace that
+    # only mattered to the turn that produced it; downstream turns
+    # don't reference it directly. Keeping a stub of it is noise.
+    reasoning_content: "",
+    # Preserve tool_calls + linkage fields so the conversation
+    # structure (assistant→tool pairings, function call IDs) stays
+    # intact and the sanitizer still validates the message graph.
+    tool_calls: msg.tool_calls,
+    tool_call_id: msg.tool_call_id,
+    name: msg.name)
+
+proc getCappedHistory(al: AgentLoop, sessionKey: string):
+                      seq[providers_types.Message] =
+  ## Same as `al.sessions.getHistory`, but with `capMessageSize`
+  ## applied to every entry. All four downstream consumers
+  ## (estimateTokens, the threshold check in maybeSummarize, the
+  ## actual LLM call, the /session status display) see a consistent
+  ## post-cap view, so the threshold and the LLM-input agree.
+  let raw = al.sessions.getHistory(sessionKey)
+  result = newSeq[providers_types.Message](raw.len)
+  for i, m in raw:
+    result[i] = capMessageSize(m)
+
 proc estimateTokens(messages: seq[providers_types.Message]): int =
   ## Heuristic: total characters across every field that goes on the
   ## wire to the LLM, divided by 4. Counts:
@@ -222,7 +299,7 @@ proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
   ## numbers `maybeSummarize` uses internally — exposed publicly so
   ## the gateway's `/session status` command (and any future dashboard)
   ## can surface them to the operator without duplicating the math.
-  let history = al.sessions.getHistory(sessionKey)
+  let history = al.getCappedHistory(sessionKey)
   let summary = al.sessions.getSummary(sessionKey)
   let tokens = estimateTokens(history)
   let cw = al.contextWindow
@@ -447,8 +524,63 @@ CARRY-FORWARD RULES:
   let response = await al.provider.chat(@[providers_types.Message(role: providers_types.RoleUser, content: prompt)], @[], al.model, initTable[string, JsonNode]())
   return response.content
 
+const SummaryChunkBudgetTokens* = 100_000
+  ## Per-chunk size cap for the chunked-fallback summariser. When the
+  ## single-shot path fails with context overflow, we split
+  ## `validMessages` into chunks of ~this many tokens and fold each
+  ## into a running summary. 100K is comfortably under any current
+  ## provider's window (deepseek-v4-flash ~128K, kimi-k2.5 262K,
+  ## claude/gpt 200K+) leaving headroom for the prompt skeleton +
+  ## prior facts sheet.
+
+proc summarizeBatchOrChunked(al: AgentLoop,
+                              batch: seq[providers_types.Message],
+                              existingSummary: string): Future[string] {.async.} =
+  ## Single-shot summarise; if the LLM call rejects the request as
+  ## over its context window, transparently fall back to chunked:
+  ## walk the batch in ~SummaryChunkBudgetTokens chunks, fold each
+  ## into the running summary, return the final.
+  ##
+  ## Why two paths: single-shot is cheaper and produces a cleaner
+  ## summary because the LLM sees the whole arc in one go. Chunked
+  ## is the safety net for sessions that have already accumulated
+  ## past any single-call window — without it, the summariser dies
+  ## on its own size and the session stays stuck at the live-tail
+  ## limit forever.
+  try:
+    return await al.summarizeBatch(batch, existingSummary)
+  except IOError as e:
+    let msg = e.msg
+    let isOverflow = "context length" in msg or
+                     "context_length_exceeded" in msg or
+                     "maximum context" in msg
+    if not isOverflow:
+      raise e
+    warnCF("agent",
+           "Summariser hit context overflow — falling back to chunked",
+           {"batch_size": $batch.len,
+            "err_preview": msg[0 ..< min(msg.len, 200)]}.toTable)
+
+  var running = existingSummary
+  var i = 0
+  while i < batch.len:
+    var j = i
+    var chunkChars = 0
+    let chunkBudgetChars = SummaryChunkBudgetTokens * 4
+    while j < batch.len and chunkChars < chunkBudgetChars:
+      chunkChars += batch[j].content.len + batch[j].reasoning_content.len
+      j += 1
+    if j == i: j = i + 1   # always advance — defensive
+    let chunk = batch[i ..< j]
+    infoCF("agent", "Summariser chunk",
+           {"start": $i, "end": $j, "of_total": $batch.len,
+            "chars": $chunkChars}.toTable)
+    running = await al.summarizeBatch(chunk, running)
+    i = j
+  return running
+
 proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
-  let history = al.sessions.getHistory(sessionKey)
+  let history = al.getCappedHistory(sessionKey)
   let summary = al.sessions.getSummary(sessionKey)
 
   if history.len <= 4: return
@@ -464,7 +596,7 @@ proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
 
   if validMessages.len == 0: return
 
-  let finalSummary = await al.summarizeBatch(validMessages, summary)
+  let finalSummary = await al.summarizeBatchOrChunked(validMessages, summary)
 
   if finalSummary != "":
     al.sessions.setSummary(sessionKey, finalSummary)
@@ -560,7 +692,7 @@ proc maybeSummarize(al: AgentLoop, opts: ProcessOptions) =
     release(al.summarizingLock)
     return
 
-  let history = al.sessions.getHistory(sessionKey)
+  let history = al.getCappedHistory(sessionKey)
   let tokenEstimate = estimateTokens(history)
   # 75% of the model's actual context window. Pure token-based —
   # no message-count short-circuit. The old `history.len > 20` cap
@@ -1330,7 +1462,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
   al.logTaskHeader(ctx, atStart)
   
   try:
-    let history = al.sessions.getHistory(opts.sessionKey)
+    let history = al.getCappedHistory(opts.sessionKey)
     let summary = al.sessions.getSummary(opts.sessionKey)
     let useXmlTools = isXmlToolProvider(al.model)
     # Perform sentiment analysis and update mood
