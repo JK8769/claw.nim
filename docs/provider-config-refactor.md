@@ -1,9 +1,10 @@
 # Provider config refactor
 
-**Status:** designed, not implemented. Pick this up in a fresh session.
-**Scope:** ~250 lines across DSL, gateway, BASE.nims templates.
-**Why now:** code works correctly today; this is purely about clarity and
-the ergonomics of adding the 3rd / 4th provider later.
+**Status:** Phases 1–3 landed and pushed. Cleanup of `default_provider` /
+`default_model` field readers remains as a follow-up.
+**Scope landed:** ~410 lines across DSL, gateway, agent loop, CLI, and
+the four bundled BASE.nims templates.
+**Commits:** `a0f7ab0` (Phase 1), `ad94fc9` (Phase 2), `0fb26a8` (Phase 3).
 
 ## TL;DR
 
@@ -222,15 +223,53 @@ BASE.json (Phase 2). To make it survive `claw co update` (which
 regenerates BASE.json from BASE.nims), the operator either edits
 BASE.nims directly or uses `/co model` (Phase 3 — writes to BASE.nims).
 
-## Order of work for the next session
+## Order of work — DONE
 
-1. Read this doc + skim the conversation transcript that produced it
-   (saved at the project's session log).
-2. Land phase 1 (smallest, lowest risk, immediate clarity win).
-3. Verify phase 1 with `/model` smoke test in Lexi's chat.
-4. Land phase 2 (per-agent chain build) in one PR — design depends on
-   schema change, easier to land together than split.
-5. Land phase 3 (template migration) only after 2 is stable.
+1. ✅ Phase 1 (`a0f7ab0`) — runtime aligned with source. Providers list
+   is the chain; `/model X:Y` reorders the list and overwrites the
+   chosen provider's defaultModel. `cfg.default_provider` no longer
+   consulted in chain build (still kept in sync for back-compat
+   readers).
+2. ✅ Phase 2 (`ad94fc9`) — agent layer collapses to `models seq`.
+   `clawdsl.nim` ClawAgent gained `models`; `gateway.nim` got
+   `buildProviderChainForAgent`; `makeAgentLoop` chooses per-agent
+   chain when `models` is declared, falls back to company chain when
+   only deprecated singular `model "X"` is set (preserves auto-fallback
+   safety net for existing files).
+3. ✅ Phase 3 (`0fb26a8`) — bundled templates demonstrate the new
+   syntax; `claw co migrate` subcommand mechanically rewrites old
+   files in-place with a `.bak` backup.
+
+## Verified end-to-end
+
+- Lexi declared `models "deepseek-v4-flash", "kimi-k2.5"` → log emitted
+  `Per-agent: registered primary {model=deepseek-v4-flash}` and
+  `Per-agent: registered fallback #1 {model=kimi-k2.5}` followed by
+  `Per-agent chain built {agent=Lexi, models=deepseek-v4-flash,kimi-k2.5}`.
+- Atlas/Devon retained singular `model "X"` → no per-agent firing,
+  they share the company default chain.
+- `claw co migrate --file=…` correctly:
+   - rewrites `  model "X"  # comment` → `  models "X"  # comment`
+   - drops `  provider "Y"` lines inside agent blocks
+   - leaves provider blocks (with colon) and already-migrated agents
+     (`models "X"`) alone
+- `claw co migrate --apply` writes the new file + a `.bak` backup.
+
+## Remaining cleanup (deferred — not blocking)
+
+Several modules still read `cfg.default_provider` / `cfg.default_model`:
+
+- `cli_admin.nim:155, 163, 198, 225, 238` — admin status output
+- `doctor.nim:62-65` — config sanity check
+- `context.nim:109, 118` — context rendering
+- `cli_service.nim:267` — service-mode startup
+- `tools/delegate.nim:177` — delegate fallback
+- `gateway.nim:268-269` — translation helper
+- `agent/cortex.nim:1021` — graph entity hint
+
+These can be migrated to read `providers[0].name` / `providers[0].defaultModel`
+in a follow-up pass. Once all readers are migrated, the fields can be
+dropped from `Config`, `ClawSpec`, and BASE.json entirely.
 
 ## Pointers to current code
 
