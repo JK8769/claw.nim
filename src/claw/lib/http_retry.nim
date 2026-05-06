@@ -2,8 +2,12 @@ import std/[os, random, strutils, tables]
 import curly, webby/httpheaders
 import ../logger
 
-proc curlyPostWithRetry*(c: Curly, url, body: string, headers: HttpHeaders, timeout: int = 30, maxRetries: int = 5): tuple[code: int, body: string] =
+proc curlyPostWithRetry*(c: Curly, url, body: string, headers: HttpHeaders, timeout: int = 30, maxRetries: int = 9): tuple[code: int, body: string] =
   ## POST request with exponential backoff retry on transient network errors.
+  ## Default 9 retries with 1/2/4/8/16/32/64/128s exponential backoff (+jitter)
+  ## — total worst-case ~4.25min. Tuned for CN→US transit, where flaps can
+  ## last tens of seconds; the long tail catches sustained outages without
+  ## prematurely consuming a fallback-chain entry.
   randomize()
   for attempt in 1..maxRetries:
     try:
