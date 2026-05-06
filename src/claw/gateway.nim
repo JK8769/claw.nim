@@ -68,46 +68,47 @@ proc askPeerImpl(agentName, prompt, senderAlias, callerSessionKey: string): Futu
   return await peer.processDirect(prompt, sessionKey, sender, "internal")
 
 proc makeAgentLoop(agentName: string): AgentLoop =
-  ## Resolve per-agent model preferences. Phase 2 of the
-  ## provider-config refactor (see docs/provider-config-refactor.md):
+  ## Phase 4 of provider-config refactor (option C): every agent has an
+  ## explicit per-agent FallbackLLMProvider chain built from their
+  ## declared `models` list. Capability decisions live in the agent
+  ## layer; providers are purely operational.
   ##
-  ##   - Agent declared `models "X", "Y"` (Phase 2 syntax) → build a
-  ##     PER-AGENT chain with exactly those entries, in that order.
-  ##     This is the agent's explicit preference; no company-level
-  ##     fallback is appended (the agent already chose what they want).
-  ##
-  ##   - Agent declared only the deprecated singular `model "X"` →
-  ##     stay on the COMPANY chain (gCtx.provider) but pass `model=X`
-  ##     so the chain's primary entry uses X instead of the provider's
-  ##     defaultModel on the first attempt. Preserves the auto-fallback
-  ##     to subsequent company providers — matches existing behaviour
-  ##     from before Phase 2.
-  ##
-  ##   - Agent declared neither → company chain, no overrides.
+  ## Resolution:
+  ##   - Build agent's `models` from declared `a.models`, falling
+  ##     through to the deprecated singular `a.model` (auto-promoted
+  ##     to `[a.model]`). After clawdsl's Phase 4 validation this
+  ##     fallback shouldn't be hit for freshly-generated BASE.json,
+  ##     but old BASE.json files predating Phase 4 might still have
+  ##     `model` without `models`.
+  ##   - If both are empty: defensive last-resort uses the company
+  ##     chain (gCtx.provider). Should be unreachable after Phase 4
+  ##     `claw co update` validates and errors — kept here so an
+  ##     unmigrated company doesn't crash the gateway entirely.
   var perAgentProvider = gCtx.provider
   var perAgentModel = ""
   for a in gCtx.cfg.agents.named:
     if a.name.toLowerAscii() != agentName.toLowerAscii(): continue
-    if a.models.len > 0:
-      # Explicit per-agent list. Replace shared chain with a per-agent
-      # one built from exactly those models in agent-preference order.
-      perAgentModel = a.models[0]
-      try:
-        let graph = loadWorld(gCtx.cfg.workspacePath())
-        perAgentProvider = buildProviderChainForAgent(graph, a.models)
-        infoCF("gateway", "Per-agent chain built",
-          {"agent": agentName, "models": a.models.join(",")}.toTable)
-      except CatchableError as e:
-        warnCF("gateway",
-          "Per-agent chain build failed — using company default",
-          {"agent": agentName, "models": a.models.join(","),
-           "error": e.msg}.toTable)
-        perAgentModel = ""
-    elif a.model.len > 0:
-      # Back-compat path: deprecated singular model. Keep the company
-      # chain so the agent retains the fallback safety net; only the
-      # primary's model is overridden via `perAgentModel`.
-      perAgentModel = a.model
+    var agentModels = a.models
+    if agentModels.len == 0 and a.model.len > 0:
+      agentModels = @[a.model]
+    if agentModels.len == 0:
+      warnCF("gateway",
+        "Agent has no models declared — using company chain. " &
+        "Run `claw co migrate` and add `models \"...\"` to BASE.nims.",
+        {"agent": agentName}.toTable)
+      break
+    perAgentModel = agentModels[0]
+    try:
+      let graph = loadWorld(gCtx.cfg.workspacePath())
+      perAgentProvider = buildProviderChainForAgent(graph, agentModels)
+      infoCF("gateway", "Per-agent chain built",
+        {"agent": agentName, "models": agentModels.join(",")}.toTable)
+    except CatchableError as e:
+      warnCF("gateway",
+        "Per-agent chain build failed — using company default",
+        {"agent": agentName, "models": agentModels.join(","),
+         "error": e.msg}.toTable)
+      perAgentModel = ""
     break
   newAgentLoop(gCtx.cfg, gCtx.msgBus, perAgentProvider, agentName,
                gCtx.cronService, model = perAgentModel, askPeer = askPeerImpl)
@@ -415,9 +416,18 @@ proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
   var fallbackEntries: seq[FallbackEntry] = @[]
   if graph.providers != nil and graph.providers.kind == JObject:
     for pName, pNode in graph.providers.getFields():
-      let m = pNode{"defaultModel"}.getStr("")
+      # Phase 4 of provider-config refactor: each provider's `models[0]`
+      # is its canonical primary model. The legacy `defaultModel` JSON
+      # field is consulted as a back-compat fallback if `models` is
+      # empty (old BASE.json files generated before Phase 4).
+      let modelsNode = pNode{"models"}
+      var m = ""
+      if modelsNode != nil and modelsNode.kind == JArray and modelsNode.len > 0:
+        m = modelsNode[0].getStr("")
       if m.len == 0:
-        warnCF("claw", "Skipping provider — no defaultModel declared",
+        m = pNode{"defaultModel"}.getStr("")
+      if m.len == 0:
+        warnCF("claw", "Skipping provider — no models declared",
                {"provider": pName}.toTable)
         continue
       let tech = resolveProviderTech(m, pName, graph.providers,

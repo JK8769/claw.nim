@@ -55,13 +55,11 @@ person "Owner":
 # a strong customer-facing model for Atlas.
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-v4-flash"
   models "deepseek-v4-flash", "deepseek-v4-pro"
 
 provider "opencode-go":
   apiBase "https://opencode.ai/zen/go/v1"
   apiKey "${OPENCODE_GO_API_KEY}"
-  defaultModel "kimi-k2.5"
   models "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni",
          "minimax-m2.5", "minimax-m2.7",
          "qwen3.5-plus", "qwen3.6-plus",

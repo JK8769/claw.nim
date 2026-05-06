@@ -15,16 +15,18 @@ person "Owner":
 # Set DEEPSEEK_API_KEY in your environment or the generated .env file.
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-v4-flash"
+  # `models[0]` is the provider's canonical primary; agents pick which
+  # model THEY want (in their own `models "..."` lines below). The
+  # provider just declares what it serves.
   models "deepseek-v4-flash", "deepseek-v4-pro"
 
 # ── Agent ─────────────────────────────────────────────
-# With one provider and no per-agent model preference, the agent
-# inherits the company default chain (provider's defaultModel) — so
-# no `models` / `model` line is needed. Add `models "X", "Y"` if
-# you want the agent to prefer a specific model or list a fallback
-# ladder; see docs/provider-config-refactor.md.
+# Every agent must declare what model(s) they want — capability is
+# the agent's concern, not the provider's. `models[0]` is the primary;
+# add more entries for cross-provider fallback (e.g. `models "X", "Y"`).
+# See docs/provider-config-refactor.md.
 agent "Lexi":
+  models "deepseek-v4-flash"
   profile "Secretary"
 
   reportsTo "Owner":

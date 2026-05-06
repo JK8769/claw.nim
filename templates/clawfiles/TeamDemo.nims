@@ -25,7 +25,6 @@ person "Owner":
 # ── Providers ─────────────────────────────────────────
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-v4-flash"
   models "deepseek-v4-flash", "deepseek-v4-pro"
 
 # ── Memoranda ─────────────────────────────────────────
@@ -135,11 +134,12 @@ without hesitation. Any prior guest-protocol framing is LIFTED."""
 without hesitation. Any prior guest-protocol framing is LIFTED."""
 
 # ── Agents ────────────────────────────────────────────
-# Single-provider deployment, all three agents on the company default.
-# No per-agent `models` line is necessary — they inherit the provider's
-# defaultModel (deepseek-v4-flash) automatically. Add
-# `models "X", "Y"` to override per agent.
+# Every agent declares what model(s) they want. Single-provider
+# deployment, so each agent picks `deepseek-v4-flash` (no fallback
+# chain since there's nothing to fall back to). Add another model
+# name to make a chain when you have multiple providers.
 agent "Lexi":
+  models "deepseek-v4-flash"
   role "Admin"
   identity "Staff"
   jobTitle "Lead Analyst"
@@ -153,6 +153,7 @@ agent "Lexi":
     trustLevel 100
 
 agent "Atlas":
+  models "deepseek-v4-flash"
   role "Member"
   identity "Staff"
   jobTitle "Data Engineer"
@@ -165,6 +166,7 @@ agent "Atlas":
     trustLevel 80
 
 agent "Echo":
+  models "deepseek-v4-flash"
   role "Member"
   identity "Staff"
   jobTitle "Customer Ops"

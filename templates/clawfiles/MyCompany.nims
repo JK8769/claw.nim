@@ -16,12 +16,11 @@ person "Jerry":
 
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-v4-flash"
   models "deepseek-v4-flash", "deepseek-v4-pro"
 
 provider "ollama":
   apiKey "ollama"
-  defaultModel "gemma4:31b-cloud"
+  models "gemma4:31b-cloud"
 
 # ── Agents ────────────────────────────────────────────
 # `models "X", "Y"` is the canonical Phase 2 syntax: an ordered list

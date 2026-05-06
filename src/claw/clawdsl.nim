@@ -272,7 +272,16 @@ template provider*(provName: string, body: untyped) =
     template apiKey(key: string) {.used.} =
       p.apiKey = key
     template defaultModel(m: string) {.used.} =
-      p.defaultModel = m
+      ## DEPRECATED — Phase 4 of provider-config refactor (option C).
+      ## Capability decisions (which model an agent uses) belong to the
+      ## agent layer. The provider's `defaultModel` was previously
+      ## consulted to synthesise an implicit chain for agents that
+      ## hadn't declared `models`; that pathway is gone (every agent
+      ## now MUST declare `models`). Treated as a hint that this model
+      ## should appear at position 0 of `p.models`; if it's not
+      ## already in the list, it gets prepended. Drop the line from
+      ## BASE.nims via `claw co migrate`.
+      if m notin p.models: p.models.insert(m, 0)
     template models(ms: varargs[string]) {.used.} =
       for m in ms: p.models.add(m)
     body
@@ -1032,7 +1041,17 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
 
 proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
   let defProvider = if spec.providers.len > 0: spec.providers[0].name else: ""
-  let defModel = if spec.providers.len > 0: spec.providers[0].defaultModel else: ""
+  # Phase 4: defModel is providers[0].models[0] (the canonical "primary"
+  # of the company chain), not providers[0].defaultModel — that field
+  # is gone. Falls through to the registry's defaultModel only if
+  # neither is declared.
+  let defModel =
+    if spec.providers.len > 0 and spec.providers[0].models.len > 0:
+      spec.providers[0].models[0]
+    elif spec.providers.len > 0:
+      spec.providers[0].defaultModel
+    else:
+      ""
 
   # Named agents config
   var named = newJArray()
@@ -1180,22 +1199,35 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
   }
 
 proc buildProviders(spec: ClawSpec): JsonNode =
+  ## Phase 4 of provider-config refactor (option C): the provider's
+  ## `defaultModel` field is no longer emitted. The provider's
+  ## `models[0]` IS its canonical model — capability decisions sit in
+  ## the agent layer, providers just declare what they serve.
+  ##
+  ## Back-compat: if a provider was declared with only `defaultModel
+  ## "X"` and no `models` list, the DSL's deprecated `defaultModel`
+  ## template now prepends X into `p.models`, so this writer doesn't
+  ## need to special-case the empty-models case.
   result = newJObject()
   for p in spec.providers:
     var apiBase = p.apiBase
-    var defModel = p.defaultModel
     let key = p.name.toLowerAscii
-    # Fill from defaults if omitted
+    # Fill apiBase from registry defaults if omitted
     let d = getProviderDefault(key)
     if apiBase == "" and d.apiBase != "": apiBase = d.apiBase
-    if defModel == "" and d.defaultModel != "": defModel = d.defaultModel
+    # If models is empty AND the registry has a defaultModel, seed it
+    # so the chain build has something to work with (this rescues
+    # provider blocks that declared neither `models` nor `defaultModel`
+    # — relying entirely on the registry).
+    var modelsList = p.models
+    if modelsList.len == 0 and d.defaultModel != "":
+      modelsList.add(d.defaultModel)
     var models = newJArray()
-    for m in p.models: models.add(%m)
+    for m in modelsList: models.add(%m)
     result[key] = %*{
       "name": p.name.capitalizeAscii,
       "apiBase": apiBase,
       "apiKey": p.apiKey,
-      "defaultModel": defModel,
       "models": models,
     }
 
@@ -1820,6 +1852,26 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
         teamCompsForAgent.mgetOrPut(member, @[]).add(c)
 
   for i in 0 ..< s.agents.len:
+    # Phase 4 of provider-config refactor (option C): every agent must
+    # explicitly declare what models they want. Capability is the
+    # agent's concern; the operational layer (providers) should not be
+    # synthesising capability decisions on the agent's behalf.
+    #   - Auto-promote the deprecated singular `model "X"` to a
+    #     single-entry `models = ["X"]` (back-compat for files that
+    #     haven't been through `claw co migrate` yet).
+    #   - If neither `models` nor the deprecated `model` is declared,
+    #     hard-error: the agent must say what it wants. No more silent
+    #     "inherit the company chain" — that was the muddled path
+    #     option C exists to eliminate.
+    if s.agents[i].models.len == 0:
+      if s.agents[i].model != "":
+        s.agents[i].models = @[s.agents[i].model]
+      else:
+        echo ""
+        echo "  ! ERROR: agent '" & s.agents[i].name & "' has no models declared."
+        echo "  ! Add `models \"<name>\", ...` to the agent block in BASE.nims."
+        echo "  ! See docs/provider-config-refactor.md for the full design."
+        quit(1)
     let a = s.agents[i]
     # Every agent gets defaults (even without uses), minus denies
     var tools: seq[string] = @defaultTools
