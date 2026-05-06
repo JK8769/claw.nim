@@ -1402,10 +1402,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    Show all your sessions across every agent in this\n" &
              "    company — message count, summary length, last\n" &
              "    activity per agent.\n\n" &
-             "  `/session status <agent>`\n" &
+             "  `/session status [<agent>]`\n" &
              "    Regular user: show YOUR session's context utilisation\n" &
              "    with that agent — message count, token estimate,\n" &
-             "    % of context window, threshold.\n" &
+             "    % of context window, threshold. Bare `/session status`\n" &
+             "    (no agent) defaults to the current chat's agent.\n" &
              "    🔒 Admin: show ALL of the agent's sessions across all\n" &
              "    users (operator overview, sorted by token weight).\n" &
              "    Example: `/session status lexi`\n\n" &
@@ -1427,11 +1428,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "entries (those persist by design — that's their purpose)."
     let sub = parts[1]
     if sub == "status":
-      if parts.len < 3:
-        return "Usage: `/session status <agent>` (Admin+: all sessions; " &
-               "regular: your own) or `/session status <agent> <nc:id>` " &
-               "(specific session, Admin+ if not your own)."
-      let agentName = parts[2]
+      # No agent arg → default to whichever office handled this slash
+      # command (`al`). Running `/session status` in Lexi's chat means
+      # "Lexi's session", same convention as `/session reset`.
+      let agentName =
+        if parts.len >= 3: parts[2]
+        else: al.agentName
       let agentKey = agentName.toLowerAscii
       # Validate against declared agents — `gCtx.offices` is lazy-loaded
       # so an agent who hasn't received a message since gateway start
