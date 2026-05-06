@@ -641,7 +641,18 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
             output &= "  (no models listed)\n"
       output &= "\nUsage: `/model <provider:model>` to switch primary; `/model list [<provider>]` to query the provider's /models API"
       return output
-    let modelStr = parts[1].strip()
+    var modelStr = parts[1].strip()
+
+    # Accept natural-language verbs as a no-op prefix. Users
+    # frequently type `/model switch X:Y`, `/model use X:Y`, or
+    # `/model set X:Y` — they read more naturally than the bare
+    # `/model X:Y` form. Without this, the verb gets captured as
+    # part of the provider name and produces a misleading error
+    # ("No API key found for provider `switch opencode-go`").
+    for verb in ["switch ", "use ", "set "]:
+      if modelStr.startsWith(verb):
+        modelStr = modelStr[verb.len..^1].strip()
+        break
 
     # /model list [provider]
     if modelStr == "list" or modelStr.startsWith("list "):
@@ -688,9 +699,34 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         modelName = modelStr[slashPos+1..^1]
 
     let graph = loadWorld(cfg[].workspacePath())
+    # Sanity-check parsed providerKey before lookup so malformed input
+    # produces a useful error rather than "No API key found for
+    # provider `<garbage>`". Provider names are alphanum + `-` only.
+    if providerKey.len == 0:
+      return "Couldn't parse provider name from `" & modelStr &
+             "`. Expected `<provider>:<model>` (e.g. `/model deepseek:deepseek-v4-flash`)."
+    var malformed = false
+    for c in providerKey:
+      if not (c.isAlphaNumeric or c == '-' or c == '_'):
+        malformed = true; break
+    if malformed:
+      return "Provider name `" & providerKey & "` contains unexpected " &
+             "characters. Expected `<provider>:<model>` (e.g. " &
+             "`/model deepseek:deepseek-v4-flash`). Run `/model` to see " &
+             "configured providers."
     let tech = resolveProviderTech(modelName, providerKey, graph.providers, providerOverride = providerKey)
     if tech.apiKey == "":
-      return "No API key found for provider `" & providerKey & "`."
+      # Distinguish "we know this provider but its key is missing" from
+      # "we don't know this provider at all".
+      let knownProvider =
+        graph.providers != nil and graph.providers.kind == JObject and
+        graph.providers.hasKey(providerKey)
+      if not knownProvider:
+        return "Unknown provider `" & providerKey & "`. Run `/model` to " &
+               "see configured providers."
+      return "No API key configured for provider `" & providerKey &
+             "`. Set the relevant env var (or BASE.nims `apiKey \"...\"`) " &
+             "and `claw co update`."
 
     # Phase 1 of provider-config refactor: instead of just flipping a
     # `default_provider` pointer, REORDER the providers list so the
