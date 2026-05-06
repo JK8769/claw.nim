@@ -314,57 +314,59 @@ proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
     else: pmAny
 
 proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
-  ## Construct the LLM provider as a fallback chain. Primary is read
-  ## from `cfg.default_provider` + `cfg.agents.defaults.model`; every
-  ## OTHER provider in `graph.providers` with a usable apiKey + apiBase
-  ## becomes a fallback (in declaration order), with that provider's
-  ## `defaultModel` as the model used when active.
+  ## Construct the LLM provider as a fallback chain by iterating
+  ## `graph.providers` in DECLARATION ORDER. The first usable entry
+  ## becomes the primary; subsequent ones are fallbacks (in order).
+  ## Each entry uses its own `defaultModel` — different vendors don't
+  ## share model names (deepseek-v4-flash isn't a thing on opencode-go),
+  ## so the chain runs with each provider's own advertised default.
+  ##
+  ## Phase 1 of the provider-config refactor (see
+  ## `docs/provider-config-refactor.md`): `cfg.default_provider` is no
+  ## longer consulted here — the providers list IS the source of truth
+  ## for chain order. Other readers of `cfg.default_provider` remain
+  ## unchanged for now (treated as a derivative), and `/model X:Y`
+  ## reorders the providers list to make X the first entry so this
+  ## function and those readers stay in agreement.
   ##
   ## Used at gateway startup AND on `/model <provider>:<model>`. Both
   ## paths produce the same shape of provider — switching primary
-  ## doesn't drop the fallback safety net. As a side effect the new
-  ## chain has a fresh empty per-session sticky table, so /model is a
-  ## clean way to make every session re-probe the new primary.
+  ## doesn't drop the fallback safety net.
   ##
   ## When only one provider is configured the chain has just the
   ## primary — the wrapper is a no-op pass-through, which keeps the
   ## type uniform without silent behaviour change.
-  let tech = resolveProviderTech(cfg.agents.defaults.model,
-                                  cfg.default_provider,
-                                  graph.providers,
-                                  providerOverride = cfg.default_provider)
-  let primaryProvider = createProvider(tech.model, tech.apiKey, tech.apiBase)
-  var fallbackEntries: seq[FallbackEntry] = @[
-    FallbackEntry(provider: primaryProvider, model: tech.model,
-                  name: cfg.default_provider)
-  ]
+  var fallbackEntries: seq[FallbackEntry] = @[]
   if graph.providers != nil and graph.providers.kind == JObject:
     for pName, pNode in graph.providers.getFields():
-      if pName == cfg.default_provider: continue
-      # `resolveProviderTech` doesn't backfill the model from the
-      # graph's `defaultModel` field — it expects the model as an arg.
-      # Read it directly so each fallback runs with its own provider's
-      # advertised default rather than an empty model id.
-      let otherModel = pNode{"defaultModel"}.getStr("")
-      if otherModel.len == 0:
-        warnCF("claw", "Skipping fallback provider — no defaultModel declared",
+      let m = pNode{"defaultModel"}.getStr("")
+      if m.len == 0:
+        warnCF("claw", "Skipping provider — no defaultModel declared",
                {"provider": pName}.toTable)
         continue
-      let otherTech = resolveProviderTech(otherModel, pName, graph.providers,
-                                           providerOverride = pName)
-      if otherTech.apiBase.len == 0 or otherTech.apiKey.len == 0:
-        warnCF("claw", "Skipping fallback provider — missing apiBase/apiKey",
+      let tech = resolveProviderTech(m, pName, graph.providers,
+                                      providerOverride = pName)
+      if tech.apiBase.len == 0 or tech.apiKey.len == 0:
+        warnCF("claw", "Skipping provider — missing apiBase/apiKey",
                {"provider": pName}.toTable)
         continue
-      let p = createProvider(otherTech.model, otherTech.apiKey, otherTech.apiBase)
-      fallbackEntries.add(FallbackEntry(provider: p, model: otherTech.model,
+      let p = createProvider(tech.model, tech.apiKey, tech.apiBase)
+      fallbackEntries.add(FallbackEntry(provider: p, model: tech.model,
                                          name: pName))
-      infoCF("claw", "Registered fallback provider",
-             {"provider": pName, "model": otherTech.model,
-              "base": otherTech.apiBase}.toTable)
+      let position =
+        if fallbackEntries.len == 1: "primary"
+        else: "fallback #" & $(fallbackEntries.len - 1)
+      infoCF("claw", "Registered " & position & " provider",
+             {"provider": pName, "model": tech.model,
+              "base": tech.apiBase}.toTable)
+  if fallbackEntries.len == 0:
+    raise newException(IOError,
+      "No usable providers — every entry in graph.providers was missing " &
+      "apiKey, apiBase, or defaultModel. Check BASE.nims and run " &
+      "`claw co update`.")
   result =
     if fallbackEntries.len > 1: newFallbackLLMProvider(fallbackEntries)
-    else: primaryProvider
+    else: fallbackEntries[0].provider
 
 proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): Future[string] {.async.} =
   let cmd = msg.content.strip()
@@ -569,28 +571,40 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     if tech.apiKey == "":
       return "No API key found for provider `" & providerKey & "`."
 
-    # Update cfg first so buildProviderChain reads the new primary,
-    # then rebuild the FULL fallback chain — same shape as gateway
-    # startup, so switching primary doesn't drop the safety net to
-    # other configured providers. Side effect: the new chain has an
-    # empty per-session sticky table, so every session re-probes the
-    # new primary on its next call.
-    cfg.default_provider = providerKey
-    cfg.default_model = modelName
-    cfg.agents.defaults.model = modelName
-
-    let newProvider = buildProviderChain(cfg[], graph)
-    al.provider = newProvider
-    al.model = modelName
-
-    if gCtx != nil:
-      for key, office in gCtx.offices:
-        office.provider = newProvider
-        office.model = modelName
-
+    # Phase 1 of provider-config refactor: instead of just flipping a
+    # `default_provider` pointer, REORDER the providers list so the
+    # chosen provider is at position 0. The providers list IS the
+    # source of truth for chain order — `buildProviderChain` iterates
+    # it in declaration order and the first entry is primary.
+    #
+    # Also overwrite the chosen provider's `defaultModel` to the
+    # explicit modelName, so subsequent chain rebuilds (or other
+    # readers like `/model list`) see the operator's selected model
+    # rather than whatever the provider's previous default was.
+    #
+    # All updates land in BASE.json in one write; we then reload graph
+    # so the in-memory chain build sees the reordered list.
     let graphFile = getConfigPath().parentDir() / "BASE.json"
     if fileExists(graphFile):
       var base = parseFile(graphFile)
+      # BASE.json stores providers at the TOP LEVEL (sibling of `config`
+      # and `@graph`), not nested under `graph`. WorldGraph's `providers`
+      # field reads from there too — see schema.nim.
+      let providersNode = base{"providers"}
+      if providersNode != nil and providersNode.kind == JObject and
+         providersNode.hasKey(providerKey):
+        # Build a fresh JObject with providerKey first.
+        let reordered = newJObject()
+        # Capture+update the primary entry first.
+        var primary = providersNode[providerKey]
+        primary["defaultModel"] = %modelName
+        reordered[providerKey] = primary
+        for k, v in providersNode.fields:
+          if k != providerKey: reordered[k] = v
+        base["providers"] = reordered
+      # Back-compat: keep cfg.default_provider / default_model fields
+      # in sync. Future phases will drop these in favour of reading
+      # providers[0] directly.
       base["config"]["default_provider"] = %providerKey
       base["config"]["default_model"] = %modelName
       base["config"]["agents"]["defaults"]["model"] = %modelName
@@ -600,8 +614,27 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
           base["config"]["agents"]["named"][i]["model"] = %modelName
       writeFile(graphFile, base.pretty(4))
 
+    # Refresh in-memory cfg + reload graph so buildProviderChain sees
+    # the new ordering, then rebuild the chain. Side effect: the new
+    # FallbackLLMProvider has an empty per-session sticky table, so
+    # every session re-probes the new primary on its next call.
+    cfg.default_provider = providerKey
+    cfg.default_model = modelName
+    cfg.agents.defaults.model = modelName
+
+    let freshGraph = loadWorld(cfg[].workspacePath())
+    let newProvider = buildProviderChain(cfg[], freshGraph)
+    al.provider = newProvider
+    al.model = modelName
+
+    if gCtx != nil:
+      for key, office in gCtx.offices:
+        office.provider = newProvider
+        office.model = modelName
+
     al.sessions.clearSession(msg.session_key)
-    return "Switched to `" & providerKey & "/" & modelName & "`. Session cleared."
+    return "Switched to `" & providerKey & "/" & modelName &
+           "` (now position 0 in the providers list). Session cleared."
   elif cmd.startsWith("/user"):
     # Namespace for user management: `/user <subcmd> [<args>...]`.
     # Entry gate has confirmed pmInternal+; per-subcommand checks below
