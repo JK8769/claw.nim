@@ -1,4 +1,4 @@
-import std/[os, strutils, options, json, times]
+import std/[os, strutils, options, json, times, tables]
 import jsony
 when defined(posix):
   import std/posix
@@ -457,9 +457,33 @@ proc parseEnv*(cfg: var Config) =
 proc getConfigPath*(): string =
   getNimClawDir() / "config.json"
 
+proc deriveDefaultsFromProviders(cfg: var Config, root: JsonNode) =
+  ## Phase 3 of provider-config refactor: `default_provider` and
+  ## `default_model` are derivatives of `providers[0]`. Authoritative
+  ## source is the providers list's declaration order; the cfg fields
+  ## are kept as a back-compat mirror for ~14 reader sites that
+  ## haven't been migrated yet (cli_admin, doctor, context, telemetry).
+  ##
+  ## We override whatever the parsed JSON's `config.default_provider`
+  ## said with `providers[0].name`. That way: even an older BASE.json
+  ## with a stale `default_provider` value picks up the right primary;
+  ## and `/model X:Y` (which reorders the providers list) doesn't need
+  ## to also rewrite the duplicate cfg fields — they re-derive on the
+  ## next config load.
+  if root == nil or not root.hasKey("providers"): return
+  let prov = root["providers"]
+  if prov.kind != JObject: return
+  for pName, pNode in prov.fields:
+    cfg.default_provider = pName
+    let dm = pNode{"defaultModel"}.getStr("")
+    if dm.len > 0:
+      cfg.default_model = dm
+      cfg.agents.defaults.model = dm
+    break  # first provider wins; that's the chain primary
+
 proc loadConfig*(path: string): Config =
   result = defaultConfig()
-  
+
   # 1. Try unified BASE.json first (Atomic Preference)
   let unifiedPath = parentDir(path) / "BASE.json"
   if fileExists(unifiedPath):
@@ -468,11 +492,12 @@ proc loadConfig*(path: string): Config =
       if root.hasKey("config"):
         let configNode = root["config"]
         result = ($configNode).fromJson(Config)
+        deriveDefaultsFromProviders(result, root)
         parseEnv(result)
         return result
     except:
       discard
-  
+
   # 2. Fallback to legacy config.json
   if fileExists(path):
     try:

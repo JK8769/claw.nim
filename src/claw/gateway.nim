@@ -678,16 +678,24 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         for k, v in providersNode.fields:
           if k != providerKey: reordered[k] = v
         base["providers"] = reordered
-      # Back-compat: keep cfg.default_provider / default_model fields
-      # in sync. Future phases will drop these in favour of reading
-      # providers[0] directly.
-      base["config"]["default_provider"] = %providerKey
-      base["config"]["default_model"] = %modelName
-      base["config"]["agents"]["defaults"]["model"] = %modelName
+      # Phase 3 cleanup: don't write `default_provider` / `default_model`
+      # / `agents.defaults.model` here. Those are now derived at config
+      # load time from providers[0] (see deriveDefaultsFromProviders in
+      # config.nim) — the providers list reorder above IS the canonical
+      # change, the cfg fields auto-resolve on next load.
+      #
+      # Per-agent overrides: only touch entries that already had a
+      # `provider`/`model` field (back-compat for files that haven't
+      # migrated yet). New `models` arrays are not modified — the
+      # operator's per-agent declarations are not the right place to
+      # encode a global model swap.
       if base["config"]["agents"].hasKey("named"):
         for i in 0..<base["config"]["agents"]["named"].len:
-          base["config"]["agents"]["named"][i]["provider"] = %providerKey
-          base["config"]["agents"]["named"][i]["model"] = %modelName
+          let agentEntry = base["config"]["agents"]["named"][i]
+          if agentEntry.hasKey("provider"):
+            base["config"]["agents"]["named"][i]["provider"] = %providerKey
+          if agentEntry.hasKey("model"):
+            base["config"]["agents"]["named"][i]["model"] = %modelName
       writeFile(graphFile, base.pretty(4))
 
     # Refresh in-memory cfg + reload graph so buildProviderChain sees

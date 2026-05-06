@@ -420,6 +420,27 @@ proc toLD*(graph: WorldGraph): JsonNode =
     "@graph": nodes
   }
 
+proc firstProviderName*(graph: WorldGraph): string =
+  ## Return the name of the first provider declared in the graph's
+  ## ordered providers list. This is the company's effective primary
+  ## — what `cfg.default_provider` used to point at, now derived from
+  ## the providers list itself rather than carried as a separate field.
+  ## Returns "" when there are no providers.
+  if graph == nil or graph.providers == nil or
+     graph.providers.kind != JObject: return ""
+  for k, _ in graph.providers.fields:
+    return k
+  ""
+
+proc firstProviderDefaultModel*(graph: WorldGraph): string =
+  ## Return the first provider's `defaultModel`. Companion to
+  ## `firstProviderName` — what `cfg.default_model` used to point at.
+  if graph == nil or graph.providers == nil or
+     graph.providers.kind != JObject: return ""
+  for _, v in graph.providers.fields:
+    return v{"defaultModel"}.getStr("")
+  ""
+
 proc loadWorld*(workspace: string): WorldGraph =
   var graphFile = workspace / "BASE.json"
   var current = workspace
