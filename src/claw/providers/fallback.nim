@@ -228,10 +228,20 @@ method chat*(p: FallbackLLMProvider,
     if v.kind == JString: sessionKey = v.getStr()
     fwdOptions.del(SessionKeyOption)
 
-  let startIdx = p.getStickyStart(sessionKey)
+  # Per-session sticky state is DEPRECATED — the health registry
+  # supersedes it (cross-session, transient-aware, auto-recovers on
+  # cooldown). Routing decisions now come from the registry alone.
+  # We always start the chain walk at 0 and let registry.isUsable()
+  # filter; sessions that previously got ratcheted past every entry
+  # by sticky-on-skip can now recover automatically once each
+  # provider's health flips back to usable.
+  #
+  # The persistence file (sticky-fallback.json) is left untouched on
+  # disk for debugging / audit. We just stop consulting it here.
+  discard sessionKey  # kept in scope for log messages below
 
   var lastErr: ref Exception = nil
-  for i in startIdx ..< p.entries.len:
+  for i in 0 ..< p.entries.len:
     let entry = p.entries[i]
     # Cross-session circuit breaker: skip without calling if the
     # registry says this provider is broken. Costs zero round-trips
@@ -243,19 +253,15 @@ method chat*(p: FallbackLLMProvider,
              "Skipping provider — health registry says unusable",
              {"provider": entry.name,
               "session": sessionKey}.toTable)
-      p.advanceSticky(sessionKey, i + 1)
       continue
     # Use the caller-supplied model only on the FIRST attempt of THIS
-    # call (i.e. at startIdx, not necessarily 0); subsequent fallbacks
-    # use each entry's configured model so we don't hand a deepseek
-    # model name to a kimi backend.
+    # call; subsequent fallbacks use each entry's configured model
+    # so we don't hand a deepseek model name to a kimi backend.
     let callModel =
-      if i == startIdx and model.len > 0: model
+      if i == 0 and model.len > 0: model
       else: entry.model
     try:
       let resp = await entry.provider.chat(messages, tools, callModel, fwdOptions)
-      # Success — clear any prior failure state on this provider so
-      # other sessions know it's working again.
       if p.healthRegistry != nil:
         p.healthRegistry.recordSuccess(entry.name)
       return resp
@@ -268,15 +274,13 @@ method chat*(p: FallbackLLMProvider,
         discard p.healthRegistry.recordFailure(entry.name, e.msg)
       let isLast = i == p.entries.high
       if isLast or not shouldFallback(e.msg):
-        p.advanceSticky(sessionKey, i + 1)
         raise
       let preview =
         if e.msg.len > 120: e.msg[0 ..< 120] & "…"
         else: e.msg
       let nextEntry = p.entries[i + 1]
-      p.advanceSticky(sessionKey, i + 1)
       warnCF("fallback_provider",
-             "Sticky fallback to next provider",
+             "Falling back to next provider",
              {"session": sessionKey,
               "failed": entry.name,
               "failed_model": callModel,
@@ -284,14 +288,12 @@ method chat*(p: FallbackLLMProvider,
               "next_model": nextEntry.model,
               "reason": preview}.toTable)
     except CatchableError as e:
-      # Non-IOError (parse, type, etc.) — don't fall back, don't
-      # ratchet (the entry isn't necessarily broken; the bug is on
-      # the caller's side). Surface to caller.
+      # Non-IOError (parse, type, etc.) — surface to caller.
       raise e
   if lastErr != nil:
     raise lastErr
   raise newException(IOError,
-    "FallbackLLMProvider: chain exhausted for session '" &
-    sessionKey & "' — every provider in the chain is unhealthy " &
-    "or has failed. Use `/provider reset <name>` after fixing the " &
-    "underlying issue, or `/model X:Y` to switch primary.")
+    "FallbackLLMProvider: chain exhausted — every provider in the " &
+    "chain is currently unhealthy or cooling down. Use " &
+    "`/provider` to inspect, `/provider reset <name>` after fixing " &
+    "the underlying issue, or `/model X:Y` to switch primary.")
