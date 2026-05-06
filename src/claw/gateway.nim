@@ -578,13 +578,6 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       res.add(appLines.join("\n") & "\n")
 
     return res
-  elif cmd in ["/reset", "/new"]:
-    # Deprecated: old form keyed off msg.session_key (raw channel key)
-    # not the `nc_N` form on disk, so the unlink silently no-op'd.
-    # `/session` is the canonical surface; redirect there.
-    return "`" & cmd & "` has been removed. Use `/session reset` " &
-           "(clears YOUR session with this agent) or `/session help` " &
-           "for the full surface."
   elif cmd.startsWith("/stream "):
     let val = cmd.replace("/stream ", "").strip().toLowerAscii()
     if val in ["on", "true", "1"]:
@@ -830,7 +823,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # earlier behavior wiped a session full of analytical work
     # whenever the operator wanted to try a different model — bad
     # UX. Operators who explicitly want a fresh start can use
-    # `/reset` or `/new` (separate slash command).
+    # `/session reset`.
     return "Switched primary to `" & providerKey & "/" & modelName &
            "` (now position 0 in the providers list). Session " &
            "history preserved — your conversation continues from " &
@@ -1877,10 +1870,6 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
     usage: "/status", group: "utility",
     menuHint: "Status", permission: pmAny,
     examples: @["/status"]))
-  # /reset and /new are deprecated; the canonical surface is the
-  # /session subcommand family. Not registered for the menu so they
-  # don't appear as suggestions; the handler still catches them and
-  # redirects operators to /session reset.
   register(SystemCommand(
     name: "/stream", summary: "Toggle intermediary thought streaming.",
     usage: "/stream <on|off>", group: "agent-control",
