@@ -22,8 +22,23 @@ type
 
   ClawAgent* = object
     name*: string
-    model*: string
-    provider*: string
+    model*: string             ## DEPRECATED. Phase 2 replaces this with
+                               ## `models` (an ordered list). For now,
+                               ## the post-parse hook copies `model` →
+                               ## `models[0]` if `models` is empty so
+                               ## existing BASE.nims files still work.
+    provider*: string          ## DEPRECATED. Phase 2 derives the
+                               ## provider for each model from the
+                               ## company providers list (which provider
+                               ## serves this model name?). The agent
+                               ## itself doesn't care about providers.
+    models*: seq[string]       ## Ordered list of preferred models.
+                               ## models[0] is the agent's primary;
+                               ## subsequent entries are fallbacks in
+                               ## order. Empty → agent inherits the
+                               ## company default chain (every provider
+                               ## in declaration order with its own
+                               ## defaultModel).
     role*: string          ## RBAC role: Admin, Member, Employee
     identity*: string      ## Staff, Agent, User
     jobTitle*: string
@@ -269,9 +284,19 @@ template agent*(agentName: string, body: untyped) =
   block:
     var a = ClawAgent(name: agentName, maxDepth: 10, identity: "Agent", role: "Member")
     template model(m: string) {.used.} =
+      ## DEPRECATED — kept for back-compat. Prefer `models "X"`.
       a.model = m
     template provider(prov: string) {.used.} =
+      ## DEPRECATED — kept for back-compat. Provider is now derived
+      ## from the company providers list (which provider serves the
+      ## agent's chosen model). Phase 2 of provider-config-refactor.
       a.provider = prov
+    template models(ms: varargs[string]) {.used.} =
+      ## Phase 2 syntax: `models "deepseek-v4-flash", "kimi-k2.5"`.
+      ## First model = primary; rest = fallbacks (in order). The
+      ## framework looks up the serving provider for each model from
+      ## the company providers list at chain-build time.
+      for m in ms: a.models.add(m)
     template role(r: string) {.used.} =
       a.role = r
     template identity(id: string) {.used.} =
@@ -1012,10 +1037,27 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
   # Named agents config
   var named = newJArray()
   for a in spec.agents:
+    # Phase 2 of provider-config refactor:
+    #   - `models` is emitted only when the agent EXPLICITLY declared a
+    #     list with `models "X", "Y"`. An empty `models` array means
+    #     "agent inherits the company default chain" — semantically
+    #     different from "agent has a single-entry chain with no
+    #     fallback."
+    #   - The deprecated singular `model "X"` is preserved as the agent's
+    #     preferred primary model (overrides chain entry 0's model), but
+    #     does NOT collapse the company chain into a single entry. This
+    #     keeps existing BASE.nims files — which mostly use just
+    #     `model "X"` without a fallback list — getting the company
+    #     fallback safety net automatically.
+    let primaryModel =
+      if a.models.len > 0: a.models[0]
+      elif a.model != "": a.model
+      else: defModel
     var entry = %*{
       "name": a.name,
       "provider": if a.provider != "": a.provider else: defProvider,
-      "model": if a.model != "": a.model else: defModel,
+      "model": primaryModel,
+      "models": a.models,  # exactly what the operator declared; empty = inherit
       "entity": "AI",
       "identity": if a.identity != "": a.identity else: "Agent",
       "max_depth": a.maxDepth,

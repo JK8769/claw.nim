@@ -15,8 +15,16 @@ type
   NamedAgentConfig* = object
     name*: string
     api_key*: Option[string]
-    provider*: string
-    model*: string
+    provider*: string          ## DEPRECATED — see provider-config-refactor.
+                               ## Derived from `models[0]`'s serving
+                               ## provider; kept for back-compat readers.
+    model*: string             ## DEPRECATED — kept for back-compat readers.
+                               ## Same as `models[0]` when set, else the
+                               ## company default model.
+    models*: seq[string]       ## Phase 2: agent's ordered list of preferred
+                               ## models. models[0] is primary, rest are
+                               ## fallbacks. Empty → agent inherits company
+                               ## default chain.
     max_depth*: int
     system_prompt*: Option[string]
     temperature*: Option[float64]

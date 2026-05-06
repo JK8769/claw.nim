@@ -49,9 +49,11 @@ gAgentRequestChan.open()
 # Gateway startup time — used by /status to report uptime.
 var gStartTime: float = 0.0
 
-# Forward declaration so askPeer closure can reference the office-lookup
-# helper before it's defined.
+# Forward declarations so makeAgentLoop / askPeer can reference these
+# helpers defined later in the file.
 proc ensureOffice(agentName: string): AgentLoop
+proc buildProviderChainForAgent(graph: WorldGraph,
+                                 models: seq[string]): LLMProvider
 
 # Shared askPeer implementation — gets or creates the target peer's
 # AgentLoop, runs her full processDirect (her own tools, trust gate,
@@ -66,35 +68,46 @@ proc askPeerImpl(agentName, prompt, senderAlias, callerSessionKey: string): Futu
   return await peer.processDirect(prompt, sessionKey, sender, "internal")
 
 proc makeAgentLoop(agentName: string): AgentLoop =
-  ## Resolve per-agent model + provider overrides from the ClawDSL spec
-  ## (e.g. Lexi on kimi-k2.5 @ opencode-go while Atlas stays on deepseek).
-  ## Without this, every agent silently inherited `gCtx.provider` and the
-  ## `cfg.agents.defaults.model` fallback — defeating BASE.nims's per-agent
-  ## `model "…"` / `provider "…"` lines.
+  ## Resolve per-agent model preferences. Phase 2 of the
+  ## provider-config refactor (see docs/provider-config-refactor.md):
+  ##
+  ##   - Agent declared `models "X", "Y"` (Phase 2 syntax) → build a
+  ##     PER-AGENT chain with exactly those entries, in that order.
+  ##     This is the agent's explicit preference; no company-level
+  ##     fallback is appended (the agent already chose what they want).
+  ##
+  ##   - Agent declared only the deprecated singular `model "X"` →
+  ##     stay on the COMPANY chain (gCtx.provider) but pass `model=X`
+  ##     so the chain's primary entry uses X instead of the provider's
+  ##     defaultModel on the first attempt. Preserves the auto-fallback
+  ##     to subsequent company providers — matches existing behaviour
+  ##     from before Phase 2.
+  ##
+  ##   - Agent declared neither → company chain, no overrides.
   var perAgentProvider = gCtx.provider
   var perAgentModel = ""
   for a in gCtx.cfg.agents.named:
     if a.name.toLowerAscii() != agentName.toLowerAscii(): continue
-    if a.model.len > 0: perAgentModel = a.model
-    if a.provider.len > 0 and a.provider != gCtx.cfg.default_provider:
+    if a.models.len > 0:
+      # Explicit per-agent list. Replace shared chain with a per-agent
+      # one built from exactly those models in agent-preference order.
+      perAgentModel = a.models[0]
       try:
         let graph = loadWorld(gCtx.cfg.workspacePath())
-        let resolveModel = if perAgentModel.len > 0: perAgentModel
-                           else: gCtx.cfg.agents.defaults.model
-        let tech = resolveProviderTech(resolveModel, a.provider,
-                                       graph.providers,
-                                       providerOverride = a.provider)
-        if tech.apiBase.len > 0 and tech.apiKey.len > 0:
-          perAgentProvider = createProvider(tech.model, tech.apiKey, tech.apiBase)
-          infoCF("gateway", "Per-agent provider override",
-            {"agent": agentName, "provider": a.provider,
-             "model": tech.model, "apiBase": tech.apiBase}.toTable)
-        else:
-          warnCF("gateway", "Per-agent provider override skipped — missing apiBase or apiKey",
-            {"agent": agentName, "provider": a.provider}.toTable)
+        perAgentProvider = buildProviderChainForAgent(graph, a.models)
+        infoCF("gateway", "Per-agent chain built",
+          {"agent": agentName, "models": a.models.join(",")}.toTable)
       except CatchableError as e:
-        warnCF("gateway", "Per-agent provider resolve failed",
-          {"agent": agentName, "provider": a.provider, "error": e.msg}.toTable)
+        warnCF("gateway",
+          "Per-agent chain build failed — using company default",
+          {"agent": agentName, "models": a.models.join(","),
+           "error": e.msg}.toTable)
+        perAgentModel = ""
+    elif a.model.len > 0:
+      # Back-compat path: deprecated singular model. Keep the company
+      # chain so the agent retains the fallback safety net; only the
+      # primary's model is overridden via `perAgentModel`.
+      perAgentModel = a.model
     break
   newAgentLoop(gCtx.cfg, gCtx.msgBus, perAgentProvider, agentName,
                gCtx.cronService, model = perAgentModel, askPeer = askPeerImpl)
@@ -312,6 +325,69 @@ proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
   else:
     if tierFromRoleName(p) == "int": pmInternal
     else: pmAny
+
+proc buildProviderChainForAgent(graph: WorldGraph,
+                                 models: seq[string]): LLMProvider =
+  ## Phase 2 of provider-config refactor: per-agent fallback chain.
+  ##
+  ## Walks the agent's `models` preference list. For each model name,
+  ## finds the FIRST provider in `graph.providers` whose `models` list
+  ## contains it, builds an HTTPProvider for that pair, and adds an
+  ## entry to the chain in agent-preference order. Models without a
+  ## serving provider are warn-and-skipped.
+  ##
+  ## Empty `models` → caller should fall back to the company default
+  ## chain (`buildProviderChain`) instead. We don't do that here so the
+  ## intent stays explicit at the call site.
+  ##
+  ## Compared to the company-level chain: the order is the AGENT's
+  ## preference (model order), not the company's (provider order).
+  ## So an agent can declare `models "deepseek-v4-flash", "kimi-k2.5"`
+  ## and get cross-provider failover, while another agent declares
+  ## `models "deepseek-v4-pro", "deepseek-v4-flash"` and stays on
+  ## DeepSeek for both primary and fallback.
+  var entries: seq[FallbackEntry] = @[]
+  for model in models:
+    var foundFor = ""
+    if graph.providers != nil and graph.providers.kind == JObject:
+      for pName, pNode in graph.providers.getFields():
+        let pModels = pNode{"models"}
+        if pModels == nil or pModels.kind != JArray: continue
+        var matches = false
+        for m in pModels:
+          if m.getStr() == model:
+            matches = true; break
+        if not matches: continue
+        let tech = resolveProviderTech(model, pName, graph.providers,
+                                        providerOverride = pName)
+        if tech.apiBase.len == 0 or tech.apiKey.len == 0:
+          warnCF("claw",
+                 "Skipping per-agent model — provider has no apiBase/apiKey",
+                 {"model": model, "provider": pName}.toTable)
+          break
+        let prov = createProvider(tech.model, tech.apiKey, tech.apiBase)
+        entries.add(FallbackEntry(provider: prov, model: model, name: pName))
+        foundFor = pName
+        let position =
+          if entries.len == 1: "primary"
+          else: "fallback #" & $(entries.len - 1)
+        infoCF("claw",
+               "Per-agent: registered " & position,
+               {"model": model, "provider": pName,
+                "base": tech.apiBase}.toTable)
+        break
+    if foundFor.len == 0:
+      warnCF("claw",
+             "Per-agent model has no serving provider — skipped",
+             {"model": model}.toTable)
+  if entries.len == 0:
+    raise newException(IOError,
+      "No usable model→provider mapping for the agent's preference " &
+      "list. Check that the agent's `models` entries are listed in " &
+      "some provider's `models` array in BASE.nims.")
+  result =
+    if entries.len > 1: newFallbackLLMProvider(entries)
+    else: entries[0].provider
 
 proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
   ## Construct the LLM provider as a fallback chain by iterating
