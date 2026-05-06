@@ -10,7 +10,7 @@ import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
 import tools/registry as tools_registry
 import providers/http, providers/types as providers_types,
-       providers/fallback, protocol
+       providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
 import services/[heartbeat, cron as cron_service]
 import daemon/[socket, status]
@@ -27,6 +27,12 @@ type
     cfg: Config
     msgBus: MessageBus
     provider: LLMProvider
+    healthRegistry: ProviderHealthRegistry
+                            ## Shared cross-session circuit breaker.
+                            ## Created once at startup, threaded into
+                            ## every FallbackLLMProvider so health
+                            ## state is global across sessions /
+                            ## agents / chain instances.
     cronService: CronService
     offices: Table[string, AgentLoop]
     statusEmitter: StatusEmitter
@@ -53,7 +59,8 @@ var gStartTime: float = 0.0
 # helpers defined later in the file.
 proc ensureOffice(agentName: string): AgentLoop
 proc buildProviderChainForAgent(graph: WorldGraph,
-                                 models: seq[string]): LLMProvider
+                                 models: seq[string],
+                                 healthRegistry: ProviderHealthRegistry = nil): LLMProvider
 
 # Shared askPeer implementation — gets or creates the target peer's
 # AgentLoop, runs her full processDirect (her own tools, trust gate,
@@ -100,7 +107,8 @@ proc makeAgentLoop(agentName: string): AgentLoop =
     perAgentModel = agentModels[0]
     try:
       let graph = loadWorld(gCtx.cfg.workspacePath())
-      perAgentProvider = buildProviderChainForAgent(graph, agentModels)
+      perAgentProvider = buildProviderChainForAgent(graph, agentModels,
+                                                     gCtx.healthRegistry)
       infoCF("gateway", "Per-agent chain built",
         {"agent": agentName, "models": agentModels.join(",")}.toTable)
     except CatchableError as e:
@@ -328,7 +336,8 @@ proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
     else: pmAny
 
 proc buildProviderChainForAgent(graph: WorldGraph,
-                                 models: seq[string]): LLMProvider =
+                                 models: seq[string],
+                                 healthRegistry: ProviderHealthRegistry = nil): LLMProvider =
   ## Phase 2 of provider-config refactor: per-agent fallback chain.
   ##
   ## Walks the agent's `models` preference list. For each model name,
@@ -395,10 +404,12 @@ proc buildProviderChainForAgent(graph: WorldGraph,
       gCtx.cfg.workspacePath / "automation" / "sticky-fallback.json"
     else: ""
   result =
-    if entries.len > 1: newFallbackLLMProvider(entries, stickyPath)
+    if entries.len > 1: newFallbackLLMProvider(entries, stickyPath,
+                                                healthRegistry)
     else: entries[0].provider
 
-proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
+proc buildProviderChain(cfg: Config, graph: WorldGraph,
+                         healthRegistry: ProviderHealthRegistry = nil): LLMProvider =
   ## Construct the LLM provider as a fallback chain by iterating
   ## `graph.providers` in DECLARATION ORDER. The first usable entry
   ## becomes the primary; subsequent ones are fallbacks (in order).
@@ -460,7 +471,9 @@ proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
       "`claw co update`.")
   let stickyPath = workspacePath(cfg) / "automation" / "sticky-fallback.json"
   result =
-    if fallbackEntries.len > 1: newFallbackLLMProvider(fallbackEntries, stickyPath)
+    if fallbackEntries.len > 1: newFallbackLLMProvider(fallbackEntries,
+                                                        stickyPath,
+                                                        healthRegistry)
     else: fallbackEntries[0].provider
 
 proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): Future[string] {.async.} =
@@ -596,7 +609,21 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
             elif i == cur.idx: " ← THIS SESSION"
             elif i == 0: " (primary)"
             else: ""
-          output &= "  [" & $i & "] `" & entry.name & "` / `" & entry.model & "`" & marker & "\n"
+          # Health badge from the cross-session registry. Disagrees
+          # with `THIS SESSION` when, e.g., the registry knows
+          # deepseek is unhealthy but this particular session has
+          # been re-routed and is now happily on kimi.
+          var healthBadge = ""
+          if gCtx != nil and gCtx.healthRegistry != nil:
+            let snap = gCtx.healthRegistry.snapshot()
+            for tup in snap:
+              if tup.name == entry.name:
+                case tup.health.state
+                of provider_health.hsHealthy: healthBadge = " ✓"
+                of provider_health.hsCoolingDown: healthBadge = " ⏳"
+                of provider_health.hsUnhealthy: healthBadge = " ⚠ unhealthy"
+                break
+          output &= "  [" & $i & "] `" & entry.name & "` / `" & entry.model & "`" & healthBadge & marker & "\n"
         output &= "\n"
 
       let graph = loadWorld(cfg[].workspacePath())
@@ -734,7 +761,9 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     cfg.agents.defaults.model = modelName
 
     let freshGraph = loadWorld(cfg[].workspacePath())
-    let newProvider = buildProviderChain(cfg[], freshGraph)
+    let newProvider = buildProviderChain(cfg[], freshGraph,
+                                          (if gCtx != nil: gCtx.healthRegistry
+                                           else: nil))
     al.provider = newProvider
     al.model = modelName
 
@@ -746,6 +775,67 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     al.sessions.clearSession(msg.session_key)
     return "Switched to `" & providerKey & "/" & modelName &
            "` (now position 0 in the providers list). Session cleared."
+  elif cmd == "/provider" or cmd == "/providers" or
+       cmd.startsWith("/provider ") or cmd.startsWith("/providers "):
+    # Health-state inspection + manual recovery for chain entries.
+    # The cross-session circuit breaker (providers/health.nim) tracks
+    # which providers have failed recently and skips them on the next
+    # call. Operators see / clear that state via this command.
+    let parts = cmd.split(" ", 2)
+    if gCtx == nil or gCtx.healthRegistry == nil:
+      return "No provider health registry active."
+    if parts.len < 2 or parts[1].strip().len == 0 or parts[1] == "status":
+      # /provider — list every chain entry with its health badge
+      var output = "**Provider health** (cross-session circuit breaker):\n\n"
+      let snap = gCtx.healthRegistry.snapshot()
+      var seen = initHashSet[string]()
+      for tup in snap: seen.incl(tup.name)
+      # Walk the configured providers from BASE.json so untouched
+      # ones (still implicitly healthy) also show up.
+      let graph = loadWorld(cfg[].workspacePath())
+      if graph.providers != nil and graph.providers.kind == JObject:
+        for pName, _ in graph.providers.getFields():
+          var found: Option[provider_health.ProviderHealth]
+          for tup in snap:
+            if tup.name == pName: found = some(tup.health); break
+          let h =
+            if found.isSome: found.get
+            else: provider_health.ProviderHealth(state: provider_health.hsHealthy)
+          let badge = case h.state
+            of provider_health.hsHealthy: "✓ healthy"
+            of provider_health.hsCoolingDown: "⏳ cooling down"
+            of provider_health.hsUnhealthy: "⚠ unhealthy"
+          output.add("**" & pName & "** " & badge & "\n")
+          if h.state != provider_health.hsHealthy:
+            if h.lastError.len > 0:
+              output.add("  reason: " & h.lastError & "\n")
+            if h.lastFailureTime > 0:
+              output.add("  failed at: " & $fromUnix(h.lastFailureTime) & "\n")
+          if h.state == provider_health.hsCoolingDown and h.cooldownUntil > 0:
+            let remaining = h.cooldownUntil - getTime().toUnix
+            if remaining > 0:
+              output.add("  cooldown: " & $remaining & "s remaining\n")
+            else:
+              output.add("  cooldown: expired (re-probes on next call)\n")
+          if h.lastSuccessTime > 0 and h.state == provider_health.hsHealthy:
+            output.add("  last success: " & $fromUnix(h.lastSuccessTime) & "\n")
+      output.add("\nUsage: `/provider reset <name>` to manually mark " &
+                 "a provider healthy after fixing the underlying issue " &
+                 "(top-up balance, rotate API key).")
+      return output
+    let action = parts[1].strip()
+    case action
+    of "reset":
+      if parts.len < 3 or parts[2].strip().len == 0:
+        return "Usage: `/provider reset <name>` — name comes from /provider output."
+      let pName = parts[2].strip()
+      let cleared = gCtx.healthRegistry.resetProvider(pName)
+      if cleared:
+        return "✓ Marked `" & pName & "` healthy. Next call will probe it again."
+      else:
+        return "ℹ `" & pName & "` was already healthy or unknown — nothing to clear."
+    else:
+      return "Unknown subcommand `" & action & "`. Try `/provider` (status) or `/provider reset <name>`."
   elif cmd.startsWith("/user"):
     # Namespace for user management: `/user <subcmd> [<args>...]`.
     # Entry gate has confirmed pmInternal+; per-subcommand checks below
@@ -1807,11 +1897,19 @@ Options:
 
   let msgBus = newMessageBus()
 
+  # Cross-session provider health registry. Shared across the
+  # company-wide chain AND every per-agent chain — one failed call
+  # (any session, any agent) marks the provider broken; every
+  # subsequent call from any session skips that provider until
+  # manual recovery.
+  let healthPath = workspacePath(cfg[]) / "automation" / "provider-health.json"
+  let healthRegistry = newProviderHealthRegistry(healthPath)
+
   # Build the LLM provider with a fallback chain. See
   # `buildProviderChain` for the full doc; same helper is reused on
   # `/model <provider>:<model>` so the in-flight switch produces the
   # exact same shape of provider as a fresh startup.
-  let provider = buildProviderChain(cfg[], graph)
+  let provider = buildProviderChain(cfg[], graph, healthRegistry)
   let cronStorePath = workspacePath(cfg[]) / "automation" / "jobs.json"
   var cronServiceInstance = newCronService(cronStorePath)
 
@@ -1827,6 +1925,7 @@ Options:
     cfg: cfg[],
     msgBus: msgBus,
     provider: provider,
+    healthRegistry: healthRegistry,
     cronService: cronServiceInstance,
     offices: initTable[string, AgentLoop](),
     statusEmitter: statusEmitter

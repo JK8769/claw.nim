@@ -57,6 +57,7 @@
 
 import std/[asyncdispatch, tables, strutils, json, locks, os]
 import types as providers_types
+import ./health
 import ../logger
 
 type
@@ -79,6 +80,15 @@ type
                                       ## persistence. Empty = in-memory
                                       ## only (test mode). Writes happen
                                       ## synchronously on every advance.
+    healthRegistry*: ProviderHealthRegistry
+                                      ## Cross-session circuit breaker.
+                                      ## Consulted before each chat()
+                                      ## attempt — entries whose provider
+                                      ## is unhealthy or cooling are
+                                      ## skipped. Updated on every
+                                      ## success/failure. Optional
+                                      ## (nil disables the check, falls
+                                      ## back to per-session sticky only).
 
 const SessionKeyOption* = "__session_key"
   ## Option key callers use to opt into sticky behaviour. Stripped
@@ -104,18 +114,26 @@ proc loadStickyFromDisk(path: string): TableRef[string, int] =
            {"path": path, "error": e.msg}.toTable)
 
 proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
-                              persistPath: string = ""): FallbackLLMProvider =
+                              persistPath: string = "",
+                              healthRegistry: ProviderHealthRegistry = nil):
+                              FallbackLLMProvider =
   ## Construct a fallback chain. The first entry is the primary; subsequent
   ## entries are tried in order on fall-back-eligible errors.
   ##
   ## `persistPath` is where sticky state is read/written. Empty means
   ## in-memory only (used by tests; production callers should pass a
   ## stable path under the company's automation dir).
+  ##
+  ## `healthRegistry` is the cross-session circuit breaker. When non-nil,
+  ## the chain consults it before each entry — skipping providers that
+  ## are unhealthy (402/401) or cooling down (429/5xx) without paying
+  ## the round-trip. nil disables the check.
   doAssert entries.len >= 1, "FallbackLLMProvider requires at least one provider"
   result = FallbackLLMProvider(
     entries: entries,
     sessionEntry: loadStickyFromDisk(persistPath),
-    persistPath: persistPath)
+    persistPath: persistPath,
+    healthRegistry: healthRegistry)
   initLock(result.sessionLock)
   if persistPath.len > 0 and result.sessionEntry.len > 0:
     infoCF("fallback_provider",
@@ -215,6 +233,18 @@ method chat*(p: FallbackLLMProvider,
   var lastErr: ref Exception = nil
   for i in startIdx ..< p.entries.len:
     let entry = p.entries[i]
+    # Cross-session circuit breaker: skip without calling if the
+    # registry says this provider is broken. Costs zero round-trips
+    # for known-broken providers, even on the first session that
+    # would have discovered them.
+    if p.healthRegistry != nil and
+       not p.healthRegistry.isUsable(entry.name):
+      infoCF("fallback_provider",
+             "Skipping provider — health registry says unusable",
+             {"provider": entry.name,
+              "session": sessionKey}.toTable)
+      p.advanceSticky(sessionKey, i + 1)
+      continue
     # Use the caller-supplied model only on the FIRST attempt of THIS
     # call (i.e. at startIdx, not necessarily 0); subsequent fallbacks
     # use each entry's configured model so we don't hand a deepseek
@@ -223,15 +253,21 @@ method chat*(p: FallbackLLMProvider,
       if i == startIdx and model.len > 0: model
       else: entry.model
     try:
-      return await entry.provider.chat(messages, tools, callModel, fwdOptions)
+      let resp = await entry.provider.chat(messages, tools, callModel, fwdOptions)
+      # Success — clear any prior failure state on this provider so
+      # other sessions know it's working again.
+      if p.healthRegistry != nil:
+        p.healthRegistry.recordSuccess(entry.name)
+      return resp
     except IOError as e:
       lastErr = e
+      # Update health registry FIRST — even if this is the last entry
+      # and we're about to re-raise, the next call (in this session
+      # or any other) benefits from knowing this provider is broken.
+      if p.healthRegistry != nil:
+        discard p.healthRegistry.recordFailure(entry.name, e.msg)
       let isLast = i == p.entries.high
       if isLast or not shouldFallback(e.msg):
-        # Even when re-raising, ratchet the session forward so a
-        # follow-up call doesn't waste another round-trip on the
-        # same broken entry. The next call will start at i+1 (or
-        # immediately raise "chain exhausted" if there's no i+1).
         p.advanceSticky(sessionKey, i + 1)
         raise
       let preview =
@@ -256,6 +292,6 @@ method chat*(p: FallbackLLMProvider,
     raise lastErr
   raise newException(IOError,
     "FallbackLLMProvider: chain exhausted for session '" &
-    sessionKey & "' — primary and all fallbacks have failed in this " &
-    "session. Restart the gateway to reset, or top up / fix the " &
-    "broken provider.")
+    sessionKey & "' — every provider in the chain is unhealthy " &
+    "or has failed. Use `/provider reset <name>` after fixing the " &
+    "underlying issue, or `/model X:Y` to switch primary.")
