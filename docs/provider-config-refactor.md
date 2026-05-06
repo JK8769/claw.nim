@@ -4,7 +4,8 @@
 `default_model` field readers remains as a follow-up.
 **Scope landed:** ~410 lines across DSL, gateway, agent loop, CLI, and
 the four bundled BASE.nims templates.
-**Commits:** `a0f7ab0` (Phase 1), `ad94fc9` (Phase 2), `0fb26a8` (Phase 3).
+**Commits:** `a0f7ab0` (Phase 1), `ad94fc9` (Phase 2), `0fb26a8` (Phase 3a),
+`dfbe033` (Phase 3b — auto-derive cleanup).
 
 ## TL;DR
 
@@ -255,21 +256,37 @@ BASE.nims directly or uses `/co model` (Phase 3 — writes to BASE.nims).
      (`models "X"`) alone
 - `claw co migrate --apply` writes the new file + a `.bak` backup.
 
-## Remaining cleanup (deferred — not blocking)
+## Remaining cleanup status
 
-Several modules still read `cfg.default_provider` / `cfg.default_model`:
+After `dfbe033`, `cfg.default_provider` and `cfg.default_model` are no
+longer separate sources of truth — they're auto-derived from
+`providers[0]` at config-load time (`deriveDefaultsFromProviders` in
+config.nim). The 14 reader sites still consume cfg as before, but the
+value they get is always the providers list's primary, even if BASE.json
+has a stale value or the field was never written:
 
-- `cli_admin.nim:155, 163, 198, 225, 238` — admin status output
-- `doctor.nim:62-65` — config sanity check
-- `context.nim:109, 118` — context rendering
-- `cli_service.nim:267` — service-mode startup
-- `tools/delegate.nim:177` — delegate fallback
-- `gateway.nim:268-269` — translation helper
-- `agent/cortex.nim:1021` — graph entity hint
+- `cli_admin.nim:155, 163, 198, 225, 238` — keeps reading cfg, gets
+  derived value
+- `doctor.nim:62-65` — same
+- `context.nim:109, 118` — reads from BASE.json directly; auto-derive
+  doesn't help these two specific sites (they bypass cfg). They'll
+  show stale values if BASE.json has them, fresh if it doesn't.
+  Migrate to `firstProviderName(graph)` if it ever matters.
+- `cli_service.nim:267` — reads from BASE.json directly. Same caveat.
+- `tools/delegate.nim:177` — reads cfg, gets derived value
+- `gateway.nim:268-269` — translation helper, reads cfg, gets derived
+- `agent/cortex.nim:1021` — appears in a default JSON example, not a
+  runtime read
 
-These can be migrated to read `providers[0].name` / `providers[0].defaultModel`
-in a follow-up pass. Once all readers are migrated, the fields can be
-dropped from `Config`, `ClawSpec`, and BASE.json entirely.
+Going forward: the helpers `firstProviderName(graph)` and
+`firstProviderDefaultModel(graph)` (cortex.nim) are the canonical way
+to read the company's effective primary when graph is in scope. Use
+them for new readers; migrate existing readers opportunistically.
+
+Eventually the cfg fields can be dropped entirely. Doing it cleanly
+requires (a) migrating any reader that reads BASE.json directly to use
+the helpers, (b) deleting the field from `Config` struct, (c) deleting
+the field's emission from clawdsl.nim.
 
 ## Pointers to current code
 
