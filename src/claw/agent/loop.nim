@@ -962,7 +962,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     
     var llmMeta = newJObject()
     llmMeta["iteration"] = %iteration
-    if al.model != al.cfg.agents.defaults.model: llmMeta["model"] = %al.model
+    if al.model.len > 0: llmMeta["model"] = %al.model
     al.logAction(ctx, atInference, tokens, llmMeta)
     
     # Track last non-empty response for fallback
@@ -2225,12 +2225,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     role: role,
     entity: entity,
     identity: identity,
-    model: if model != "": model else: cfg.agents.defaults.model,
-    contextWindow: resolveContextWindow(
-      if model != "": model else: cfg.agents.defaults.model,
+    model: model,
+    contextWindow: resolveContextWindow(model,
       max(cfg.agents.defaults.max_tokens, 32000)),
-    maxResponseTokens: resolveMaxOutputTokens(
-      if model != "": model else: cfg.agents.defaults.model,
+    maxResponseTokens: resolveMaxOutputTokens(model,
       max(cfg.agents.defaults.max_tokens, 1)),
     temperature: cfg.agents.defaults.temperature,
     maxIterations: cfg.agents.defaults.max_tool_iterations,

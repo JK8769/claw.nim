@@ -264,8 +264,13 @@ proc serviceStatusJson(name: string): JsonNode =
   if fileExists(configPath):
     try:
       let base = parseFile(configPath)
-      provider = base{"config", "default_provider"}.getStr("")
-      model = base{"config", "agents", "defaults", "model"}.getStr("")
+      # Post-Phase-4: derive "company default" from providers list[0]
+      # rather than the removed `default_provider`/`agents.defaults.model`.
+      if base.hasKey("providers") and base["providers"].kind == JObject:
+        for k, pNode in base["providers"].fields:
+          provider = k
+          model = pNode{"defaultModel"}.getStr("")
+          break
       if base{"config", "agents"}.hasKey("named"):
         for a in base{"config", "agents", "named"}:
           agents.add(%*{

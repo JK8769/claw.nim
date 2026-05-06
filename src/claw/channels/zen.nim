@@ -152,16 +152,22 @@ proc newZenChannel*(cfg: Config, bus: MessageBus): ZenChannel =
     connected: false,
     agentRoster: @[]
   )
-  # Build roster from named agents config
+  # Build roster from named agents config. Each agent has their own
+  # `models[0]` post-Phase 4; fall back to the deprecated singular
+  # `model` field, then to "" (Zen surfaces empty as "—").
   for agent in cfg.agents.named:
+    let primary =
+      if agent.models.len > 0: agent.models[0]
+      elif agent.model.len > 0: agent.model
+      else: ""
     result.agentRoster.add((
       name: agent.name,
       description: "",
-      model: if agent.model != "": agent.model else: cfg.default_model
+      model: primary
     ))
   # Always include default agent if not already listed
   if result.agentRoster.len == 0:
-    result.agentRoster.add((name: "Lexi", description: "General assistant", model: cfg.default_model))
+    result.agentRoster.add((name: "Lexi", description: "General assistant", model: ""))
 
 method name*(c: ZenChannel): string = "zen"
 
@@ -225,13 +231,17 @@ proc updateRoster*(c: ZenChannel, cfg: Config) =
   ## Push updated agent roster to Zen.
   c.agentRoster = @[]
   for agent in cfg.agents.named:
+    let primary =
+      if agent.models.len > 0: agent.models[0]
+      elif agent.model.len > 0: agent.model
+      else: ""
     c.agentRoster.add((
       name: agent.name,
       description: "",
-      model: if agent.model != "": agent.model else: cfg.default_model
+      model: primary
     ))
   if c.agentRoster.len == 0:
-    c.agentRoster.add((name: "Lexi", description: "General assistant", model: cfg.default_model))
+    c.agentRoster.add((name: "Lexi", description: "General assistant", model: ""))
 
   if c.connected and c.sock != nil:
     let msg = $ %*{

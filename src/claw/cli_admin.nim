@@ -151,8 +151,10 @@ proc runWorkspaceCommand*(cfg: Config, args: seq[string]): string =
 # ── capabilities ──────────────────────────────────────────────────
 
 proc runCapabilitiesCommand*(cfg: Config, asJson: bool): string =
+  # Post-Phase-4: providers are per-agent now. This command is just a
+  # static feature manifest; the provider line was misleading anyway
+  # (showed only the company default, not what each agent uses).
   var caps: seq[string] = @[]
-  caps.add("provider: " & cfg.default_provider)
   caps.add("memory: markdown")
   caps.add("channels: telegram, discord, whatsapp, dingtalk, maixcam, feishu, qq")
   caps.add("tools: shell, filesystem, edit, web, git, screenshot, image_info, browser_open, http_request, memory_*, hardware_*, i2c, spi, cron, pushover, composio, delegate, spawn")
@@ -160,7 +162,6 @@ proc runCapabilitiesCommand*(cfg: Config, asJson: bool): string =
 
   if asJson:
     var j = newJObject()
-    j["provider"] = %cfg.default_provider
     j["memory"] = %"markdown"
     j["channels"] = %*["telegram", "discord", "whatsapp", "dingtalk", "maixcam", "feishu", "qq"]
     j["tools"] = %*["shell", "filesystem", "edit", "web", "git", "screenshot", "image_info",
@@ -194,76 +195,31 @@ proc runModelsCommand*(cfg: Config, args: seq[string]): string =
     return "Usage: nimclaw models <list|info|benchmark|refresh> [args]"
   let subcmd = args[0]
   if subcmd == "list":
-    var res = "Current configuration:\n"
-    res.add("  Provider: {cfg.default_provider}\n".fmt)
-    res.add("  Temp:     {cfg.default_temperature:.1f}\n\n".fmt)
+    # Post-Phase-4: providers/models are per-agent. From a CLI shell
+    # there's no "current chat", so this just prints the static
+    # known-providers catalogue + temperature default.
+    var res = "Default temperature: {cfg.default_temperature:.1f}\n\n".fmt
     res.add("Known providers and default models:\n")
     for p in knownProviders:
       res.add("  " & p.key & "  " & p.defaultModel & "  " & p.label & "\n")
-    res.add("\nUse `nimclaw models info <model>` for details.")
+    res.add("\nFor per-agent models, see BASE.nims or run " &
+            "`/model` from inside a chat. Use `nimclaw models info " &
+            "<model>` for details.")
     return res
   if subcmd == "info":
     if args.len < 2: return "Usage: nimclaw models info <model>"
     let model = args[1]
     return "Model: " & model & "\n  Context: varies by provider\n  Pricing: see provider dashboard"
   if subcmd == "use":
-    if args.len < 2: return "Usage: nimclaw models use <provider/model>\n\nExamples:\n  nimclaw models use deepseek/deepseek-chat\n  nimclaw models use opencode/kimi-k2.5\n  nimclaw models use nvidia/moonshotai/kimi-k2.5"
-    let modelStr = args[1]
-
-    # Parse provider:model or provider/model
-    # Format: "provider:model" or "provider/model" where model may contain slashes
-    # e.g. "deepseek:deepseek-chat", "nvidia:moonshotai/kimi-k2.5", "opencode:opencode/kimi-k2.5"
-    # For convenience, "deepseek/deepseek-chat" also works (first segment = provider)
-    var providerKey, modelName: string
-    let colonPos = modelStr.find(':')
-    if colonPos > 0:
-      providerKey = modelStr[0..<colonPos]
-      modelName = modelStr[colonPos+1..^1]
-    else:
-      let slashPos = modelStr.find('/')
-      if slashPos < 0:
-        providerKey = cfg.default_provider
-        modelName = modelStr
-      else:
-        providerKey = modelStr[0..<slashPos]
-        modelName = modelStr[slashPos+1..^1]
-
-    # Update BASE.json
-    let graphFile = getConfigPath().parentDir() / "BASE.json"
-    if not fileExists(graphFile):
-      return "Error: BASE.json not found at " & graphFile
-    var base = parseFile(graphFile)
-
-    # Update config defaults
-    base["config"]["default_provider"] = %providerKey
-    base["config"]["default_model"] = %modelName
-    base["config"]["agents"]["defaults"]["model"] = %modelName
-
-    # Update named agents
-    if base["config"]["agents"].hasKey("named"):
-      for i in 0..<base["config"]["agents"]["named"].len:
-        base["config"]["agents"]["named"][i]["provider"] = %providerKey
-        base["config"]["agents"]["named"][i]["model"] = %modelName
-
-    writeFile(graphFile, base.pretty(4))
-
-    var msg = "Switched to: " & providerKey & "/" & modelName & "\n"
-
-    # Kill running gateway and restart
-    let pidFile = getNimClawDir() / "gateway.pid"
-    if fileExists(pidFile):
-      let pidStr = readFile(pidFile).strip()
-      try:
-        let pid = parseInt(pidStr)
-        discard execCmd("kill " & $pid & " 2>/dev/null")
-        msg.add("Gateway (PID " & $pid & ") stopped.\n")
-        msg.add("Run `nimclaw gateway` to restart with new model.")
-      except:
-        msg.add("Could not stop gateway. Restart manually.")
-    else:
-      msg.add("No running gateway found. Run `nimclaw gateway` to start.")
-
-    return msg
+    # Post-Phase-4: model selection is per-agent and the CLI doesn't
+    # have a "current chat" to default to. Operators should switch
+    # in-chat with `/model X:Y` (which targets the chat's agent and
+    # persists per-agent), or edit BASE.nims and run `claw co update`.
+    return "`nimclaw models use` is removed. Per-agent model is " &
+           "the post-Phase-4 source of truth — run `/model X:Y` " &
+           "from inside an agent's chat (e.g. Lexi's), or edit " &
+           "the agent's `models` list in BASE.nims and run " &
+           "`claw co update`."
 
   if subcmd == "benchmark":
     return "Running model latency benchmark...\nConfigure a provider first (nimclaw onboard)."

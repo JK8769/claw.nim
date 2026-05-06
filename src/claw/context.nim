@@ -105,18 +105,21 @@ proc providerTokensUsage*(companyDir: string): Table[string, int64] =
   ## entries with the same taskId inherit it. Unknown tasks (e.g. whose
   ## `start` was rotated out) are attributed to "unknown".
   ##
-  ## Resolves the special alias "default" to the company's configured
-  ## default_provider (from BASE.json) when present.
+  ## Resolves the special alias "default" to the first provider in
+  ## the BASE.json `providers` list (post-Phase-4 ordering is the
+  ## source of truth — there's no separate `default_provider` field).
   result = initTable[string, int64]()
 
-  # Resolve "default" → actual provider name via BASE.json
+  # Resolve "default" → providers list[0]
   var defaultProvider = "default"
   let basePath = companyDir / "BASE.json"
   if fileExists(basePath):
     try:
       let j = parseJson(readFile(basePath))
-      let dp = j{"config", "default_provider"}.getStr("")
-      if dp.len > 0: defaultProvider = dp
+      if j.hasKey("providers") and j["providers"].kind == JObject:
+        for k, _ in j["providers"].fields:
+          defaultProvider = k
+          break
     except: discard
 
   let offices = companyDir / "workspace" / "offices"

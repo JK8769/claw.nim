@@ -1039,13 +1039,10 @@ proc defaultWorldGraph*(workspace: string): WorldGraph =
     nknIndex: initTable[string, WorldEntityID](),
     idAliasIndex: initTable[string, WorldEntityID](),
     config: %* {
-      "default_provider": "opencode",
-      "default_model": "opencode/kimi-k2.5",
       "default_temperature": 0.7,
       "agents": {
         "defaults": {
           "workspace": "~/.claw/workspace",
-          "model": "opencode/kimi-k2.5",
           "max_tokens": 4096,
           "temperature": 0.7,
           "max_tool_iterations": 20,

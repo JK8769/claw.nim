@@ -137,8 +137,12 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
 
   let graph = loadWorld(t.workspace)
   var cfg = loadConfig(getConfigPath())
-  
-  var tech = (model: cfg.agents.defaults.model, apiKey: "", apiBase: "")
+
+  # Post-Phase-4: there's no global default model. The chain build
+  # picks per-agent (or per-graph-entity), and `tech.model` may
+  # legitimately stay empty here — `createProvider` falls back to
+  # the provider's own server-side default in that case.
+  var tech = (model: "", apiKey: "", apiBase: "")
   var sysPrompt = "You are a helpful assistant. Respond concisely."
   var temperature = 0.7
 
@@ -169,12 +173,20 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
     for ac in t.agents:
       if ac.name == agentName:
         providerKey = ac.provider
-        if tech.model == "" or tech.model == cfg.agents.defaults.model:
-          if ac.model.len > 0: tech.model = ac.model
+        # Use the agent's declared primary model when our `tech.model`
+        # is still empty. Prefer `models[0]` (Phase 4) over the
+        # deprecated singular `model` for forward-compat.
+        if tech.model == "":
+          if ac.models.len > 0: tech.model = ac.models[0]
+          elif ac.model.len > 0: tech.model = ac.model
         break
     if providerKey == "" and tech.model.contains("/"):
       providerKey = tech.model.split("/")[0]
-    if providerKey == "": providerKey = cfg.default_provider
+    # Final fallback: first provider in the graph. With no agent
+    # match and no `provider/...` prefix on the model, this gets
+    # us a serving provider without inventing a global default.
+    if providerKey == "":
+      providerKey = firstProviderName(graph)
     if providerKey != "" and graph.providers != nil and
        graph.providers.hasKey(providerKey):
       let pNode = graph.providers[providerKey]

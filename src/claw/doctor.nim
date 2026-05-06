@@ -58,20 +58,12 @@ import config
 
 proc checkConfigSemantics*(cfg: Config, items: var seq[DiagItem]) =
   const cat = "config"
-  
-  if cfg.default_provider.len == 0:
-    items.add(err(cat, "no default_provider configured"))
-  else:
-    items.add(ok(cat, "provider: " & cfg.default_provider))
-    
-  # Technical config is now managed by the Unified World Graph (Hybrid Vault)
-  # We skip checking legacy ProvidersConfig as it has been consolidated into the graph.
-  items.add(ok(cat, "LLM vault is managed by the World Graph"))
 
-  if cfg.default_model.len > 0:
-    items.add(ok(cat, "default model: " & cfg.default_model))
-  else:
-    items.add(warn(cat, "no default_model configured"))
+  # Post-Phase-4: per-agent `models` lists are the source of truth.
+  # The "is anything configured" check now lives on the providers
+  # list (loaded from the graph). Per-agent validation runs in
+  # `claw co update`, not here.
+  items.add(ok(cat, "LLM vault is managed by the World Graph"))
 
   if cfg.default_temperature >= 0.0 and cfg.default_temperature <= 2.0:
     items.add(ok(cat, "temperature " & $cfg.default_temperature & " (valid range 0.0-2.0)"))

@@ -1046,11 +1046,14 @@ proc buildChannelConfig(spec: ClawSpec): JsonNode =
       result[k]["allow_from"] = %allowFrom
 
 proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
+  # Post-Phase-4: there's no global default_provider/default_model.
+  # Each agent declares their own `models` list (or the deprecated
+  # singular `model`); the company-level providers list is just an
+  # ordered registry. The values below are still computed because
+  # they're used as a per-agent fallback when an agent declared
+  # neither `models` nor `model` — the agent inherits providers[0]'s
+  # primary in that case.
   let defProvider = if spec.providers.len > 0: spec.providers[0].name else: ""
-  # Phase 4: defModel is providers[0].models[0] (the canonical "primary"
-  # of the company chain), not providers[0].defaultModel — that field
-  # is gone. Falls through to the registry's defaultModel only if
-  # neither is declared.
   let defModel =
     if spec.providers.len > 0 and spec.providers[0].models.len > 0:
       spec.providers[0].models[0]
@@ -1159,13 +1162,10 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     })
 
   result = %*{
-    "default_provider": defProvider,
-    "default_model": defModel,
     "default_temperature": spec.defaults.temperature,
     "agents": {
       "defaults": {
         "workspace": workspace,
-        "model": defModel,
         "max_tokens": spec.defaults.maxTokens,
         "temperature": spec.defaults.temperature,
         "max_tool_iterations": spec.defaults.maxToolIterations,

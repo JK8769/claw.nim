@@ -6,7 +6,6 @@ when defined(posix):
 type
   AgentDefaultsConfig* = object
     workspace*: string
-    model*: string
     max_tokens*: int
     temperature*: float64
     max_tool_iterations*: int
@@ -192,8 +191,6 @@ type
     promptAddendum*: string
 
   Config* = object
-    default_provider*: string
-    default_model*: string
     default_temperature*: float64
     agents*: AgentsConfig
     channels*: ChannelsConfig
@@ -367,12 +364,10 @@ proc loadDotEnv*() =
 
 proc defaultConfig*(): Config =
   result = Config(
-    default_provider: "openrouter",
     default_temperature: 0.7,
     agents: AgentsConfig(
       defaults: AgentDefaultsConfig(
         workspace: getNimClawDir() / "workspace",
-        model: "openrouter",
         max_tokens: 4096,
         temperature: 0.7,
         max_tool_iterations: 20,
@@ -417,15 +412,13 @@ proc defaultConfig*(): Config =
   )
 
 proc parseEnv*(cfg: var Config) =
-  # Simple manual environment variable parsing to match Go's env library
+  # Simple manual environment variable parsing to match Go's env library.
+  # NIMCLAW_AGENTS_DEFAULTS_MODEL and NIMCLAW_MODEL were dropped post-
+  # Phase 4 — there's no global default model anymore. Set the agent's
+  # `models` list in BASE.nims instead, or use `/model X:Y` from chat.
   if existsEnv("NIMCLAW_AGENTS_DEFAULTS_WORKSPACE"): cfg.agents.defaults.workspace = getEnv("NIMCLAW_AGENTS_DEFAULTS_WORKSPACE")
-  if existsEnv("NIMCLAW_AGENTS_DEFAULTS_MODEL"): cfg.agents.defaults.model = getEnv("NIMCLAW_AGENTS_DEFAULTS_MODEL")
   if existsEnv("NIMCLAW_AGENTS_DEFAULTS_STREAM_INTERMEDIARY"): cfg.agents.defaults.stream_intermediary = getEnv("NIMCLAW_AGENTS_DEFAULTS_STREAM_INTERMEDIARY") == "true"
 
-  if existsEnv("NIMCLAW_MODEL"):
-    let m = getEnv("NIMCLAW_MODEL")
-    cfg.default_model = m
-    cfg.agents.defaults.model = m
   if existsEnv("NIMCLAW_TEMPERATURE"):
     try:
       let temp = parseFloat(getEnv("NIMCLAW_TEMPERATURE"))
@@ -457,30 +450,6 @@ proc parseEnv*(cfg: var Config) =
 proc getConfigPath*(): string =
   getNimClawDir() / "config.json"
 
-proc deriveDefaultsFromProviders(cfg: var Config, root: JsonNode) =
-  ## Phase 3 of provider-config refactor: `default_provider` and
-  ## `default_model` are derivatives of `providers[0]`. Authoritative
-  ## source is the providers list's declaration order; the cfg fields
-  ## are kept as a back-compat mirror for ~14 reader sites that
-  ## haven't been migrated yet (cli_admin, doctor, context, telemetry).
-  ##
-  ## We override whatever the parsed JSON's `config.default_provider`
-  ## said with `providers[0].name`. That way: even an older BASE.json
-  ## with a stale `default_provider` value picks up the right primary;
-  ## and `/model X:Y` (which reorders the providers list) doesn't need
-  ## to also rewrite the duplicate cfg fields — they re-derive on the
-  ## next config load.
-  if root == nil or not root.hasKey("providers"): return
-  let prov = root["providers"]
-  if prov.kind != JObject: return
-  for pName, pNode in prov.fields:
-    cfg.default_provider = pName
-    let dm = pNode{"defaultModel"}.getStr("")
-    if dm.len > 0:
-      cfg.default_model = dm
-      cfg.agents.defaults.model = dm
-    break  # first provider wins; that's the chain primary
-
 proc loadConfig*(path: string): Config =
   result = defaultConfig()
 
@@ -492,7 +461,6 @@ proc loadConfig*(path: string): Config =
       if root.hasKey("config"):
         let configNode = root["config"]
         result = ($configNode).fromJson(Config)
-        deriveDefaultsFromProviders(result, root)
         parseEnv(result)
         return result
     except:

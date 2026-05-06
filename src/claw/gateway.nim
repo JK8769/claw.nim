@@ -286,9 +286,10 @@ proc maybeTranslate(cfg: ref Config, src, userSample: string,
   try:
     let graph = loadWorld(cfg[].workspacePath())
     if graph == nil: return src
+    let primary = firstProviderName(graph)
     let tech = resolveProviderTech(
-      cfg[].agents.defaults.model, cfg[].default_provider,
-      graph.providers, providerOverride = cfg[].default_provider)
+      firstProviderDefaultModel(graph), primary,
+      graph.providers, providerOverride = primary)
     if tech.apiBase == "" or tech.apiKey == "": return src
     let provider = createProvider(tech.model, tech.apiKey, tech.apiBase)
     let sysPrompt = "You are a terse translator. Translate the user's " &
@@ -429,17 +430,16 @@ proc buildProviderChain(cfg: Config, graph: WorldGraph,
   ## share model names (deepseek-v4-flash isn't a thing on opencode-go),
   ## so the chain runs with each provider's own advertised default.
   ##
-  ## Phase 1 of the provider-config refactor (see
-  ## `docs/provider-config-refactor.md`): `cfg.default_provider` is no
-  ## longer consulted here — the providers list IS the source of truth
-  ## for chain order. Other readers of `cfg.default_provider` remain
-  ## unchanged for now (treated as a derivative), and `/model X:Y`
-  ## reorders the providers list to make X the first entry so this
-  ## function and those readers stay in agreement.
+  ## Post-Phase-4: this is the COMPANY-LEVEL chain, used only as the
+  ## defensive fallback when an agent has no `models` declared (which
+  ## a freshly-generated BASE.json never has). Each declared agent
+  ## gets their own per-agent chain via `buildProviderChainForAgent`,
+  ## ordered by their own `models` preference. `/model X:Y` is now
+  ## per-agent and doesn't reorder this list.
   ##
-  ## Used at gateway startup AND on `/model <provider>:<model>`. Both
-  ## paths produce the same shape of provider — switching primary
-  ## doesn't drop the fallback safety net.
+  ## When only one provider is configured the chain has just the
+  ## primary — the wrapper is a no-op pass-through, which keeps the
+  ## type uniform without silent behaviour change.
   ##
   ## When only one provider is configured the chain has just the
   ## primary — the wrapper is a no-op pass-through, which keeps the
@@ -2013,7 +2013,10 @@ Options:
   cfg[] = loadConfig(getConfigPath())
   cfg.agents.defaults.stream_intermediary = stream
   let graph = loadWorld(cfg[].workspacePath())
-  let tech = resolveProviderTech(cfg.agents.defaults.model, cfg.default_provider, graph.providers, providerOverride = cfg.default_provider)
+  let primaryProvider = firstProviderName(graph)
+  let tech = resolveProviderTech(firstProviderDefaultModel(graph),
+                                  primaryProvider, graph.providers,
+                                  providerOverride = primaryProvider)
   infoCF("claw", "Provider", {"model": tech.model, "base": tech.apiBase}.toTable)
 
   let msgBus = newMessageBus()
@@ -2101,10 +2104,11 @@ Options:
       "ttml": dashTtml
     })
 
-    # Register agents as chat provider
+    # Register agents as chat provider. Per-agent model — each office
+    # has its own primary now (post-Phase 4), no global default.
     var agentList = newJArray()
     for name, office in gCtx.offices:
-      agentList.add(%*{"name": name, "description": "", "model": gCtx.cfg.agents.defaults.model})
+      agentList.add(%*{"name": name, "description": "", "model": office.model})
     emitStdout(%*{
       "event": "chat.provider",
       "service": serviceRuntimeName(),
