@@ -5,7 +5,8 @@
 **Scope landed:** ~410 lines across DSL, gateway, agent loop, CLI, and
 the four bundled BASE.nims templates.
 **Commits:** `a0f7ab0` (Phase 1), `ad94fc9` (Phase 2), `0fb26a8` (Phase 3a),
-`dfbe033` (Phase 3b — auto-derive cleanup).
+`dfbe033` (Phase 3b — auto-derive cleanup), `2d89c55` (Phase 4 —
+option C, clean operational/capability split).
 
 ## TL;DR
 
@@ -224,6 +225,37 @@ BASE.json (Phase 2). To make it survive `claw co update` (which
 regenerates BASE.json from BASE.nims), the operator either edits
 BASE.nims directly or uses `/co model` (Phase 3 — writes to BASE.nims).
 
+## Final architecture (post Phase 4)
+
+Capability and operational concerns are now cleanly separated:
+
+```
+COMPANY (operational): credentials, endpoints, what each provider serves
+  provider "deepseek":
+    apiKey "..."
+    models "deepseek-v4-flash", "deepseek-v4-pro"   ← what this provider serves
+                                                      models[0] is canonical
+                                                      (no more `defaultModel`
+                                                       smuggling capability
+                                                       into operational layer)
+
+AGENT (capability): what THIS agent prefers
+  agent "Lexi":
+    models "deepseek-v4-flash", "kimi-k2.5"   ← REQUIRED. agent declares
+                                                primary + fallback ladder
+                                                in model terms, not provider.
+
+  agent "Atlas":
+    models "deepseek-v4-flash"                ← single model, no fallback.
+                                                if Atlas wants fallback,
+                                                operator adds it to the list.
+```
+
+**Single rule:** every agent must say what it wants. The provider layer
+no longer synthesises chains for under-declared agents. `claw co update`
+errors out at config-resolve time if any agent has neither `models` nor
+the deprecated singular `model`.
+
 ## Order of work — DONE
 
 1. ✅ Phase 1 (`a0f7ab0`) — runtime aligned with source. Providers list
@@ -237,9 +269,22 @@ BASE.nims directly or uses `/co model` (Phase 3 — writes to BASE.nims).
    chain when `models` is declared, falls back to company chain when
    only deprecated singular `model "X"` is set (preserves auto-fallback
    safety net for existing files).
-3. ✅ Phase 3 (`0fb26a8`) — bundled templates demonstrate the new
+3. ✅ Phase 3a (`0fb26a8`) — bundled templates demonstrate the new
    syntax; `claw co migrate` subcommand mechanically rewrites old
    files in-place with a `.bak` backup.
+4. ✅ Phase 3b (`dfbe033`) — auto-derive cleanup. `cfg.default_provider`
+   / `cfg.default_model` now derive from `providers[0]` at load time
+   so 14 reader sites stay in sync without per-site migration.
+5. ✅ Phase 4 (`2d89c55`) — option C, clean separation of operational
+   vs capability:
+   - `clawdsl` errors at config-resolve time if an agent has neither
+     `models` nor the deprecated singular `model`.
+   - `provider.defaultModel` removed from BASE.json emission; the
+     provider's `models[0]` is its canonical primary.
+   - `makeAgentLoop` always goes through the per-agent chain build —
+     no more "inherit company chain" branch.
+   - Templates and SunGrowCN BASE.nims migrated; every agent has
+     explicit `models "..."`.
 
 ## Verified end-to-end
 
