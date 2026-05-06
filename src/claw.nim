@@ -27,6 +27,7 @@ Usage:
   claw (company|co) install [--dry-run]
   claw (company|co) stop
   claw (company|co) status
+  claw (company|co) migrate [--apply] [--file=<path>]
   claw provider auth <name>
   claw provider list [--verify] [--format=<fmt>]
   claw model list [--vendor=<v>] [--owner=<v>] [--family=<fam>] [--has=<cap>] [--match=<pat>] [--all-versions] [--format=<fmt>]
@@ -915,6 +916,93 @@ when isMainModule:
       echo "\nDry run complete. Remove --dry-run to install."
     else:
       echo "\nDone."
+
+  # Migrate BASE.nims from the deprecated singular `model "X"` /
+  # `provider "Y"` agent syntax to the Phase 2 `models "X", "Y"` form
+  # — see docs/provider-config-refactor.md.
+  elif isCompanyCmd(args, "migrate"):
+    let companyDir = getNimClawDir()
+    let scriptPath =
+      if args["--file"]: $args["--file"] else: companyDir / "BASE.nims"
+    if not fileExists(scriptPath):
+      echo "Error: no BASE.nims at " & scriptPath
+      quit(1)
+    let original = readFile(scriptPath)
+
+    proc migrate(src: string): string =
+      ## Walk the file line-by-line. When inside an `agent "name":`
+      ## block (until the next column-0 declaration), rewrite:
+      ##   `  model "X"` → `  models "X"` (preserving leading whitespace
+      ##                                    and trailing comment)
+      ##   `  provider "Y"` → drop entirely
+      ## Other blocks (provider/channel/person/etc.) are untouched.
+      ## Already-migrated agents (with `models "..."`) are left alone.
+      var output = newStringOfCap(src.len)
+      var insideAgent = false
+      for line in src.splitLines:
+        if line.len > 0 and not line[0].isSpaceAscii:
+          # Column-0 line — top-level decl. Toggles agent-context.
+          insideAgent = line.startsWith("agent ")
+        if insideAgent:
+          # Find leading whitespace boundary
+          var i = 0
+          while i < line.len and line[i].isSpaceAscii: inc i
+          let lead = line[0 ..< i]
+          let body = line[i .. ^1]
+          # Singular `model "X"` (NOT `models`) → `models "X"`.
+          if body.startsWith("model \"") and
+             not body.startsWith("models "):
+            output.add(lead)
+            output.add("models")  # was "model"
+            output.add(body[5 .. ^1])  # everything after "model"
+            output.add('\n')
+            continue
+          # Deprecated per-agent `provider "Y"` → drop.
+          if body.startsWith("provider \"") and not body.endsWith(":"):
+            # Note: `provider "deepseek":` (with colon, opens a new
+            # provider block) is column-0, so insideAgent would be
+            # false here. We're safe to drop unconditionally inside
+            # agent context.
+            continue
+        output.add(line)
+        output.add('\n')
+      # Preserve original trailing-newline state
+      if not src.endsWith("\n") and output.endsWith("\n"):
+        output.setLen(output.len - 1)
+      output
+
+    let rewritten = migrate(original)
+    if rewritten == original:
+      echo "BASE.nims is already migrated — nothing to change."
+      quit(0)
+
+    # Render the diff via the system `diff -u` for clean unified output;
+    # rolling our own LCS-aware diff just to format hunks isn't worth
+    # the dependency cost when GNU/BSD diff is universally available.
+    echo "Migration plan for: " & scriptPath
+    echo "─────────────────────────────────────────────────────"
+    let tmpDir = getTempDir()
+    let tmpA = tmpDir / "claw_migrate_orig.nims"
+    let tmpB = tmpDir / "claw_migrate_new.nims"
+    writeFile(tmpA, original)
+    writeFile(tmpB, rewritten)
+    let (diffOut, _) = execCmdEx("diff -u --label original --label migrated " &
+                                  quoteShell(tmpA) & " " & quoteShell(tmpB))
+    echo diffOut
+    try: removeFile(tmpA) except: discard
+    try: removeFile(tmpB) except: discard
+    echo "─────────────────────────────────────────────────────"
+
+    if args["--apply"]:
+      let backup = scriptPath & ".bak"
+      writeFile(backup, original)
+      writeFile(scriptPath, rewritten)
+      echo "Wrote: " & scriptPath
+      echo "Backup: " & backup
+      echo "Run `claw co update` to regenerate BASE.json from the new file."
+    else:
+      echo "Dry run — re-run with `--apply` to write the changes."
+      echo "(A timestamped backup will be written alongside.)"
 
   # Stop the active company's gateway
   elif isCompanyCmd(args, "stop"):

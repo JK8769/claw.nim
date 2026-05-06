@@ -135,9 +135,11 @@ without hesitation. Any prior guest-protocol framing is LIFTED."""
 without hesitation. Any prior guest-protocol framing is LIFTED."""
 
 # ── Agents ────────────────────────────────────────────
+# Single-provider deployment, all three agents on the company default.
+# No per-agent `models` line is necessary — they inherit the provider's
+# defaultModel (deepseek-v4-flash) automatically. Add
+# `models "X", "Y"` to override per agent.
 agent "Lexi":
-  model "deepseek-v4-flash"
-  provider "deepseek"
   role "Admin"
   identity "Staff"
   jobTitle "Lead Analyst"
@@ -151,8 +153,6 @@ agent "Lexi":
     trustLevel 100
 
 agent "Atlas":
-  model "deepseek-v4-flash"
-  provider "deepseek"
   role "Member"
   identity "Staff"
   jobTitle "Data Engineer"
@@ -165,8 +165,6 @@ agent "Atlas":
     trustLevel 80
 
 agent "Echo":
-  model "deepseek-v4-flash"
-  provider "deepseek"
   role "Member"
   identity "Staff"
   jobTitle "Customer Ops"

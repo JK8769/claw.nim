@@ -24,9 +24,14 @@ provider "ollama":
   defaultModel "gemma4:31b-cloud"
 
 # ── Agents ────────────────────────────────────────────
+# `models "X", "Y"` is the canonical Phase 2 syntax: an ordered list
+# where models[0] is primary and the rest are fallbacks (resolved by
+# walking the providers list above to find which serves each model).
+# Omit the `models` line entirely and the agent inherits the company
+# default chain (every provider in declaration order using its own
+# defaultModel). See docs/provider-config-refactor.md.
 agent "Lexi":
-  model "deepseek-v4-flash"
-  provider "deepseek"
+  models "deepseek-v4-flash", "gemma4:31b-cloud"  # cross-provider fallback
   role "Admin"
   identity "Staff"
   jobTitle "Secretary"
@@ -41,8 +46,7 @@ agent "Lexi":
     etiquette "This is your primary lead."
 
 agent "Atlas":
-  model "deepseek-v4-flash"
-  provider "deepseek"
+  models "deepseek-v4-flash"            # single model — falls back to nothing, but DeepSeek alone is fine for Atlas's lookups
   role "Member"
   identity "Staff"
   jobTitle "Tech Lead"

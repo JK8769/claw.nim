@@ -19,9 +19,12 @@ provider "deepseek":
   models "deepseek-v4-flash", "deepseek-v4-pro"
 
 # ── Agent ─────────────────────────────────────────────
+# With one provider and no per-agent model preference, the agent
+# inherits the company default chain (provider's defaultModel) — so
+# no `models` / `model` line is needed. Add `models "X", "Y"` if
+# you want the agent to prefer a specific model or list a fallback
+# ladder; see docs/provider-config-refactor.md.
 agent "Lexi":
-  model "deepseek-v4-flash"
-  provider "deepseek"
   profile "Secretary"
 
   reportsTo "Owner":

@@ -83,8 +83,11 @@ competency "solar-analysis":
 
 # ── Agents ────────────────────────────────────────────
 agent "Lexi":
-  model "glm-5.1"             # swap to "deepseek-v4-flash" + provider "deepseek" if no opencode-go key
-  provider "opencode-go"
+  # Primary glm-5.1 (opencode-go), automatic cross-provider fallback to
+  # deepseek-v4-flash if opencode-go is down or your key isn't set.
+  # The framework looks up which provider serves each model name in
+  # the providers list above.
+  models "glm-5.1", "deepseek-v4-flash"
   role "Admin"
   identity "Staff"
   jobTitle "Secretary"
@@ -103,8 +106,9 @@ agent "Lexi":
     etiquette "Primary lead. Prefers concise reports with kWh and SOC numbers stated clearly."
 
 agent "Atlas":
-  model "mimo-v2-pro"         # swap to "deepseek-v4-flash" + provider "deepseek" if no opencode-go key
-  provider "opencode-go"
+  # Same cross-provider fallback ladder as Lexi but with mimo-v2-pro
+  # as Atlas's preferred primary (lighter customer-facing surface).
+  models "mimo-v2-pro", "deepseek-v4-flash"
   role "Staff"
   identity "Staff"
   jobTitle "Customer Support"
