@@ -595,12 +595,20 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         output &= "**Configured providers** (BASE.nims):\n"
         for key, pNode in graph.providers.getFields():
           let rawKey = pNode{"apiKey"}.getStr("")
-          let hasKey = if rawKey.len > 0: "+" else: "-"
-          output &= "**" & key & "** " & hasKey & "\n"
+          let hasKey = if rawKey.len > 0: "✓ key" else: "⚠ no key"
+          output &= "**" & key & "** (" & hasKey & ")\n"
           if pNode.hasKey("models") and pNode["models"].kind == JArray:
+            # Dedupe view-side too — even if BASE.json has stale
+            # duplicates from a pre-dedupe `claw co update`, the
+            # display stays clean.
+            var seen = initHashSet[string]()
             for m in pNode["models"]:
               let modelId = m.getStr()
-              let marker = if modelId == al.model: " <- configured" else: ""
+              if modelId in seen: continue
+              seen.incl(modelId)
+              let marker =
+                if modelId == al.model: " ← " & al.agentName & "'s primary"
+                else: ""
               output &= "  `" & key & ":" & modelId & "`" & marker & "\n"
           else:
             output &= "  (no models listed)\n"

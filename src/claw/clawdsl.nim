@@ -283,7 +283,13 @@ template provider*(provName: string, body: untyped) =
       ## BASE.nims via `claw co migrate`.
       if m notin p.models: p.models.insert(m, 0)
     template models(ms: varargs[string]) {.used.} =
-      for m in ms: p.models.add(m)
+      # Dedupe on insert. Some legacy BASE.nims declare the same model
+      # via both `defaultModel "X"` (which our deprecated template
+      # prepends to p.models) AND `models "X", "Y"`. Without this
+      # check, the X entry shows up twice in the resolved list and
+      # in /model output.
+      for m in ms:
+        if m notin p.models: p.models.add(m)
     body
     spec.providers.add(p)
 

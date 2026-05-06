@@ -935,35 +935,50 @@ when isMainModule:
       ##   `  model "X"` → `  models "X"` (preserving leading whitespace
       ##                                    and trailing comment)
       ##   `  provider "Y"` → drop entirely
-      ## Other blocks (provider/channel/person/etc.) are untouched.
-      ## Already-migrated agents (with `models "..."`) are left alone.
+      ##
+      ## Inside `provider "X":` blocks:
+      ##   `  defaultModel "X"` → drop (Phase 4: provider's models[0]
+      ##                                 is the canonical primary; the
+      ##                                 separate field is gone)
+      ##
+      ## Already-migrated blocks (agent has `models`; provider has no
+      ## `defaultModel`) are left alone.
       var output = newStringOfCap(src.len)
       var insideAgent = false
+      var insideProvider = false
       for line in src.splitLines:
         if line.len > 0 and not line[0].isSpaceAscii:
-          # Column-0 line — top-level decl. Toggles agent-context.
+          # Column-0 line — top-level decl. Toggles block context.
           insideAgent = line.startsWith("agent ")
-        if insideAgent:
+          insideProvider = line.startsWith("provider ")
+        if insideAgent or insideProvider:
           # Find leading whitespace boundary
           var i = 0
           while i < line.len and line[i].isSpaceAscii: inc i
           let lead = line[0 ..< i]
           let body = line[i .. ^1]
-          # Singular `model "X"` (NOT `models`) → `models "X"`.
-          if body.startsWith("model \"") and
-             not body.startsWith("models "):
-            output.add(lead)
-            output.add("models")  # was "model"
-            output.add(body[5 .. ^1])  # everything after "model"
-            output.add('\n')
-            continue
-          # Deprecated per-agent `provider "Y"` → drop.
-          if body.startsWith("provider \"") and not body.endsWith(":"):
-            # Note: `provider "deepseek":` (with colon, opens a new
-            # provider block) is column-0, so insideAgent would be
-            # false here. We're safe to drop unconditionally inside
-            # agent context.
-            continue
+          if insideAgent:
+            # Singular `model "X"` (NOT `models`) → `models "X"`.
+            if body.startsWith("model \"") and
+               not body.startsWith("models "):
+              output.add(lead)
+              output.add("models")  # was "model"
+              output.add(body[5 .. ^1])  # everything after "model"
+              output.add('\n')
+              continue
+            # Deprecated per-agent `provider "Y"` → drop.
+            if body.startsWith("provider \"") and not body.endsWith(":"):
+              # Note: `provider "deepseek":` (with colon, opens a new
+              # provider block) is column-0, so insideAgent would be
+              # false here. We're safe to drop unconditionally inside
+              # agent context.
+              continue
+          if insideProvider:
+            # `defaultModel "X"` inside provider block → drop. The
+            # `models "X", ..."` list (also inside the provider block)
+            # is the canonical declaration of what the provider serves.
+            if body.startsWith("defaultModel \""):
+              continue
         output.add(line)
         output.add('\n')
       # Preserve original trailing-newline state
