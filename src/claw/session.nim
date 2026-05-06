@@ -128,6 +128,15 @@ proc readAllJsonl(path: string): seq[SessionMessage] =
       except CatchableError: discard
   except IOError: discard
 
+proc readSessionMetaFromPath*(path: string): SessionMeta {.raises: [
+    IOError, CatchableError].} =
+  ## Cross-agent meta read: parse `<key>.meta.json` from a fully-qualified
+  ## path without needing a SessionManager handle for that agent. Used
+  ## by `/session list`, which enumerates every declared agent in a
+  ## company. Raises on missing or malformed input — callers decide
+  ## whether to skip silently or surface "couldn't read meta".
+  readFile(path).fromJson(SessionMeta)
+
 proc loadMeta(sm: SessionManager, key: string): SessionMeta =
   let path = sm.metaPath(key)
   result = SessionMeta(
@@ -138,7 +147,7 @@ proc loadMeta(sm: SessionManager, key: string): SessionMeta =
   )
   if fileExists(path):
     try:
-      result = readFile(path).fromJson(SessionMeta)
+      result = readSessionMetaFromPath(path)
     except CatchableError: discard
 
 proc writeMeta(sm: SessionManager, session: Session) =

@@ -309,6 +309,27 @@ proc maybeTranslate(cfg: ref Config, src, userSample: string,
   except:
     return src
 
+proc resolveCallerNc(cfg: ref Config, msg: InboundMessage): string =
+  ## Resolve the caller's `nc:N` alias from an inbound message.
+  ## Returns "" when the world graph won't load or the user has no
+  ## entity binding yet — call sites decide between "error" and
+  ## "fall back to an explicit nc:id arg".
+  ##
+  ## Channel-key construction matches `resolveCallerPermission` (and
+  ## the binding flow): when an `app_id` metadata field is present
+  ## (Feishu multi-app, etc.), it's appended so the same `sender_id`
+  ## across two app installs resolves to two distinct entities.
+  let workspace = cfg[].workspacePath()
+  let g = loadWorld(workspace)
+  if g == nil: return ""
+  let channelKey =
+    if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+      msg.channel & ":" & msg.metadata["app_id"]
+    else: msg.channel
+  let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+  if uint32(entID) == 0: return ""
+  toAlias(entID)
+
 proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
   ## Resolve the caller's declared entity permission into one of four
   ## tiers (pmSuperAdmin > pmAdmin > pmInternal > pmAny). The entry
@@ -558,8 +579,12 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
 
     return res
   elif cmd in ["/reset", "/new"]:
-    al.sessions.clearSession(msg.session_key)
-    return "Session history cleared for `" & msg.session_key & "`. Starting fresh!"
+    # Deprecated: old form keyed off msg.session_key (raw channel key)
+    # not the `nc_N` form on disk, so the unlink silently no-op'd.
+    # `/session` is the canonical surface; redirect there.
+    return "`" & cmd & "` has been removed. Use `/session reset` " &
+           "(clears YOUR session with this agent) or `/session help` " &
+           "for the full surface."
   elif cmd.startsWith("/stream "):
     let val = cmd.replace("/stream ", "").strip().toLowerAscii()
     if val in ["on", "true", "1"]:
@@ -1377,6 +1402,13 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     let parts = strutils.splitWhitespace(cmd)
     if parts.len < 2 or parts[1] == "help":
       return "**`/session` — conversation-state management**\n\n" &
+             "  `/session reset` (alias `/session new`)\n" &
+             "    Clear YOUR session in the current chat. Next message\n" &
+             "    starts a fresh thread with no prior history.\n\n" &
+             "  `/session list`\n" &
+             "    Show all your sessions across every agent in this\n" &
+             "    company — message count, summary length, last\n" &
+             "    activity per agent.\n\n" &
              "  `/session status <agent>`\n" &
              "    Regular user: show YOUR session's context utilisation\n" &
              "    with that agent — message count, token estimate,\n" &
@@ -1389,8 +1421,9 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    if the nc:id isn't your own.\n" &
              "    Example: `/session status lexi nc:5`\n\n" &
              "  `/session clear <agent>`\n" &
-             "    Clear YOUR session with that agent. The agent will\n" &
-             "    forget your conversation history on next turn.\n" &
+             "    Clear YOUR session with that agent (works from any\n" &
+             "    chat, names the target agent explicitly). Same effect\n" &
+             "    as `/session reset` when run from that agent's chat.\n" &
              "    Example: `/session clear lexi`\n\n" &
              "  `/session clear <agent> <nc:id>`   🔒 Admin\n" &
              "    Clear another user's session with that agent. Useful\n" &
@@ -1436,17 +1469,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         let targetNc = parts[3]
         # Resolve caller's own nc:id to compare; non-Admin can only
         # view their own.
-        var callerNc = ""
-        let workspace0 = cfg[].workspacePath()
-        let g0 = loadWorld(workspace0)
-        if g0 != nil:
-          let channelKey0 =
-            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-              msg.channel & ":" & msg.metadata["app_id"]
-            else: msg.channel
-          let (entID0, _) = g0.resolveUserGraph(channelKey0, msg.sender_id)
-          if uint32(entID0) > 0:
-            callerNc = toAlias(entID0)
+        let callerNc = resolveCallerNc(cfg, msg)
         if callerPermGate < pmAdmin and targetNc != callerNc:
           return "Only Admin or SuperAdmin can view another user's " &
                  "session. (Use `/session status " & agentName &
@@ -1477,17 +1500,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                                   nameByKey)
       else:
         # Plain user — their own session.
-        var targetNc = ""
-        let workspace = cfg[].workspacePath()
-        let g = loadWorld(workspace)
-        if g != nil:
-          let channelKey =
-            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-              msg.channel & ":" & msg.metadata["app_id"]
-            else: msg.channel
-          let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-          if uint32(entID) > 0:
-            targetNc = toAlias(entID)
+        let targetNc = resolveCallerNc(cfg, msg)
         if targetNc == "":
           return "Couldn't resolve your own `nc:id` from this channel. " &
                  "Pass it explicitly: " &
@@ -1527,17 +1540,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                  "(e.g. `nc:7`), got `" & parts[3] & "`."
         targetNc = parts[3]
       else:
-        # Resolve caller to nc:id via the same path as resolveCallerPermission.
-        let workspace = cfg[].workspacePath()
-        let g = loadWorld(workspace)
-        if g != nil:
-          let channelKey =
-            if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-              msg.channel & ":" & msg.metadata["app_id"]
-            else: msg.channel
-          let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
-          if uint32(entID) > 0:
-            targetNc = toAlias(entID)
+        targetNc = resolveCallerNc(cfg, msg)
         if targetNc == "":
           return "Couldn't resolve your own `nc:id` from this channel. " &
                  "If you're an Admin clearing someone else's session, " &
@@ -1552,8 +1555,68 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "On the next message, the agent starts a fresh thread — " &
              "no prior history, no carried-over summary. " &
              "`memory_store` entries are untouched."
+    elif sub == "reset" or sub == "new":
+      # Clear YOUR session in the current chat. The "current chat's
+      # agent" is whichever office handled this slash command (`al`).
+      let callerNc = resolveCallerNc(cfg, msg)
+      if callerNc == "":
+        return "Couldn't resolve your `nc:id` from this channel. " &
+               "Use `/session clear " & al.agentName.toLowerAscii &
+               " nc:<your-id>` instead."
+      let sessionKey = callerNc.replace(":", "_")
+      al.sessions.clearSession(sessionKey)
+      return "Session reset for **" & al.agentName & "** (`" & sessionKey &
+             "`). Next message starts a fresh thread — no prior history, " &
+             "no carried-over summary. `memory_store` entries are untouched."
+    elif sub == "list":
+      # Enumerate caller's sessions across every declared agent.
+      # For each agent: message count, summary length (rough proxy
+      # for "how compacted is the history"), most-recent activity
+      # if the meta is loadable. Useful for "where am I in
+      # conversation with whom?"
+      let callerNc = resolveCallerNc(cfg, msg)
+      if callerNc == "":
+        return "Couldn't resolve your `nc:id` from this channel."
+      let sessionKey = callerNc.replace(":", "_")
+      let workspace = cfg[].workspacePath()
+      var output = "**Your sessions** (as `" & callerNc & "` / `" &
+                   sessionKey & "`):\n\n"
+      var anyFound = false
+      for a in cfg[].agents.named:
+        let agentLow = a.name.toLowerAscii
+        let metaPath = workspace / "offices" / agentLow /
+                       "sessions" / (sessionKey & ".meta.json")
+        if not fileExists(metaPath): continue
+        anyFound = true
+        try:
+          let meta = readSessionMetaFromPath(metaPath)
+          let updatedStr =
+            if meta.updated > 0:
+              fromUnixFloat(meta.updated).format("yyyy-MM-dd HH:mm")
+            else: "—"
+          output.add("**" & a.name & "**\n")
+          output.add("  messages: " & $meta.messageCount)
+          if meta.summaryWatermark > 0:
+            let live = meta.messageCount - meta.summaryWatermark
+            output.add(" (`" & $meta.summaryWatermark & "` summarised, `" &
+                       $live & "` live)")
+          output.add("\n")
+          if meta.summary.len > 0:
+            output.add("  summary: " & $meta.summary.len & " chars\n")
+          output.add("  last active: " & updatedStr & "\n\n")
+        except CatchableError:
+          output.add("**" & a.name & "** (couldn't read meta)\n\n")
+      if not anyFound:
+        return "No sessions found for `" & callerNc & "`. Send a " &
+               "message to any agent to start one."
+      output.add("Operations: `/session reset` (clear THIS chat's " &
+                 "session), `/session status <agent>` (detailed view), " &
+                 "`/session clear <agent>` (clear another agent's " &
+                 "session with you).")
+      return output
     return "Unknown /session subcommand: `" & sub & "`.\n" &
-           "Try `/session clear <agent>` or `/session help`."
+           "Try `/session reset`, `/session list`, `/session status " &
+           "<agent>`, `/session clear <agent>`, or `/session help`."
 
   elif cmd == "/restart":
     if callerPermGate < pmAdmin:
@@ -1814,11 +1877,10 @@ proc runGateway*(host: string, port: int, debug: bool, stream: bool,
     usage: "/status", group: "utility",
     menuHint: "Status", permission: pmAny,
     examples: @["/status"]))
-  register(SystemCommand(
-    name: "/reset", summary: "Clear the current session's history.",
-    usage: "/reset", group: "agent-control",
-    menuHint: "New session", permission: pmAny,
-    examples: @["/reset"]))
+  # /reset and /new are deprecated; the canonical surface is the
+  # /session subcommand family. Not registered for the menu so they
+  # don't appear as suggestions; the handler still catches them and
+  # redirects operators to /session reset.
   register(SystemCommand(
     name: "/stream", summary: "Toggle intermediary thought streaming.",
     usage: "/stream <on|off>", group: "agent-control",
@@ -1910,11 +1972,12 @@ Options:
     examples: @["/restart"]))
   register(SystemCommand(
     name: "/session",
-    summary: "Clear conversation state with an agent. Wipes session JSONL + meta on disk; `memory_store` entries are untouched.",
-    usage: "/session clear <agent> [<nc:id>]",
-    group: "admin", menuHint: "Clear session",
-    permission: pmInternal,
-    examples: @["/session clear lexi", "/session clear lexi nc:7"]))
+    summary: "Conversation-state management. `/session reset` clears your current chat's session; `/session list` shows all your sessions across agents; `/session status <agent>` shows context utilisation; `/session clear <agent>` is the cross-chat variant.",
+    usage: "/session reset | new | list | status <agent> | clear <agent> [<nc:id>]",
+    group: "agent-control", menuHint: "Session management",
+    permission: pmAny,
+    examples: @["/session reset", "/session list", "/session status lexi",
+                 "/session clear lexi", "/session clear lexi nc:7"]))
   register(SystemCommand(
     name: "/co",
     summary: "Company management. `/co update` rebuilds BASE.json from BASE.nims; `/co cost` shows token + USD spend across all agents.",
