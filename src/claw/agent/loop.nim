@@ -1712,6 +1712,14 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
             "chat_kind": $opts.chatKind}.toTable)
     var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient, opts.botDisplayName, opts.mentionsJson, opts.appID)
 
+    # Snapshot the session length BEFORE adding the user message.
+    # If the LLM call fails transiently (provider outage, no real
+    # assistant content produced), we roll back to this length so
+    # the user's failed message doesn't persist — preventing the
+    # session from accumulating duplicate user messages when they
+    # retry during an outage.
+    let preTurnMessageCount = al.sessions.messageCount(opts.sessionKey)
+
     # Store the user's message in history WITHOUT the nc:id prefix.
     # With per-sender session keys (see identitySessionKey for group
     # chats), the session only contains one speaker's turns anyway, so
@@ -1750,6 +1758,21 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     let isTransientError = finalContent.startsWith(
       "Error communicating with LLM provider:")
 
+    if isTransientError:
+      # Roll the session back to BEFORE the user message was added.
+      # Removes the user's failed message AND anything else added
+      # during this turn (typically nothing — transient errors fire
+      # in iteration 1 before tools run, but this is robust if the
+      # error happens later). Without rollback, the user retries and
+      # the session accumulates duplicate user messages during the
+      # outage period.
+      al.sessions.rollbackTo(opts.sessionKey, preTurnMessageCount)
+      infoCF("agent",
+             "Rolled back turn due to transient LLM-error",
+             {"session_key": opts.session_key,
+              "rolled_back_to": $preTurnMessageCount,
+              "preview": finalContent[0 ..< min(finalContent.len, 120)]}.toTable)
+
     if ctx.responseSent:
       infoCF("agent", "Response already sent via tools, skipping final return message", {"session_key": opts.session_key}.toTable)
       # Still add to history but return empty so gateway doesn't send it again
@@ -1759,11 +1782,6 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
 
     if not isTransientError:
       al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
-    else:
-      infoCF("agent",
-             "Suppressing transient LLM-error from session log",
-             {"session_key": opts.session_key,
-              "preview": finalContent[0 ..< min(finalContent.len, 120)]}.toTable)
 
     if opts.enableSummary:
       al.maybeSummarize(opts)

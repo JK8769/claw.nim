@@ -366,6 +366,57 @@ proc addParticipant*(sm: SessionManager, key, ncId: string) =
 
 # ── Summary compaction ─────────────────────────────────────────────
 
+proc messageCount*(sm: SessionManager, key: string): int =
+  ## Number of messages currently in the session (post-summary,
+  ## including the live tail). Used to snapshot a turn's starting
+  ## point for rollback on transient failure.
+  acquire(sm.lock)
+  defer: release(sm.lock)
+  if not sm.sessions.hasKey(key): return 0
+  sm.sessions[key].messages.len
+
+proc rollbackTo*(sm: SessionManager, key: string, count: int) =
+  ## Truncate the session back to exactly `count` messages —
+  ## removing every message added since `count` was captured (via
+  ## `messageCount`). Used to roll back a turn's writes when the LLM
+  ## call failed before any real assistant content was produced;
+  ## without this, retries during an upstream outage accumulate
+  ## duplicate user messages in history.
+  ##
+  ## Both in-memory and on-disk state are updated. The JSONL is
+  ## rewritten in full from the post-rollback message list — O(N)
+  ## writes per call, only happens on the failure path so the cost
+  ## is acceptable.
+  ##
+  ## No-op when count >= current length (nothing to remove) or
+  ## when the session doesn't exist.
+  acquire(sm.lock)
+  defer: release(sm.lock)
+  if not sm.sessions.hasKey(key): return
+  let session = sm.sessions[key]
+  let cur = session.messages.len
+  if count >= cur or count < 0: return
+  # Account for attachments being removed.
+  var removedAttachments = 0
+  for i in count ..< cur:
+    removedAttachments += session.messages[i].attachments.len
+  session.messages.setLen(count)
+  session.meta.messageCount = count
+  if session.meta.attachmentCount >= removedAttachments:
+    session.meta.attachmentCount -= removedAttachments
+  session.meta.updated = getTime().toUnixFloat()
+  if sm.storage != "":
+    try:
+      let path = sm.logPath(key)
+      var buf = newStringOfCap(session.messages.len * 200)
+      for m in session.messages:
+        buf.add($(%m))
+        buf.add('\n')
+      writeFile(path, buf)
+    except CatchableError as e:
+      stderr.writeLine("session: failed to rewrite JSONL after rollback: " & e.msg)
+  sm.writeMeta(session)
+
 proc truncateHistory*(sm: SessionManager, key: string, keepLast: int) =
   ## Sliding window. Does NOT erase the JSONL — moves the watermark so
   ## old raw lines are kept on disk for audit, but excluded from what
