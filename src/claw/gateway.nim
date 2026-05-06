@@ -593,7 +593,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
   elif cmd.startsWith("/model"):
     let parts = cmd.split(" ", 1)
     if parts.len < 2 or parts[1].strip().len == 0:
-      var output = "Configured primary: `" & al.model & "` (provider: `" & cfg.default_provider & "`)\n"
+      # `/model` (read) is per-agent: shows whichever office's chain
+      # the caller is currently chatting with. The fallback chain
+      # below comes from `al.provider`, which was built from
+      # `al.agentName`'s own `models` list.
+      var output = "**" & al.agentName & "**'s primary: `" & al.model & "`\n"
 
       # Show what the chain WILL try on the next call, given current
       # health state. Diverges from the configured primary whenever
@@ -675,8 +679,30 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     # /model list [provider]
     if modelStr == "list" or modelStr.startsWith("list "):
       let listParts = modelStr.split(" ", 1)
-      let listProvider = if listParts.len > 1: listParts[1].strip() else: cfg.default_provider
+      # No provider arg → default to whichever provider serves the
+      # caller's current primary model (`al.model`). Falls back to
+      # graph.providers[0] if al.model isn't recognised.
+      var listProvider =
+        if listParts.len > 1: listParts[1].strip()
+        else: ""
       let graph = loadWorld(cfg[].workspacePath())
+      if listProvider.len == 0 and graph != nil and
+         graph.providers != nil and graph.providers.kind == JObject:
+        for k, pNode in graph.providers.getFields():
+          if pNode.hasKey("models") and pNode["models"].kind == JArray:
+            for m in pNode["models"]:
+              if m.getStr() == al.model:
+                listProvider = k
+                break
+            if listProvider.len > 0: break
+        # Fallback: first declared provider.
+        if listProvider.len == 0:
+          for k, _ in graph.providers.getFields():
+            listProvider = k
+            break
+      if listProvider.len == 0:
+        return "No provider specified and none configured. Use " &
+               "`/model list <provider>` (e.g. `/model list deepseek`)."
       let tech = resolveProviderTech("", listProvider, graph.providers, providerOverride = listProvider)
       if tech.apiBase == "": return "No API base URL for provider `" & listProvider & "`"
       if tech.apiKey == "": return "No API key for provider `" & listProvider & "`"
@@ -701,7 +727,9 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       except Exception as e:
         return "Error listing models: " & e.msg
 
-    # Parse provider:model
+    # Parse provider:model (or provider/model). Bare model names with
+    # no separator are rejected — too ambiguous now that there's no
+    # global default provider to infer from.
     var providerKey, modelName: string
     let colonPos = modelStr.find(':')
     if colonPos > 0:
@@ -709,12 +737,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       modelName = modelStr[colonPos+1..^1]
     else:
       let slashPos = modelStr.find('/')
-      if slashPos < 0:
-        providerKey = cfg.default_provider
-        modelName = modelStr
-      else:
+      if slashPos > 0:
         providerKey = modelStr[0..<slashPos]
         modelName = modelStr[slashPos+1..^1]
+      # else: providerKey stays empty — caught by the next check.
 
     let graph = loadWorld(cfg[].workspacePath())
     # Sanity-check parsed providerKey before lookup so malformed input
@@ -746,88 +772,94 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "`. Set the relevant env var (or BASE.nims `apiKey \"...\"`) " &
              "and `claw co update`."
 
-    # Phase 1 of provider-config refactor: instead of just flipping a
-    # `default_provider` pointer, REORDER the providers list so the
-    # chosen provider is at position 0. The providers list IS the
-    # source of truth for chain order — `buildProviderChain` iterates
-    # it in declaration order and the first entry is primary.
+    # Per-agent switch: `/model X:Y` from Lexi's chat reorders Lexi's
+    # `models` list so `Y` is position 0 (the agent's primary). Other
+    # agents are untouched — Atlas keeps his preferences. The change
+    # persists to BASE.json so it survives gateway restarts.
     #
-    # Also overwrite the chosen provider's `defaultModel` to the
-    # explicit modelName, so subsequent chain rebuilds (or other
-    # readers like `/model list`) see the operator's selected model
-    # rather than whatever the provider's previous default was.
+    # Why per-agent: post-Phase 4, every agent has their own `models`
+    # list and `buildProviderChainForAgent` reads it on each office
+    # build. A "global default" pointer was redundant — `models[0]`
+    # IS the agent's default. The earlier global-flip implementation
+    # didn't survive office rebuilds because each office's chain is
+    # rebuilt from `a.models[0]`, not from the cfg globals.
     #
-    # All updates land in BASE.json in one write; we then reload graph
-    # so the in-memory chain build sees the reordered list.
+    # Provider must serve the chosen model. We don't validate that
+    # here at write time (the chain build will warn-and-skip if
+    # there's no serving provider for `modelName`); operators see
+    # the result in `/model` output.
+    let targetAgent = al.agentName
+    let targetKey = targetAgent.toLowerAscii
+    let qualifiedModel = providerKey & ":" & modelName
     let graphFile = getConfigPath().parentDir() / "BASE.json"
+    var newModels: seq[string] = @[]
     if fileExists(graphFile):
       var base = parseFile(graphFile)
-      # BASE.json stores providers at the TOP LEVEL (sibling of `config`
-      # and `@graph`), not nested under `graph`. WorldGraph's `providers`
-      # field reads from there too — see schema.nim.
-      let providersNode = base{"providers"}
-      if providersNode != nil and providersNode.kind == JObject and
-         providersNode.hasKey(providerKey):
-        # Build a fresh JObject with providerKey first.
-        let reordered = newJObject()
-        # Capture+update the primary entry first.
-        var primary = providersNode[providerKey]
-        primary["defaultModel"] = %modelName
-        reordered[providerKey] = primary
-        for k, v in providersNode.fields:
-          if k != providerKey: reordered[k] = v
-        base["providers"] = reordered
-      # Phase 3 cleanup: don't write `default_provider` / `default_model`
-      # / `agents.defaults.model` here. Those are now derived at config
-      # load time from providers[0] (see deriveDefaultsFromProviders in
-      # config.nim) — the providers list reorder above IS the canonical
-      # change, the cfg fields auto-resolve on next load.
-      #
-      # Per-agent overrides: only touch entries that already had a
-      # `provider`/`model` field (back-compat for files that haven't
-      # migrated yet). New `models` arrays are not modified — the
-      # operator's per-agent declarations are not the right place to
-      # encode a global model swap.
-      if base["config"]["agents"].hasKey("named"):
+      if base.hasKey("config") and base["config"].hasKey("agents") and
+         base["config"]["agents"].hasKey("named"):
         for i in 0..<base["config"]["agents"]["named"].len:
           let agentEntry = base["config"]["agents"]["named"][i]
-          if agentEntry.hasKey("provider"):
-            base["config"]["agents"]["named"][i]["provider"] = %providerKey
-          if agentEntry.hasKey("model"):
-            base["config"]["agents"]["named"][i]["model"] = %modelName
+          if agentEntry{"name"}.getStr().toLowerAscii != targetKey: continue
+          # Read existing models, prepend the new one, dedupe (preserving
+          # later entries as fallbacks). Bare names match the new pick;
+          # qualified `provider:model` names also match if the suffix
+          # equals modelName — supports both shapes during transition.
+          var existing: seq[string] = @[qualifiedModel]
+          if agentEntry.hasKey("models") and agentEntry["models"].kind == JArray:
+            for m in agentEntry["models"]:
+              let s = m.getStr()
+              if s.len == 0: continue
+              # Drop any stale entry that points at the same model
+              # (bare or qualified). Otherwise the agent ends up with
+              # `[X, A, X, B]` after a swap-back-swap.
+              let bare =
+                if ':' in s: s.split(':', 1)[1]
+                elif '/' in s: s.split('/', 1)[1]
+                else: s
+              if s == qualifiedModel or bare == modelName: continue
+              existing.add(s)
+          newModels = existing
+          var modelsArr = newJArray()
+          for m in existing: modelsArr.add(%m)
+          base["config"]["agents"]["named"][i]["models"] = modelsArr
+          # Mirror to the deprecated singulars for any back-compat
+          # reader still on `agentEntry.model` / `agentEntry.provider`.
+          # These will go away in the cfg-cleanup pass; until then,
+          # keeping them in sync prevents stale display.
+          base["config"]["agents"]["named"][i]["model"] = %modelName
+          base["config"]["agents"]["named"][i]["provider"] = %providerKey
+          break
       writeFile(graphFile, base.pretty(4))
 
-    # Refresh in-memory cfg + reload graph so buildProviderChain sees
-    # the new ordering, then rebuild the chain. Side effect: the new
-    # FallbackLLMProvider has an empty per-session sticky table, so
-    # every session re-probes the new primary on its next call.
-    cfg.default_provider = providerKey
-    cfg.default_model = modelName
-    cfg.agents.defaults.model = modelName
+    if newModels.len == 0:
+      return "Couldn't find agent `" & targetAgent & "` in BASE.json. " &
+             "This shouldn't happen — try `/co update` and retry."
 
+    # Rebuild only the target agent's chain. Other offices are
+    # untouched — their `models` lists weren't changed.
     let freshGraph = loadWorld(cfg[].workspacePath())
-    let newProvider = buildProviderChain(cfg[], freshGraph,
-                                          (if gCtx != nil: gCtx.healthRegistry
-                                           else: nil))
+    let newProvider = buildProviderChainForAgent(freshGraph, newModels,
+                                                  (if gCtx != nil: gCtx.healthRegistry
+                                                   else: nil))
     al.provider = newProvider
     al.model = modelName
+    # Reflect the change in the in-memory NamedAgentConfig too, so a
+    # later office rebuild (e.g. via /restart-less re-ensureOffice)
+    # picks up the new order without needing a config reload.
+    for i in 0 ..< cfg.agents.named.len:
+      if cfg.agents.named[i].name.toLowerAscii == targetKey:
+        cfg.agents.named[i].models = newModels
+        cfg.agents.named[i].model = modelName
+        cfg.agents.named[i].provider = providerKey
+        break
 
-    if gCtx != nil:
-      for key, office in gCtx.offices:
-        office.provider = newProvider
-        office.model = modelName
-
-    # Don't clear the session on model switch. The conversation
-    # history is in OpenAI-compatible message format; modern LLMs
-    # handle context-continuation across model boundaries fine. The
-    # earlier behavior wiped a session full of analytical work
-    # whenever the operator wanted to try a different model — bad
-    # UX. Operators who explicitly want a fresh start can use
-    # `/session reset`.
-    return "Switched primary to `" & providerKey & "/" & modelName &
-           "` (now position 0 in the providers list). Session " &
-           "history preserved — your conversation continues from " &
-           "where it left off, just answered by the new model."
+    # Don't clear the session on model switch. Conversation history is
+    # in OpenAI-compatible message format; modern LLMs handle
+    # context-continuation across model boundaries. Operators who
+    # want a fresh start use `/session reset`.
+    return "Switched **" & targetAgent & "**'s primary to `" &
+           qualifiedModel & "` (other agents untouched). Persisted " &
+           "to BASE.json — survives restart. Session history preserved."
   elif cmd == "/provider" or cmd == "/providers" or
        cmd.startsWith("/provider ") or cmd.startsWith("/providers "):
     # Health-state inspection + manual recovery for chain entries.
