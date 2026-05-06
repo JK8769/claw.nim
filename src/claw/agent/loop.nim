@@ -1737,13 +1737,33 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     if finalContent == "":
       finalContent = opts.defaultResponse
 
+    # Transient LLM-error responses don't land in the session log.
+    # If the LLM call itself failed (no real assistant content was
+    # ever produced), `finalContent` was set in the catch block to
+    # "Error communicating with LLM provider: ..." — surface that
+    # to the operator so they can debug, but do NOT record it as
+    # the assistant's turn. Otherwise the next turn's LLM call sees
+    # the error string as Lexi's "last reply" and starts apologising
+    # for / explaining a system failure that wasn't hers, plus the
+    # user retrying compounds the same garbage three or four lines
+    # deep before they realise.
+    let isTransientError = finalContent.startsWith(
+      "Error communicating with LLM provider:")
+
     if ctx.responseSent:
       infoCF("agent", "Response already sent via tools, skipping final return message", {"session_key": opts.session_key}.toTable)
       # Still add to history but return empty so gateway doesn't send it again
-      al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
+      if not isTransientError:
+        al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
       return ""
 
-    al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
+    if not isTransientError:
+      al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
+    else:
+      infoCF("agent",
+             "Suppressing transient LLM-error from session log",
+             {"session_key": opts.session_key,
+              "preview": finalContent[0 ..< min(finalContent.len, 120)]}.toTable)
 
     if opts.enableSummary:
       al.maybeSummarize(opts)
