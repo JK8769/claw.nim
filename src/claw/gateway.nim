@@ -799,9 +799,17 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         office.provider = newProvider
         office.model = modelName
 
-    al.sessions.clearSession(msg.session_key)
-    return "Switched to `" & providerKey & "/" & modelName &
-           "` (now position 0 in the providers list). Session cleared."
+    # Don't clear the session on model switch. The conversation
+    # history is in OpenAI-compatible message format; modern LLMs
+    # handle context-continuation across model boundaries fine. The
+    # earlier behavior wiped a session full of analytical work
+    # whenever the operator wanted to try a different model — bad
+    # UX. Operators who explicitly want a fresh start can use
+    # `/reset` or `/new` (separate slash command).
+    return "Switched primary to `" & providerKey & "/" & modelName &
+           "` (now position 0 in the providers list). Session " &
+           "history preserved — your conversation continues from " &
+           "where it left off, just answered by the new model."
   elif cmd == "/provider" or cmd == "/providers" or
        cmd.startsWith("/provider ") or cmd.startsWith("/providers "):
     # Health-state inspection + manual recovery for chain entries.
