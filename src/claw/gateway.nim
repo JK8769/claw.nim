@@ -395,17 +395,8 @@ proc buildProviderChainForAgent(graph: WorldGraph,
       "No usable model→provider mapping for the agent's preference " &
       "list. Check that the agent's `models` entries are listed in " &
       "some provider's `models` array in BASE.nims.")
-  # Per-agent chain shares the same on-disk sticky table as the
-  # company chain. Different sessions live in the same JSON object;
-  # collisions on the same sessionKey are not a concern (each session
-  # only ever talks to one chain instance).
-  let stickyPath =
-    if gCtx != nil:
-      gCtx.cfg.workspacePath / "automation" / "sticky-fallback.json"
-    else: ""
   result =
-    if entries.len > 1: newFallbackLLMProvider(entries, stickyPath,
-                                                healthRegistry)
+    if entries.len > 1: newFallbackLLMProvider(entries, healthRegistry)
     else: entries[0].provider
 
 proc buildProviderChain(cfg: Config, graph: WorldGraph,
@@ -469,10 +460,8 @@ proc buildProviderChain(cfg: Config, graph: WorldGraph,
       "No usable providers — every entry in graph.providers was missing " &
       "apiKey, apiBase, or defaultModel. Check BASE.nims and run " &
       "`claw co update`.")
-  let stickyPath = workspacePath(cfg) / "automation" / "sticky-fallback.json"
   result =
     if fallbackEntries.len > 1: newFallbackLLMProvider(fallbackEntries,
-                                                        stickyPath,
                                                         healthRegistry)
     else: fallbackEntries[0].provider
 
@@ -588,26 +577,28 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
     if parts.len < 2 or parts[1].strip().len == 0:
       var output = "Configured primary: `" & al.model & "` (provider: `" & cfg.default_provider & "`)\n"
 
-      # Show the actually-active entry for THIS session — diverges from
-      # the configured primary whenever the session has fallen back.
-      # Without this, the operator can't tell from /model whether their
-      # current chat is still on DeepSeek or has ratcheted to kimi.
+      # Show what the chain WILL try on the next call, given current
+      # health state. Diverges from the configured primary whenever
+      # one or more upstream entries are unhealthy or cooling down.
+      # Health is cross-session, so the "next usable entry" is the
+      # same for all sessions — there's no per-session divergence
+      # since per-session sticky was removed.
       if al.provider of FallbackLLMProvider:
         let fp = FallbackLLMProvider(al.provider)
-        let cur = fp.currentEntryFor(msg.session_key)
+        let cur = fp.nextUsableEntry()
         if cur.exhausted:
-          output &= "Active for this session: ⚠️ chain exhausted (all providers have failed). Restart the gateway or fix a provider.\n\n"
+          output &= "Next call: ⚠️ chain exhausted (every provider unhealthy or cooling down). Use `/provider` to inspect; fix the underlying issue and `/provider reset <name>`, or `/model X:Y` to swap primary.\n\n"
         else:
-          let stickyMarker =
-            if cur.idx == 0: " (primary, fresh probe)"
-            else: " (sticky fallback — primary previously failed for this session)"
-          output &= "Active for this session: `" & cur.name & "` / `" & cur.model & "`" & stickyMarker & "\n\n"
+          let entryMarker =
+            if cur.idx == 0: " (primary)"
+            else: " (fallback — primary entries are currently unusable)"
+          output &= "Next call will try: `" & cur.name & "` / `" & cur.model & "`" & entryMarker & "\n\n"
         output &= "**Fallback chain:**\n"
         for i, entry in fp.entries:
           let marker =
-            if cur.exhausted and i == fp.entries.high: " ← exhausted"
-            elif i == cur.idx: " ← THIS SESSION"
-            elif i == 0: " (primary)"
+            if cur.exhausted: " ← exhausted"
+            elif i == cur.idx: " ← NEXT"
+            elif i == 0: " (primary, currently unusable)"
             else: ""
           # Health badge from the cross-session registry. Disagrees
           # with `THIS SESSION` when, e.g., the registry knows

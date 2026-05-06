@@ -19,43 +19,22 @@
 ## fallback provider's own defaultModel rather than blindly forwarding
 ## the primary's model.
 ##
-## ## Fallback scope: per-session sticky
+## ## Routing decisions: ProviderHealthRegistry only
 ##
-## Once a session has fallen back from entry N to entry N+1, all
-## subsequent calls FROM THAT SAME SESSION skip 0..N entirely and go
-## straight to N+1. Sticks for the session's lifetime; resets only when
-## the gateway restarts.
+## Earlier iterations had per-session sticky state (a monotonic
+## ratchet that remembered which entry each session had been routed
+## to). That collided with the cross-session circuit breaker: sessions
+## got ratcheted past entries that were *cooling down*, locking them
+## out even after the underlying provider recovered. With health doing
+## the cross-session work at the better layer, sticky was net-negative
+## — removed entirely.
 ##
-## The previous design re-probed the primary on every call. With a 2-
-## provider chain and an "out-of-balance until human action" failure
-## mode, that meant 100% of the workload was paying a wasted DeepSeek
-## round-trip per turn just to confirm the same 402 — and getting
-## thousands of doomed POSTs per long-running session.
-##
-## Per-session stickiness costs auto-recovery: when the primary comes
-## back, existing sessions stay on the fallback. New sessions probe
-## primary fresh. Operator does `/model X:Y` (which rebuilds the chain
-## with a fresh sticky table) when they want every session to re-probe.
-##
-## Sticky state is **persisted to disk** at the configured `persistPath`
-## (typically `$NIMCLAW_DIR/automation/sticky-fallback.json`). Without
-## persistence, every gateway restart wipes the sticky table — so every
-## session would pay one wasted DeepSeek probe just to re-discover the
-## 402 right after a restart, surprising operators who reasoned about
-## the system globally ("we already know DeepSeek is broken"). The
-## persisted file uses the same `automation/` dir as cron jobs and
-## maps sessionKey → entry index. Writes happen synchronously on every
-## sticky advance — file is small (one JSON object), advances are
-## infrequent, so the cost is negligible.
-##
-## The sticky key is a logical session id (e.g. `nc_5`,
-## `system_heartbeat`). Callers pass it in `options["__session_key"]`
-## as a JString. The key is consumed and removed before options is
-## forwarded to the underlying provider, so vendor APIs never see it.
-## A call without that option behaves exactly like the old per-call
-## semantics — start at 0, no sticky update.
+## Every chat() call now walks entries from 0; the registry filters
+## known-broken ones. Recovery is fully automatic for transient errors
+## (cooldown expires → next probe → success → flip to healthy);
+## persistent errors (402 / 401) require `/provider reset <name>`.
 
-import std/[asyncdispatch, tables, strutils, json, locks, os]
+import std/[asyncdispatch, tables, strutils, json]
 import types as providers_types
 import ./health
 import ../logger
@@ -68,78 +47,32 @@ type
 
   FallbackLLMProvider* = ref object of providers_types.LLMProvider
     entries*: seq[FallbackEntry]      ## ordered: entries[0] is primary
-    sessionEntry: TableRef[string, int]
-                                      ## Session id → starting entry idx.
-                                      ## A session never moves backward
-                                      ## once it has fallen back. See module
-                                      ## docstring for the rationale.
-    sessionLock: Lock                 ## Guards sessionEntry — multiple
-                                      ## agents may call concurrently for
-                                      ## different (or the same) session.
-    persistPath*: string              ## File path for sticky-state
-                                      ## persistence. Empty = in-memory
-                                      ## only (test mode). Writes happen
-                                      ## synchronously on every advance.
     healthRegistry*: ProviderHealthRegistry
                                       ## Cross-session circuit breaker.
-                                      ## Consulted before each chat()
-                                      ## attempt — entries whose provider
-                                      ## is unhealthy or cooling are
-                                      ## skipped. Updated on every
-                                      ## success/failure. Optional
-                                      ## (nil disables the check, falls
-                                      ## back to per-session sticky only).
+                                      ## nil disables the check.
 
 const SessionKeyOption* = "__session_key"
-  ## Option key callers use to opt into sticky behaviour. Stripped
-  ## before options is forwarded to the underlying provider so the
-  ## vendor API never sees it.
-
-proc loadStickyFromDisk(path: string): TableRef[string, int] =
-  ## Read the persisted sticky table from disk if the file exists.
-  ## Returns an empty table on first run, parse failure, or empty path
-  ## (test mode). Failure cases are non-fatal — the provider behaves
-  ## as if no sticky state existed yet.
-  result = newTable[string, int]()
-  if path.len == 0 or not fileExists(path): return
-  try:
-    let j = parseFile(path)
-    if j.kind != JObject: return
-    for k, v in j.fields:
-      if v.kind == JInt:
-        result[k] = v.getInt()
-  except CatchableError as e:
-    warnCF("fallback_provider",
-           "Failed to load sticky state — starting fresh",
-           {"path": path, "error": e.msg}.toTable)
+  ## Option key callers use to pass their session id for log context.
+  ## Stripped before options is forwarded to the underlying provider
+  ## so vendor APIs never see it. Kept after sticky removal because
+  ## the failure-fallback log lines still want to identify which
+  ## session triggered the event.
 
 proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
-                              persistPath: string = "",
                               healthRegistry: ProviderHealthRegistry = nil):
                               FallbackLLMProvider =
   ## Construct a fallback chain. The first entry is the primary; subsequent
   ## entries are tried in order on fall-back-eligible errors.
   ##
-  ## `persistPath` is where sticky state is read/written. Empty means
-  ## in-memory only (used by tests; production callers should pass a
-  ## stable path under the company's automation dir).
-  ##
   ## `healthRegistry` is the cross-session circuit breaker. When non-nil,
   ## the chain consults it before each entry — skipping providers that
   ## are unhealthy (402/401) or cooling down (429/5xx) without paying
-  ## the round-trip. nil disables the check.
+  ## the round-trip. nil disables the check (chain always probes every
+  ## entry on each call — useful for tests).
   doAssert entries.len >= 1, "FallbackLLMProvider requires at least one provider"
   result = FallbackLLMProvider(
     entries: entries,
-    sessionEntry: loadStickyFromDisk(persistPath),
-    persistPath: persistPath,
     healthRegistry: healthRegistry)
-  initLock(result.sessionLock)
-  if persistPath.len > 0 and result.sessionEntry.len > 0:
-    infoCF("fallback_provider",
-           "Loaded sticky state",
-           {"path": persistPath,
-            "sessions": $result.sessionEntry.len}.toTable)
 
 method getDefaultModel*(p: FallbackLLMProvider): string =
   if p.entries.len > 0: p.entries[0].model else: ""
@@ -157,60 +90,22 @@ proc shouldFallback(errMsg: string): bool =
     if "API error " & code in errMsg: return true
   false
 
-proc getStickyStart(p: FallbackLLMProvider, sessionKey: string): int =
-  ## Look up where THIS session should start in the chain. Returns 0
-  ## if no sticky state exists or sessionKey is empty.
-  if sessionKey.len == 0: return 0
-  acquire(p.sessionLock)
-  defer: release(p.sessionLock)
-  result = p.sessionEntry.getOrDefault(sessionKey, 0)
-
-proc currentEntryFor*(p: FallbackLLMProvider, sessionKey: string):
+proc nextUsableEntry*(p: FallbackLLMProvider):
                      tuple[idx: int, name: string, model: string,
                            exhausted: bool] =
-  ## Public introspection: which entry is THIS session currently sticky
-  ## on? Used by `/model` (and any future status surface) to show the
-  ## actually-active provider/model rather than just the configured
-  ## primary — they diverge whenever the session has fallen back.
+  ## Public introspection: which entry would the chain try on its
+  ## next call right now, given current health state? Used by
+  ## `/model` (and any future status surface) to show what the
+  ## chain will do without forcing an actual probe.
   ##
-  ## Returns `exhausted=true` when the session has ratcheted past every
-  ## entry (i.e. all providers have failed for this session and the
-  ## next call would raise "chain exhausted"). Operators see this as
-  ## a "restart gateway / fix provider" signal.
-  let i = p.getStickyStart(sessionKey)
-  if i >= p.entries.len:
-    return (i, "exhausted", "", true)
-  (i, p.entries[i].name, p.entries[i].model, false)
-
-proc persistStickyUnsafe(p: FallbackLLMProvider) =
-  ## Caller must hold sessionLock. Writes the table out to disk as JSON
-  ## ({sessionKey: idx, …}). No-op when persistPath is empty.
-  if p.persistPath.len == 0: return
-  try:
-    let dir = parentDir(p.persistPath)
-    if dir.len > 0 and not dirExists(dir): createDir(dir)
-    var j = newJObject()
-    for k, v in p.sessionEntry.pairs: j[k] = %v
-    writeFile(p.persistPath, $j)
-  except CatchableError as e:
-    warnCF("fallback_provider",
-           "Failed to persist sticky state",
-           {"path": p.persistPath, "error": e.msg}.toTable)
-
-proc advanceSticky(p: FallbackLLMProvider, sessionKey: string, newIdx: int) =
-  ## Ratchet the session forward to newIdx. Never moves backward — even
-  ## if a transient probe somehow succeeds at a lower index, we keep
-  ## the highest-seen failure point so behaviour stays predictable.
-  ## Persists the updated table to disk on every advance (sync write,
-  ## tiny file, infrequent — cost is negligible vs the LLM call that
-  ## just failed).
-  if sessionKey.len == 0: return
-  acquire(p.sessionLock)
-  defer: release(p.sessionLock)
-  let current = p.sessionEntry.getOrDefault(sessionKey, 0)
-  if newIdx > current:
-    p.sessionEntry[sessionKey] = newIdx
-    p.persistStickyUnsafe()
+  ## Returns `exhausted=true` when every entry is unusable per the
+  ## registry. Operators see this as a "fix a provider or wait for a
+  ## cooldown to expire" signal.
+  for i, entry in p.entries:
+    if p.healthRegistry == nil or
+       p.healthRegistry.isUsable(entry.name):
+      return (i, entry.name, entry.model, false)
+  (p.entries.len, "exhausted", "", true)
 
 method chat*(p: FallbackLLMProvider,
              messages: seq[providers_types.Message],
@@ -220,25 +115,14 @@ method chat*(p: FallbackLLMProvider,
              Future[providers_types.LLMResponse] {.async.} =
   # Pull the session key out of options and strip it before forwarding,
   # so the underlying HTTP provider doesn't relay this internal field
-  # into the vendor's chat-completions JSON body.
+  # into the vendor's chat-completions JSON body. Used for log context
+  # only (not routing).
   var sessionKey = ""
   var fwdOptions = options
   if fwdOptions.hasKey(SessionKeyOption):
     let v = fwdOptions[SessionKeyOption]
     if v.kind == JString: sessionKey = v.getStr()
     fwdOptions.del(SessionKeyOption)
-
-  # Per-session sticky state is DEPRECATED — the health registry
-  # supersedes it (cross-session, transient-aware, auto-recovers on
-  # cooldown). Routing decisions now come from the registry alone.
-  # We always start the chain walk at 0 and let registry.isUsable()
-  # filter; sessions that previously got ratcheted past every entry
-  # by sticky-on-skip can now recover automatically once each
-  # provider's health flips back to usable.
-  #
-  # The persistence file (sticky-fallback.json) is left untouched on
-  # disk for debugging / audit. We just stop consulting it here.
-  discard sessionKey  # kept in scope for log messages below
 
   var lastErr: ref Exception = nil
   for i in 0 ..< p.entries.len:
