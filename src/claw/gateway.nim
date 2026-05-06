@@ -386,8 +386,16 @@ proc buildProviderChainForAgent(graph: WorldGraph,
       "No usable model→provider mapping for the agent's preference " &
       "list. Check that the agent's `models` entries are listed in " &
       "some provider's `models` array in BASE.nims.")
+  # Per-agent chain shares the same on-disk sticky table as the
+  # company chain. Different sessions live in the same JSON object;
+  # collisions on the same sessionKey are not a concern (each session
+  # only ever talks to one chain instance).
+  let stickyPath =
+    if gCtx != nil:
+      gCtx.cfg.workspacePath / "automation" / "sticky-fallback.json"
+    else: ""
   result =
-    if entries.len > 1: newFallbackLLMProvider(entries)
+    if entries.len > 1: newFallbackLLMProvider(entries, stickyPath)
     else: entries[0].provider
 
 proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
@@ -450,8 +458,9 @@ proc buildProviderChain(cfg: Config, graph: WorldGraph): LLMProvider =
       "No usable providers — every entry in graph.providers was missing " &
       "apiKey, apiBase, or defaultModel. Check BASE.nims and run " &
       "`claw co update`.")
+  let stickyPath = workspacePath(cfg) / "automation" / "sticky-fallback.json"
   result =
-    if fallbackEntries.len > 1: newFallbackLLMProvider(fallbackEntries)
+    if fallbackEntries.len > 1: newFallbackLLMProvider(fallbackEntries, stickyPath)
     else: fallbackEntries[0].provider
 
 proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): Future[string] {.async.} =

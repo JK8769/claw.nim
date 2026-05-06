@@ -34,8 +34,19 @@
 ##
 ## Per-session stickiness costs auto-recovery: when the primary comes
 ## back, existing sessions stay on the fallback. New sessions probe
-## primary fresh. Operator restarts the gateway when they want every
-## session to re-probe — that's the manual-recovery contract.
+## primary fresh. Operator does `/model X:Y` (which rebuilds the chain
+## with a fresh sticky table) when they want every session to re-probe.
+##
+## Sticky state is **persisted to disk** at the configured `persistPath`
+## (typically `$NIMCLAW_DIR/automation/sticky-fallback.json`). Without
+## persistence, every gateway restart wipes the sticky table — so every
+## session would pay one wasted DeepSeek probe just to re-discover the
+## 402 right after a restart, surprising operators who reasoned about
+## the system globally ("we already know DeepSeek is broken"). The
+## persisted file uses the same `automation/` dir as cron jobs and
+## maps sessionKey → entry index. Writes happen synchronously on every
+## sticky advance — file is small (one JSON object), advances are
+## infrequent, so the cost is negligible.
 ##
 ## The sticky key is a logical session id (e.g. `nc_5`,
 ## `system_heartbeat`). Callers pass it in `options["__session_key"]`
@@ -44,7 +55,7 @@
 ## A call without that option behaves exactly like the old per-call
 ## semantics — start at 0, no sticky update.
 
-import std/[asyncdispatch, tables, strutils, json, locks]
+import std/[asyncdispatch, tables, strutils, json, locks, os]
 import types as providers_types
 import ../logger
 
@@ -64,20 +75,53 @@ type
     sessionLock: Lock                 ## Guards sessionEntry — multiple
                                       ## agents may call concurrently for
                                       ## different (or the same) session.
+    persistPath*: string              ## File path for sticky-state
+                                      ## persistence. Empty = in-memory
+                                      ## only (test mode). Writes happen
+                                      ## synchronously on every advance.
 
 const SessionKeyOption* = "__session_key"
   ## Option key callers use to opt into sticky behaviour. Stripped
   ## before options is forwarded to the underlying provider so the
   ## vendor API never sees it.
 
-proc newFallbackLLMProvider*(entries: seq[FallbackEntry]): FallbackLLMProvider =
+proc loadStickyFromDisk(path: string): TableRef[string, int] =
+  ## Read the persisted sticky table from disk if the file exists.
+  ## Returns an empty table on first run, parse failure, or empty path
+  ## (test mode). Failure cases are non-fatal — the provider behaves
+  ## as if no sticky state existed yet.
+  result = newTable[string, int]()
+  if path.len == 0 or not fileExists(path): return
+  try:
+    let j = parseFile(path)
+    if j.kind != JObject: return
+    for k, v in j.fields:
+      if v.kind == JInt:
+        result[k] = v.getInt()
+  except CatchableError as e:
+    warnCF("fallback_provider",
+           "Failed to load sticky state — starting fresh",
+           {"path": path, "error": e.msg}.toTable)
+
+proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
+                              persistPath: string = ""): FallbackLLMProvider =
   ## Construct a fallback chain. The first entry is the primary; subsequent
   ## entries are tried in order on fall-back-eligible errors.
+  ##
+  ## `persistPath` is where sticky state is read/written. Empty means
+  ## in-memory only (used by tests; production callers should pass a
+  ## stable path under the company's automation dir).
   doAssert entries.len >= 1, "FallbackLLMProvider requires at least one provider"
   result = FallbackLLMProvider(
     entries: entries,
-    sessionEntry: newTable[string, int]())
+    sessionEntry: loadStickyFromDisk(persistPath),
+    persistPath: persistPath)
   initLock(result.sessionLock)
+  if persistPath.len > 0 and result.sessionEntry.len > 0:
+    infoCF("fallback_provider",
+           "Loaded sticky state",
+           {"path": persistPath,
+            "sessions": $result.sessionEntry.len}.toTable)
 
 method getDefaultModel*(p: FallbackLLMProvider): string =
   if p.entries.len > 0: p.entries[0].model else: ""
@@ -120,16 +164,35 @@ proc currentEntryFor*(p: FallbackLLMProvider, sessionKey: string):
     return (i, "exhausted", "", true)
   (i, p.entries[i].name, p.entries[i].model, false)
 
+proc persistStickyUnsafe(p: FallbackLLMProvider) =
+  ## Caller must hold sessionLock. Writes the table out to disk as JSON
+  ## ({sessionKey: idx, …}). No-op when persistPath is empty.
+  if p.persistPath.len == 0: return
+  try:
+    let dir = parentDir(p.persistPath)
+    if dir.len > 0 and not dirExists(dir): createDir(dir)
+    var j = newJObject()
+    for k, v in p.sessionEntry.pairs: j[k] = %v
+    writeFile(p.persistPath, $j)
+  except CatchableError as e:
+    warnCF("fallback_provider",
+           "Failed to persist sticky state",
+           {"path": p.persistPath, "error": e.msg}.toTable)
+
 proc advanceSticky(p: FallbackLLMProvider, sessionKey: string, newIdx: int) =
   ## Ratchet the session forward to newIdx. Never moves backward — even
   ## if a transient probe somehow succeeds at a lower index, we keep
   ## the highest-seen failure point so behaviour stays predictable.
+  ## Persists the updated table to disk on every advance (sync write,
+  ## tiny file, infrequent — cost is negligible vs the LLM call that
+  ## just failed).
   if sessionKey.len == 0: return
   acquire(p.sessionLock)
   defer: release(p.sessionLock)
   let current = p.sessionEntry.getOrDefault(sessionKey, 0)
   if newIdx > current:
     p.sessionEntry[sessionKey] = newIdx
+    p.persistStickyUnsafe()
 
 method chat*(p: FallbackLLMProvider,
              messages: seq[providers_types.Message],
