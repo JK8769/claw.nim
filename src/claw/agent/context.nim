@@ -296,12 +296,19 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 1
+const PolicyRulesVersion* = 2
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
   ## into `policyHashInputs` so that a binary-side rule change triggers
   ## a marker injection on existing sessions, not just handbook edits.
+  ##
+  ## Version log:
+  ##   1 — initial: rule 5 (reply_progress checkpoint discipline)
+  ##   2 — channel directive surfaced at top of prompt + skills section
+  ##       filters/highlights by current channel; technical-communication
+  ##       handbook adds a Phase C clause about consulting channel-tagged
+  ##       skills before defaulting to inline markdown.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
@@ -369,7 +376,8 @@ proc buildToolsSection(cb: ContextBuilder, allowed: seq[string]): string =
 
 proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
                  allowedTools: seq[string] = @[],
-                 agentName: string = ""): string =
+                 agentName: string = "",
+                 channel: string = ""): string =
   let now = now().format("yyyy-MM-dd HH:mm (dddd) zzz")
   let workspacePath = absolutePath(cb.workspace)
   let runtime = hostOS & " " & hostCPU & ", Nim " & NimVersion
@@ -393,6 +401,25 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
                       " — this is the model behind your current turn." &
                       " If asked which model you're using, answer from this line, NOT from any tool's catalog output."
         break
+
+  # Channel directive: surface the active delivery channel as a top-of-
+  # prompt signal so the agent picks channel-appropriate output formats
+  # automatically (Feishu → Lark Docs/Sheets/Cards via the
+  # feishu-rich-format skill; plain markdown elsewhere). Skills tagged
+  # for the current channel are highlighted in the Skills section
+  # below; the agent should consult those FIRST when planning Phase C
+  # delivery. Skipped when channel is empty or "social" (CLI
+  # introspection default — no real delivery surface).
+  var channelLine = ""
+  if channel.len > 0 and channel.toLowerAscii() != "social":
+    channelLine = "\n\n## Channel\n" & channel &
+      " — your output is delivered through this channel. Skills tagged " &
+      "for `" & channel & "` (look for `<active_for_channel>true</active_for_channel>` " &
+      "in the Skills section) provide channel-specific delivery patterns. " &
+      "When you reach Phase C delivery for a long task, consult those " &
+      "skills BEFORE defaulting to inline markdown — the channel may " &
+      "support richer formats (docs, sheets, cards) that fit the output " &
+      "shape better."
   let toolsSection =
     if useXmlTools:
       if allowedTools.len > 0: buildToolInstructionsFiltered(cb.tools, allowedTools) else: buildToolInstructions(cb.tools)
@@ -414,7 +441,7 @@ You are an AI agent in a nimclaw runtime. The `IDENTITY` section below declares 
 $1
 
 ## Runtime
-$2$5
+$2$5$6
 
 ## Workspace
 Your office is at: $3
@@ -435,7 +462,7 @@ $4
 
 4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.
 
-5. **Long tasks — checkpoint via `reply_progress`, never go silent** - For any task taking >3 tool calls or >30 seconds, you MUST: (a) BEFORE the first tool, send a `reply_progress` with a 1-3 sentence plan + numbered steps; (b) AFTER each major tool cluster (every 1-3 related calls that produce a finding), send a `reply_progress` with the concrete number/result and what's next; (c) END with a single `reply` that uses markdown structure, includes any generated file paths in backticks (full absolute paths, not basenames), and gives THREE explicit numbered next-step options (not a yes/no question). The user CANNOT see your tool results — only your messages. Never go more than 2 consecutive tool calls without a `reply_progress` checkpoint. This rule applies regardless of the language you're speaking in.""".format(now, runtime, workspacePath, toolsSection, modelLine)
+5. **Long tasks — checkpoint via `reply_progress`, never go silent** - For any task taking >3 tool calls or >30 seconds, you MUST: (a) BEFORE the first tool, send a `reply_progress` with a 1-3 sentence plan + numbered steps; (b) AFTER each major tool cluster (every 1-3 related calls that produce a finding), send a `reply_progress` with the concrete number/result and what's next; (c) END with a single `reply` that uses markdown structure, includes any generated file paths in backticks (full absolute paths, not basenames), and gives THREE explicit numbered next-step options (not a yes/no question). The user CANNOT see your tool results — only your messages. Never go more than 2 consecutive tool calls without a `reply_progress` checkpoint. This rule applies regardless of the language you're speaking in.""".format(now, runtime, workspacePath, toolsSection, modelLine, channelLine)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
@@ -685,7 +712,7 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   elif identLow in ["guest", "customer"]:
     allowedTools = @["reply", "forward", "redeem_invite", "update_contact"]
 
-  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID))
+  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID, channel = channel))
   parts.add(socialSection)
 
   # Graph-sourced self-identity. IDENTITY declares WHO (name, role,
@@ -749,7 +776,7 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
     let teamSection = cb.buildTeamsSection(recipientID)
     if teamSection != "": parts.add(teamSection)
 
-  let skillsSummary = cb.skillsLoader.buildSkillsSummary(cb.allowedSkills)
+  let skillsSummary = cb.skillsLoader.buildSkillsSummary(cb.allowedSkills, currentChannel = channel)
   if skillsSummary != "":
     parts.add("""# Skills
 

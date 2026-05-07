@@ -29,6 +29,20 @@ proc newSkillsLoader*(workspace, projectCompetencies, companySkills, foundationS
     workstationSkills: workstationSkills
   )
 
+proc parseListValue(val: string): seq[string] =
+  ## Parse a YAML list field of the form `[a, b, c]` or `a, b, c` into
+  ## a trimmed seq. Used for inline-list frontmatter values like
+  ## `channels: [feishu]`. Block-list form (one-per-line dashed) is
+  ## not supported here — the SKILL.md schema convention is inline.
+  var s = val.strip()
+  if s.len >= 2 and s[0] == '[' and s[^1] == ']':
+    s = s[1 .. ^2]
+  result = @[]
+  for p in s.split(","):
+    let t = p.strip()
+    if t.len > 0:
+      result.add(t)
+
 proc parseFrontmatter(content: string): SkillMetadata =
   ## Simple YAML frontmatter parser for name: and description:
   result = SkillMetadata()
@@ -44,7 +58,9 @@ proc parseFrontmatter(content: string): SkillMetadata =
           if key == "name": result.name = val
           elif key == "description": result.description = val
           elif key == "requires_tools":
-            result.requires_tools = val.split(",").mapIt(it.strip())
+            result.requires_tools = parseListValue(val)
+          elif key == "channels":
+            result.channels = parseListValue(val)
 
 proc getSkillMetadata(sl: SkillsLoader, dir: string): SkillMetadata =
   ## Extract metadata from SKILL.md or openclaw.plugin.json.
@@ -92,7 +108,8 @@ proc listSkills*(sl: SkillsLoader): seq[SkillInfo] =
         source: source,
         description: meta.description,
         location: absolutePath(dir),
-        requires_tools: meta.requires_tools
+        requires_tools: meta.requires_tools,
+        channels: meta.channels
       ))
       # If we found a skill/plugin, we don't necessarily stop, 
       # but usually subdirs won't contain more skills unless it's a "skills" folder
@@ -151,27 +168,78 @@ proc loadSkillsForContext*(sl: SkillsLoader, skillNames: seq[string]): string =
   return parts.join("\n\n---\n\n")
 
 
-proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[]): string =
+proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
+                         currentChannel: string = ""): string =
   ## Build an XML summary of available skills.
   ## If allowedNames is non-empty, only include skills whose name (or sanitized
   ## name with hyphens replaced by underscores) matches — EXCEPT workstation
   ## skills (Tier 3), which are always visible to their authoring agent.
+  ##
+  ## Channel-aware ordering:
+  ##   - When `currentChannel` is non-empty, skills tagged with that
+  ##     channel are emitted FIRST (top of the list, where the LLM
+  ##     attends most), with a `<active_for_channel>` flag.
+  ##   - Skills tagged with OTHER channels (and the current channel
+  ##     isn't in their list) are SKIPPED — they're not relevant to
+  ##     this delivery surface.
+  ##   - Skills with no `channels:` declaration are channel-agnostic
+  ##     and emitted after the channel-specific block.
+  ##   - When `currentChannel` is empty (e.g. the CLI introspection
+  ##     path with no active message), all skills are emitted in
+  ##     discovery order — same behavior as before this change.
   let skills = sl.listSkills()
   if skills.len == 0: return ""
-  var lines = @["<skills>"]
-  for s in skills:
-    if allowedNames.len > 0 and s.source != "workstation":
-      # Match against both hyphenated and underscore-sanitized names
-      let nameHyphen = s.name.replace("_", "-")
-      if s.name notin allowedNames and nameHyphen notin allowedNames:
-        continue
+
+  proc isAllowed(s: SkillInfo): bool =
+    if allowedNames.len == 0 or s.source == "workstation": return true
+    let nameHyphen = s.name.replace("_", "-")
+    return s.name in allowedNames or nameHyphen in allowedNames
+
+  proc matchesChannel(s: SkillInfo, ch: string): bool =
+    if ch.len == 0 or s.channels.len == 0: return false
+    for c in s.channels:
+      if c.toLowerAscii() == ch.toLowerAscii(): return true
+    return false
+
+  proc emitOne(s: SkillInfo, lines: var seq[string], activeForChannel: bool) =
     lines.add("  <skill>")
     lines.add("    <name>" & escapeXML(s.name) & "</name>")
     lines.add("    <description>" & escapeXML(s.description) & "</description>")
     lines.add("    <location>" & escapeXML(s.location) & "</location>")
     lines.add("    <source>" & s.source & "</source>")
+    if s.channels.len > 0:
+      lines.add("    <channels>" & s.channels.join(", ") & "</channels>")
+    if activeForChannel:
+      lines.add("    <active_for_channel>true</active_for_channel>")
     if s.requires_tools.len > 0:
       lines.add("    <requires_tools>" & s.requires_tools.join(", ") & "</requires_tools>")
     lines.add("  </skill>")
+
+  var lines = @["<skills>"]
+  let ch = currentChannel
+  # Treat "social" as introspection-only (the CLI `claw agent prompt`
+  # default for buildSystemPrompt's channel parameter). It's not a real
+  # delivery surface, so don't filter — operators inspecting the prompt
+  # want to see every skill the agent has been granted.
+  let realChannel = ch.len > 0 and ch.toLowerAscii() != "social"
+  if realChannel:
+    # Pass 1: skills explicitly tagged for the current channel.
+    for s in skills:
+      if not s.isAllowed: continue
+      if not s.matchesChannel(ch): continue
+      s.emitOne(lines, activeForChannel = true)
+    # Pass 2: channel-agnostic skills (no channels declaration).
+    # Skills tagged for OTHER channels are skipped — they're noise on
+    # this delivery surface.
+    for s in skills:
+      if not s.isAllowed: continue
+      if s.channels.len > 0: continue   # tagged → already in pass 1 or filtered
+      s.emitOne(lines, activeForChannel = false)
+  else:
+    # Introspection / system task / no real channel: emit all allowed
+    # skills in discovery order, no filtering.
+    for s in skills:
+      if not s.isAllowed: continue
+      s.emitOne(lines, activeForChannel = false)
   lines.add("</skills>")
   return lines.join("\n")
