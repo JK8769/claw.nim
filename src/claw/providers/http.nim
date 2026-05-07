@@ -392,6 +392,29 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
       total_tokens: if usage.hasKey("total_tokens"): usage["total_tokens"].getInt() else: 0
     )
 
+  # One-line diagnostic per response. `finish_reason="length"` is the
+  # smoking gun for max_tokens-induced truncation (the model bailed
+  # mid-emission and some providers — kimi via opencode-go observed
+  # — pad the unfinished JSON with whitespace to keep tool_call
+  # arguments syntactically valid). Pair with content/reasoning lengths
+  # to spot reasoning-heavy turns where the budget went to thinking
+  # instead of output. tool_args_total is the sum of arguments
+  # string lengths across this response's tool calls — a sudden
+  # plateau here at the same number across turns is the giveaway
+  # for a server-side cap on tool args.
+  var toolArgsTotal = 0
+  for tc in llmResp.tool_calls:
+    toolArgsTotal += tc.function.arguments.len
+  infoCF("http_provider", "LLM response parsed", {
+    "finish_reason": llmResp.finish_reason,
+    "prompt_tokens": $llmResp.usage.prompt_tokens,
+    "completion_tokens": $llmResp.usage.completion_tokens,
+    "content_chars": $llmResp.content.len,
+    "reasoning_chars": $llmResp.reasoning_content.len,
+    "tool_calls": $llmResp.tool_calls.len,
+    "tool_args_total_chars": $toolArgsTotal
+  }.toTable)
+
   return llmResp
 
 proc createProvider*(model, apiKey, apiBase: string, timeout: int = 300): LLMProvider =
