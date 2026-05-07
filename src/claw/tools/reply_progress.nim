@@ -17,9 +17,8 @@
 ##     name, so debugging filters can distinguish "checkpoint" from
 ##     "answer" without parsing content.
 ##
-##   - Different display affordance: the channel adapter prepends a small
-##     marker (configurable per-channel) so the user can visually
-##     distinguish progress from answer.
+##   - Different display affordance: a small "📊" marker is prepended so
+##     the user can visually distinguish progress from a final answer.
 ##
 ## Conscious non-departure from `reply`: this tool does NOT use a streaming
 ## flag on `stream_intermediary`. That feature dumps the LLM's between-tool
@@ -65,7 +64,7 @@ method parameters*(t: ReplyProgressTool): Table[string, JsonNode] =
 method execute*(t: ReplyProgressTool, args: Table[string, JsonNode]):
                 Future[string] {.async.} =
   if t.sessionKey.startsWith("system:"):
-    return "Error: Communication tools are disabled for background tasks. Keep your response internal."
+    return "Error: Communication tools are disabled for background tasks. Please keep your response internal."
 
   if not args.hasKey("content"):
     return "Error: content is required"
