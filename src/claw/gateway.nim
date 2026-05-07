@@ -1485,6 +1485,11 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    for resetting test conversations or recovering from\n" &
              "    corrupted state.\n" &
              "    Example: `/session clear lexi nc:7`\n\n" &
+             "  `/session clear <agent> <session-key>`   🔒 Admin\n" &
+             "    Clear an arbitrary session by literal key. Use for\n" &
+             "    non-human sessions like `system_heartbeat` or\n" &
+             "    `cli:user` that don't have an `nc:id`.\n" &
+             "    Example: `/session clear lexi system_heartbeat`\n\n" &
              "Note: clears the conversation, NOT the agent's `memory_store`\n" &
              "entries (those persist by design — that's their purpose)."
     let sub = parts[1]
@@ -1584,17 +1589,32 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
         return "Agent `" & agentName & "` is not declared in this " &
                "company. Try `/agent list` to see who's available."
       let al2 = ensureOffice(agentName)
-      # Resolve target nc:id. With no arg, it's the caller's own.
+      # Resolve target. Three argument shapes:
+      #   /session clear <agent>            → caller's own nc:id
+      #   /session clear <agent> nc:N       → another user (Admin)
+      #   /session clear <agent> <KEY>      → arbitrary session key
+      #                                       (Admin) — for non-human
+      #                                       sessions like
+      #                                       `system_heartbeat`,
+      #                                       `cli:user`, etc. The
+      #                                       key is used verbatim,
+      #                                       no nc:N translation.
       var targetNc = ""
+      var literalKey = ""    # set when 3rd arg isn't `nc:N`
       if parts.len >= 4:
         if callerPermGate < pmAdmin:
           return "Only Admin or SuperAdmin can clear another user's " &
                  "session. (Use `/session clear " & agentName &
                  "` to clear your own.)"
-        if not parts[3].startsWith("nc:"):
-          return "Error: third argument must be an `nc:id` " &
-                 "(e.g. `nc:7`), got `" & parts[3] & "`."
-        targetNc = parts[3]
+        if parts[3].startsWith("nc:"):
+          targetNc = parts[3]
+        else:
+          # Admin escape hatch for non-`nc:N` keys. Common reasons:
+          # `system_heartbeat` (cron-driven heartbeat session that
+          # bloats over time), `cli:user` (test fixture), legacy
+          # `<channel>:...` raw keys that pre-date the nc-resolution
+          # contract. The key is passed verbatim to clearSession.
+          literalKey = parts[3]
       else:
         targetNc = resolveCallerNc(cfg, msg)
         if targetNc == "":
@@ -1603,11 +1623,16 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                  "pass their nc:id explicitly: " &
                  "`/session clear " & agentName & " nc:N`."
       # The session manager keys on `nc_<num>` (underscore form), not
-      # `nc:<num>` (colon form used in display).
-      let sessionKey = targetNc.replace(":", "_")
+      # `nc:<num>` (colon form used in display). Literal keys are
+      # passed through verbatim.
+      let sessionKey =
+        if literalKey.len > 0: literalKey
+        else: targetNc.replace(":", "_")
       al2.sessions.clearSession(sessionKey)
-      return "Cleared **" & agentName & "**'s session with `" &
-             targetNc & "` (key `" & sessionKey & "`).\n\n" &
+      let labelDisplay =
+        if literalKey.len > 0: "session `" & literalKey & "`"
+        else: "session with `" & targetNc & "` (key `" & sessionKey & "`)"
+      return "Cleared **" & agentName & "**'s " & labelDisplay & ".\n\n" &
              "On the next message, the agent starts a fresh thread — " &
              "no prior history, no carried-over summary. " &
              "`memory_store` entries are untouched."
