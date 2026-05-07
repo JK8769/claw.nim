@@ -1848,6 +1848,7 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
   # Operators who want to bar a specific agent from scheduling can still
   # `deny "cron"` on that agent.
   const defaultTools = ["read_file", "write_file", "list_dir", "reply",
+                        "reply_progress",
                         "clock", "provider_auth", "model_list", "cron"]
 
   # Auto-granted when the company declares ≥1 focus_mode. Without `spawn`
@@ -1928,7 +1929,7 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
       "playwright", "pushover", "lark", "delegate", "spawn", "subagent",
       "learn_skill", "persist", "clock", "provider_auth", "model_list",
       "forge", "remember", "invite", "update_contact", "query_graph",
-      "read_file", "write_file", "list_dir", "reply"]
+      "read_file", "write_file", "list_dir", "reply", "reply_progress"]
 
     for skillName in effectiveSkills:
       # Resolve from the first skillsDir that has it — later dirs override earlier.
