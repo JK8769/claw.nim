@@ -852,6 +852,43 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     snapshot.iteration = iteration
     al.updateStatus(ctx, "Thinking", "Running iteration", iteration)
 
+    # Mid-turn size guard. `maybeSummarize` runs at TURN boundaries
+    # (post-loop), but a single turn's tool-call results can balloon
+    # the conversation past the chain's smallest usable window
+    # before the loop ever exits. When that happens — typically a
+    # heartbeat or analytical task that pulls many large payloads —
+    # the next chat() call will hit chain-exhausted-on-size, the
+    # turn rolls back, and on the next attempt we repeat the same
+    # accumulation. Detecting it between iterations gives operators
+    # a specific, debuggable error pointing at the offending
+    # iteration count and tool sequence. Surfaced via the same
+    # `Error communicating with LLM provider:` prefix that the
+    # post-call catch uses, so the existing rollback path picks it
+    # up without a second branch.
+    let midTurnTokens = estimateTokens(currentMessages)
+    let midTurnCap = al.effectiveContextWindow()
+    if midTurnCap > 0 and
+       midTurnTokens > (midTurnCap * 90) div 100:
+      let lastToolName =
+        if currentMessages.len > 0 and
+           currentMessages[^1].name.len > 0:
+          currentMessages[^1].name
+        else: "(none)"
+      warnCF("agent", "Mid-turn size guard tripped", {
+        "session": opts.sessionKey,
+        "iteration": $iteration,
+        "tokens": $midTurnTokens,
+        "cap": $midTurnCap,
+        "last_tool": lastToolName}.toTable)
+      finalContent = "Error communicating with LLM provider: " &
+        "mid-turn size guard tripped at iteration " & $iteration &
+        " — history grew to ~" & $midTurnTokens & " tokens, over " &
+        "90% of the chain's effective window (" & $midTurnCap &
+        "). Last tool: `" & lastToolName & "`. Likely cause: a " &
+        "tool returned an oversize inline payload — migrate it to " &
+        "the {summary, ref_path} cache pattern."
+      break
+
     infoCF("agent", "LLM iteration", {"iteration": $iteration, "max": $al.maxIterations, "xml_tools": $useXmlTools, "messages_count": $currentMessages.len}.toTable)
 
     let strategy = inferStrategy(al.model)
