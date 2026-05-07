@@ -34,10 +34,38 @@
 ## (cooldown expires → next probe → success → flip to healthy);
 ## persistent errors (402 / 401) require `/provider reset <name>`.
 
-import std/[asyncdispatch, tables, strutils, json]
+import std/[asyncdispatch, tables, strutils, json, unicode]
 import types as providers_types
 import ./health
 import ../logger
+
+proc roughTokenCount*(s: string): int =
+  ## Rune-aware token estimator. The naive `s.len div 4` works for
+  ## ASCII / English / JSON (where the BPE tokeniser emits ~1 token
+  ## per 4 chars), but UNDERCOUNTS by 1.3-1.5× on CJK content because:
+  ##
+  ##   ASCII char  → 1 byte UTF-8, ~0.25 token (BPE merges common subwords)
+  ##   CJK char    → 3 bytes UTF-8, ~1.0 token (each char is its own subword)
+  ##
+  ## So a 1000-byte Chinese string is ~333 chars and ~333 tokens —
+  ## but `bytes/4` says 250. A real 265K-token Chinese-heavy turn
+  ## byte-counts at ~199K, slips past a 196K cap, then gets rejected
+  ## server-side.
+  ##
+  ## This proc walks runes (codepoints) and weights each: ASCII
+  ## codepoints contribute 0.25 tokens, non-ASCII contribute 1.0.
+  ## For pure ASCII it's identical to `s.len div 4`. For pure
+  ## Chinese it's 4× more accurate. Mixed content scales linearly.
+  ##
+  ## Cost: O(rune-count) instead of O(1) for `s.len`. For a 1MB
+  ## history string this is ~1ms, called once per LLM call —
+  ## negligible vs the network round-trip we're sizing for.
+  var ascii = 0
+  var nonAscii = 0
+  for r in s.runes:
+    if r.int32 < 128: ascii.inc
+    else: nonAscii.inc
+  (ascii div 4) + nonAscii
 
 type
   FallbackEntry* = object
@@ -109,40 +137,38 @@ method getDefaultModel*(p: FallbackLLMProvider): string =
 
 proc estimateRequestTokens*(messages: seq[providers_types.Message],
                              tools: seq[providers_types.ToolDefinition]): int =
-  ## Heuristic char/4 estimator. Mirrors the one in `agent/loop.nim`
-  ## (kept local so the chain doesn't need to import the loop). Counts
-  ## every field that goes on the wire to the LLM:
+  ## Estimate the request's token count with a rune-aware split that
+  ## handles CJK content properly (see `roughTokenCount` for the
+  ## per-codepoint reasoning). Counts every field that goes on the
+  ## wire:
   ##
-  ##   - message content + reasoning_content + tool_call_id + name
-  ##   - each `tool_calls` entry's id/type/function name+arguments
+  ##   - message content / reasoning_content / tool_call_id / name
+  ##   - each `tool_calls` entry's id, type, function name+arguments,
+  ##     and structured arguments table
   ##   - tool definitions (name + description + JSON schema)
   ##
-  ## The on-wire JSON has additional structural overhead (delimiters,
-  ## key names) that this misses; in practice that's <10% across
-  ## realistic request shapes, well within the 10% headroom we
-  ## already reserve via `ContextHeadroomPct`.
-  var totalChars = 0
+  ## User-content fields (`content`, `reasoning_content`) are the
+  ## CJK-heavy ones, so they go through `roughTokenCount`. The other
+  ## fields are JSON-structural / ASCII-dominated, so a fixed
+  ## `bytes/4` is fine and cheaper.
+  var asciiTokens = 0    # accumulated as quartered bytes for the ASCII parts
+  var richTokens  = 0    # accumulated as direct token estimates for CJK fields
   for m in messages:
-    totalChars += m.content.len
-    totalChars += m.reasoning_content.len
-    totalChars += m.tool_call_id.len
-    totalChars += m.name.len
+    richTokens  += roughTokenCount(m.content)
+    richTokens  += roughTokenCount(m.reasoning_content)
+    asciiTokens += m.tool_call_id.len + m.name.len
     for tc in m.tool_calls:
-      totalChars += tc.id.len
-      totalChars += tc.`type`.len
-      totalChars += tc.function.name.len
-      totalChars += tc.function.arguments.len
-      totalChars += tc.name.len
+      asciiTokens += tc.id.len + tc.`type`.len + tc.function.name.len +
+                     tc.function.arguments.len + tc.name.len
       for k, v in tc.arguments.pairs:
-        totalChars += k.len
-        totalChars += ($v).len
+        asciiTokens += k.len
+        asciiTokens += ($v).len
   for t in tools:
-    totalChars += t.`type`.len
-    totalChars += t.function.name.len
-    totalChars += t.function.description.len
+    asciiTokens += t.`type`.len + t.function.name.len +
+                   t.function.description.len
     if t.function.parameters != nil:
-      totalChars += ($t.function.parameters).len
-  totalChars div 4
+      asciiTokens += ($t.function.parameters).len
+  richTokens + (asciiTokens div 4)
 
 proc fitsEntry(estTokens: int, entry: FallbackEntry): bool =
   ## True when the request payload is small enough for this entry, OR

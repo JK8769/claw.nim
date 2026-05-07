@@ -284,38 +284,38 @@ proc effectiveContextWindow*(al: AgentLoop): int =
   al.contextWindow
 
 proc estimateTokens(messages: seq[providers_types.Message]): int =
-  ## Heuristic: total characters across every field that goes on the
-  ## wire to the LLM, divided by 4. Counts:
-  ##   - content
-  ##   - reasoning_content (DeepSeek V4 / o1 thinking traces — echoed
-  ##     back on subsequent turns; not free)
-  ##   - tool_calls (JSON-serialised for the API; for tool-heavy
-  ##     sessions this is the dominant byte source — Jerry's nc_5
-  ##     was 672K tokens of tool_calls vs 147K of content)
-  ##   - tool_call_id + name (small but real)
+  ## Token estimate over every wire-field of the message history.
+  ## User-content fields (`content`, `reasoning_content`) get the
+  ## rune-aware count from `providers_fallback.roughTokenCount`, so
+  ## CJK-heavy threads aren't undercounted by 1.3-1.5× the way pure
+  ## `bytes/4` was. JSON-structural fields (tool_call ids, types,
+  ## arguments — almost always ASCII) stay on the cheap `bytes/4`
+  ## path.
   ##
-  ## Earlier this proc only summed `content`. That undercounted by
-  ## 5-7× on tool-heavy sessions, which meant the 75% threshold
-  ## check in `maybeSummarize` never fired even when the session was
-  ## already over 900K tokens going to DeepSeek on every call.
-  var totalChars = 0
+  ## Earlier evolution:
+  ##   v1: only counted `content`. 5-7× under on tool-heavy sessions
+  ##       (Jerry's nc_5 was 672K tokens of tool_calls vs 147K of
+  ##       content), so the 75% summarisation threshold never fired.
+  ##   v2: summed every wire-field, divided by 4. Right for ASCII;
+  ##       under by 1.3× on Chinese — the 265K Moonshot rejection
+  ##       slipped past a 196K cap because the Chinese-heavy turn
+  ##       byte-counted at ~199K.
+  ##   v3 (this): rune-aware on the user-content fields. Pure ASCII
+  ##       behaves as before; pure CJK now counts ~1 token/char
+  ##       (matches BPE behaviour); mixed content scales linearly.
+  var asciiBytes = 0
+  var richTokens = 0
   for m in messages:
-    totalChars += m.content.len
-    totalChars += m.reasoning_content.len
-    totalChars += m.tool_call_id.len
-    totalChars += m.name.len
+    richTokens += providers_fallback.roughTokenCount(m.content)
+    richTokens += providers_fallback.roughTokenCount(m.reasoning_content)
+    asciiBytes += m.tool_call_id.len + m.name.len
     for tc in m.tool_calls:
-      totalChars += tc.id.len
-      totalChars += tc.`type`.len
-      totalChars += tc.function.name.len
-      totalChars += tc.function.arguments.len
-      totalChars += tc.name.len
-      # `arguments` is also a Table[string, JsonNode]; serialise to
-      # approximate the on-wire size when it's populated.
+      asciiBytes += tc.id.len + tc.`type`.len + tc.function.name.len +
+                    tc.function.arguments.len + tc.name.len
       for k, v in tc.arguments.pairs:
-        totalChars += k.len
-        totalChars += ($v).len
-  return totalChars div 4
+        asciiBytes += k.len
+        asciiBytes += ($v).len
+  return richTokens + (asciiBytes div 4)
 
 proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
   ## Read-only snapshot of a session's context utilisation. Same
