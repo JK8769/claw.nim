@@ -44,6 +44,12 @@ type
     provider*: providers_types.LLMProvider
     model*: string                    ## model id for THIS provider when active
     name*: string                     ## display name for logging
+    contextWindow*: int               ## input+output capacity from the model
+                                      ## catalog. 0 = unknown (skip-on-size
+                                      ## disabled for this entry — chain falls
+                                      ## back to the old "always try" behaviour).
+                                      ## Populated by chain builders in
+                                      ## gateway.nim from `resolveContextWindow`.
 
   FallbackLLMProvider* = ref object of providers_types.LLMProvider
     entries*: seq[FallbackEntry]      ## ordered: entries[0] is primary
@@ -51,12 +57,24 @@ type
                                       ## Cross-session circuit breaker.
                                       ## nil disables the check.
 
-const SessionKeyOption* = "__session_key"
-  ## Option key callers use to pass their session id for log context.
-  ## Stripped before options is forwarded to the underlying provider
-  ## so vendor APIs never see it. Kept after sticky removal because
-  ## the failure-fallback log lines still want to identify which
-  ## session triggered the event.
+const
+  SessionKeyOption* = "__session_key"
+    ## Option key callers use to pass their session id for log context.
+    ## Stripped before options is forwarded to the underlying provider
+    ## so vendor APIs never see it. Kept after sticky removal because
+    ## the failure-fallback log lines still want to identify which
+    ## session triggered the event.
+
+  ContextHeadroomPct* = 90
+    ## Allow the request payload to consume at most 90% of an entry's
+    ## contextWindow; the remaining 10% is the chain's conservative
+    ## reserve for the response. Models with a published
+    ## max_output_tokens that's smaller will simply generate up to
+    ## that cap — this constant is only the cutoff for "the request
+    ## itself is too big for this entry to handle at all." Bumping
+    ## higher buys input headroom but risks the provider rejecting
+    ## the call when the response runs long; lowering buys safety at
+    ## the cost of triggering size-skip earlier.
 
 proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
                               healthRegistry: ProviderHealthRegistry = nil):
@@ -77,6 +95,52 @@ proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
 method getDefaultModel*(p: FallbackLLMProvider): string =
   if p.entries.len > 0: p.entries[0].model else: ""
 
+proc estimateRequestTokens*(messages: seq[providers_types.Message],
+                             tools: seq[providers_types.ToolDefinition]): int =
+  ## Heuristic char/4 estimator. Mirrors the one in `agent/loop.nim`
+  ## (kept local so the chain doesn't need to import the loop). Counts
+  ## every field that goes on the wire to the LLM:
+  ##
+  ##   - message content + reasoning_content + tool_call_id + name
+  ##   - each `tool_calls` entry's id/type/function name+arguments
+  ##   - tool definitions (name + description + JSON schema)
+  ##
+  ## The on-wire JSON has additional structural overhead (delimiters,
+  ## key names) that this misses; in practice that's <10% across
+  ## realistic request shapes, well within the 10% headroom we
+  ## already reserve via `ContextHeadroomPct`.
+  var totalChars = 0
+  for m in messages:
+    totalChars += m.content.len
+    totalChars += m.reasoning_content.len
+    totalChars += m.tool_call_id.len
+    totalChars += m.name.len
+    for tc in m.tool_calls:
+      totalChars += tc.id.len
+      totalChars += tc.`type`.len
+      totalChars += tc.function.name.len
+      totalChars += tc.function.arguments.len
+      totalChars += tc.name.len
+      for k, v in tc.arguments.pairs:
+        totalChars += k.len
+        totalChars += ($v).len
+  for t in tools:
+    totalChars += t.`type`.len
+    totalChars += t.function.name.len
+    totalChars += t.function.description.len
+    if t.function.parameters != nil:
+      totalChars += ($t.function.parameters).len
+  totalChars div 4
+
+proc fitsEntry(estTokens: int, entry: FallbackEntry): bool =
+  ## True when the request payload is small enough for this entry, OR
+  ## the entry's contextWindow is unknown (0). Caller should use this
+  ## as a SKIP filter — entries that don't fit are silently passed
+  ## over rather than tried-and-failed-with-400.
+  if entry.contextWindow <= 0: return true
+  let cap = (entry.contextWindow * ContextHeadroomPct) div 100
+  estTokens <= cap
+
 proc shouldFallback(errMsg: string): bool =
   ## Heuristic: does this error message indicate the OTHER provider might
   ## succeed? See module doc for the categorisation rationale.
@@ -90,21 +154,29 @@ proc shouldFallback(errMsg: string): bool =
     if "API error " & code in errMsg: return true
   false
 
-proc nextUsableEntry*(p: FallbackLLMProvider):
+proc nextUsableEntry*(p: FallbackLLMProvider, estTokens: int = 0):
                      tuple[idx: int, name: string, model: string,
                            exhausted: bool] =
   ## Public introspection: which entry would the chain try on its
-  ## next call right now, given current health state? Used by
-  ## `/model` (and any future status surface) to show what the
+  ## next call right now, given current health state (and optionally,
+  ## a request-size estimate)? Used by `/model` to show what the
   ## chain will do without forcing an actual probe.
   ##
+  ## When `estTokens > 0`, also applies the context-window filter
+  ## that `chat()` uses. Pass 0 (default) to inspect health-only —
+  ## useful when you want to know "what's broken right now" without
+  ## a specific payload in mind.
+  ##
   ## Returns `exhausted=true` when every entry is unusable per the
-  ## registry. Operators see this as a "fix a provider or wait for a
-  ## cooldown to expire" signal.
+  ## registry (or, with size-checking on, every entry that's healthy
+  ## also can't fit). Operators see this as a "fix a provider, wait
+  ## for cooldown, or shorten the prompt" signal.
   for i, entry in p.entries:
-    if p.healthRegistry == nil or
-       p.healthRegistry.isUsable(entry.name):
-      return (i, entry.name, entry.model, false)
+    let healthy =
+      p.healthRegistry == nil or p.healthRegistry.isUsable(entry.name)
+    if not healthy: continue
+    if estTokens > 0 and not fitsEntry(estTokens, entry): continue
+    return (i, entry.name, entry.model, false)
   (p.entries.len, "exhausted", "", true)
 
 method chat*(p: FallbackLLMProvider,
@@ -124,7 +196,14 @@ method chat*(p: FallbackLLMProvider,
     if v.kind == JString: sessionKey = v.getStr()
     fwdOptions.del(SessionKeyOption)
 
+  # Estimate request size once before the entry loop — the same
+  # payload is checked against every entry's window. This is an
+  # input-size estimate; the response budget is reserved by
+  # `ContextHeadroomPct`. Cost is O(messages + tools), runs once.
+  let estTokens = estimateRequestTokens(messages, tools)
+
   var lastErr: ref Exception = nil
+  var skippedForSize = 0    # for the "no entry fits" diagnostic message
   for i in 0 ..< p.entries.len:
     let entry = p.entries[i]
     # Cross-session circuit breaker: skip without calling if the
@@ -137,6 +216,26 @@ method chat*(p: FallbackLLMProvider,
              "Skipping provider — health registry says unusable",
              {"provider": entry.name,
               "session": sessionKey}.toTable)
+      continue
+    # Adaptive context-window filter: skip entries whose window
+    # cannot accommodate this request. Without this, the chain would
+    # forward a 600K-token request to a 200K-window fallback,
+    # triggering a misleading 400 from the fallback even though the
+    # primary handled the same payload fine. Skip-on-size is a
+    # silent pass-over (not a failure recorded against the entry),
+    # because the entry is fundamentally working — it just can't fit
+    # this particular payload.
+    if not fitsEntry(estTokens, entry):
+      skippedForSize.inc
+      let cap = (entry.contextWindow * ContextHeadroomPct) div 100
+      infoCF("fallback_provider",
+             "Skipping provider — request too large for context window",
+             {"provider": entry.name,
+              "model": entry.model,
+              "session": sessionKey,
+              "est_tokens": $estTokens,
+              "ctx_window": $entry.contextWindow,
+              "input_cap": $cap}.toTable)
       continue
     # Use the caller-supplied model only on the FIRST attempt of THIS
     # call; subsequent fallbacks use each entry's configured model
@@ -176,6 +275,19 @@ method chat*(p: FallbackLLMProvider,
       raise e
   if lastErr != nil:
     raise lastErr
+  # Distinguish the two ways the chain can exhaust without ever
+  # making a real call. "Health" exhaustion → wait/reset/topup.
+  # "Size" exhaustion → summarise/shorten/route to a bigger-window
+  # provider. Same surface, different remedy; the message has to
+  # tell operators which one they're hit by.
+  if skippedForSize > 0 and skippedForSize == p.entries.len:
+    raise newException(IOError,
+      "FallbackLLMProvider: chain exhausted — request payload " &
+      "(~" & $estTokens & " tokens) exceeds every entry's context " &
+      "window. Either summarise the session " &
+      "(`/session reset` for a fresh thread), reduce the prompt, or " &
+      "configure an entry with a larger context window. Run " &
+      "`/model` to see each entry's window.")
   raise newException(IOError,
     "FallbackLLMProvider: chain exhausted — every provider in the " &
     "chain is currently unhealthy or cooling down. Use " &

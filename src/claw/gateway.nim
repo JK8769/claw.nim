@@ -414,7 +414,12 @@ proc buildProviderChainForAgent(graph: WorldGraph,
                  {"model": model, "provider": pName}.toTable)
           break
         let prov = createProvider(tech.model, tech.apiKey, tech.apiBase)
-        entries.add(FallbackEntry(provider: prov, model: model, name: pName))
+        # Look up the model's context window from the catalog so the
+        # chain can size-skip on per-call payload. 0 = unknown →
+        # fitsEntry treats it as "always fits" (back-compat).
+        let ctxWin = resolveContextWindow(model, 0)
+        entries.add(FallbackEntry(provider: prov, model: model,
+                                  name: pName, contextWindow: ctxWin))
         foundFor = pName
         let position =
           if entries.len == 1: "primary"
@@ -484,8 +489,10 @@ proc buildProviderChain(cfg: Config, graph: WorldGraph,
                {"provider": pName}.toTable)
         continue
       let p = createProvider(tech.model, tech.apiKey, tech.apiBase)
+      let ctxWin = resolveContextWindow(tech.model, 0)
       fallbackEntries.add(FallbackEntry(provider: p, model: tech.model,
-                                         name: pName))
+                                         name: pName,
+                                         contextWindow: ctxWin))
       let position =
         if fallbackEntries.len == 1: "primary"
         else: "fallback #" & $(fallbackEntries.len - 1)
@@ -652,7 +659,13 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                 of provider_health.hsCoolingDown: healthBadge = " ⏳"
                 of provider_health.hsUnhealthy: healthBadge = " ⚠ unhealthy"
                 break
-          output &= "  [" & $i & "] `" & entry.name & "` / `" & entry.model & "`" & healthBadge & marker & "\n"
+          let ctxBadge =
+            if entry.contextWindow > 0:
+              "  ctx=" & $(entry.contextWindow div 1000) & "K"
+            else: ""
+          output &= "  [" & $i & "] `" & entry.name & "` / `" &
+                    entry.model & "`" & ctxBadge & healthBadge &
+                    marker & "\n"
         output &= "\n"
 
       let graph = loadWorld(cfg[].workspacePath())
