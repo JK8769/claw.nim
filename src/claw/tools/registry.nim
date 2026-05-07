@@ -11,8 +11,12 @@ const
   # not the cap. `delegate` is here so customer-tier requests can be
   # handed off to an internal specialist agent without the caller
   # needing direct access to that agent's tools.
-  ExternalAllowedTools* = ["reply", "forward", "redeem_invite",
-                           "update_contact", "delegate"]
+  ExternalAllowedTools* = ["reply", "reply_progress", "forward",
+                            "redeem_invite", "update_contact", "delegate"]
+  # `reply_progress` is included so customer-facing agents (Atlas) can
+  # send progress updates during long delegate-routed analyses without
+  # the customer staring at silence. Same delivery primitive as
+  # `reply` semantically scoped to "checkpoint, not final answer".
   # Heartbeat allowlist: maintenance-shaped tools only. The heartbeat
   # session ("Check if there are any tasks I should be aware of...")
   # has been the dominant token sink because the agent saw all 30+
