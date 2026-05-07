@@ -1959,6 +1959,42 @@ proc processDirect*(al: AgentLoop, content, sessionKey: string, senderID: string
   let msg = InboundMessage(channel: channel, sender_id: senderID, recipient_id: al.agentName, chat_id: "direct", content: content, session_key: sessionKey)
   return await al.processMessage(msg)
 
+proc liveTaskCount*(al: AgentLoop): int {.inline.} =
+  ## Layer 1 primitive: how many turns is this AgentLoop currently
+  ## running concurrently? Used by Layer 2 schedulers (heartbeat
+  ## orchestrators, system-event dispatchers) to apply skip-if-busy
+  ## policy without reaching into AgentLoop internals.
+  al.liveTasks.len
+
+proc processOneShot*(al: AgentLoop, prompt: string,
+                     senderID: string = tools_registry.SystemHeartbeatSender,
+                     channel: string = "system"): Future[string] {.async.} =
+  ## Layer 1 primitive: run a single agent turn whose conversation
+  ## state does NOT persist to disk. The iteration loop runs
+  ## normally — tools execute, the LLM responds, mid-turn size guards
+  ## still apply — but every session write short-circuits because the
+  ## sessionKey carries `TransientKeyPrefix`. After the turn completes
+  ## the in-memory state is cleared.
+  ##
+  ## Used by Layer 2 callers (heartbeat orchestrator, system events)
+  ## that want a turn to fire without leaving a session footprint or
+  ## accumulating across-tick history. Stateful continuity, when
+  ## actually wanted, is the caller's job — typically via explicit
+  ## `memory_store` writes from inside the agent's tool surface.
+  let key = TransientKeyPrefix & senderID & ":" & $epochTime()
+  let msg = InboundMessage(
+    channel: channel, sender_id: senderID,
+    recipient_id: al.agentName, chat_id: "oneshot",
+    content: prompt, session_key: key)
+  try:
+    result = await al.processMessage(msg)
+  finally:
+    # Drop the in-memory transient session so we don't accrue
+    # ghost entries across many ticks. The disk paths were already
+    # no-ops (TransientKeyPrefix), so this is a memory-only wipe.
+    try: al.sessions.clearSession(key)
+    except CatchableError: discard
+
 proc run*(al: AgentLoop) {.async.} =
   al.running = true
   while al.running:

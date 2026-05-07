@@ -12,7 +12,7 @@ import tools/registry as tools_registry
 import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
-import services/[heartbeat, cron as cron_service]
+import services/[heartbeat, cron as cron_service, heartbeat_orchestrator]
 import daemon/[socket, status]
 
 proc isProcessAlive(pid: int): bool =
@@ -2111,24 +2111,24 @@ Options:
 
   cronServiceInstance.onJob = cronHandler
 
-  # Default agent
+  # Default agent — Lexi gets pre-materialized so first inbound
+  # message doesn't pay the office-construction latency.
   if not gCtx.offices.hasKey("lexi"):
     gCtx.offices["lexi"] = makeAgentLoop("Lexi")
-  let lexiWorkspace = cfg[].workspacePath() / "offices" / "lexi"
-  # Heartbeat cadence: 4 hours. Lexi's heartbeat is a "is anything
-  # pending" check (mailbox scan, queued forwards, memory review),
-  # not a polling loop — running it 35×/day at 30min cadence pegged
-  # ~20% of total token spend with no user-visible value beyond what
-  # a less frequent check delivers. The per-tick cost is also tightened
-  # by the heartbeat-specific tool allowlist in agent/loop.nim, which
-  # only sends maintenance-shaped tools (read_file, list_dir, forward,
-  # delegate, reply, update_contact) instead of all 30+ schemas. If
-  # operators need something time-sensitive (alarms, fleet status),
-  # use the cron tool to schedule a separate task at a faster cadence
-  # — that cost shows up as cron, not heartbeat.
-  let hbService = newHeartbeatService(lexiWorkspace, proc(p: string): Future[void] {.async.} =
-    discard await gCtx.offices["lexi"].processDirect(p, tools_registry.SystemHeartbeatSender)
-  , 14400, true)
+  # Heartbeat orchestration: Layer 2 reads each agent's
+  # `heartbeat_seconds` from BASE.json and spawns one stateless-tick
+  # service per opted-in agent. Replaces the previous hardcoded
+  # "Lexi every 4h" path. Operators now declare per-agent cadences
+  # in BASE.nims (`agent "Atlas": heartbeat 1800` etc.) and the
+  # orchestrator handles skip-if-busy + non-persisting dispatch.
+  # See `services/heartbeat_orchestrator.nim` for the policy details.
+  let officeFor = proc(name: string): AgentLoop {.gcsafe.} =
+    {.cast(gcsafe).}:
+      let key = name.toLowerAscii
+      if gCtx == nil: return nil
+      if gCtx.offices.hasKey(key): return gCtx.offices[key]
+      return nil
+  let heartbeats = startHeartbeats(cfg, officeFor)
 
   # IPC setup — stdio (Zen mode) or socket (headless daemon)
   var stdioServer: StdioServer = nil
@@ -2735,7 +2735,9 @@ Options:
         await sleepAsync(1000)
   )()
 
-  asyncCheck hbService.start()
+  # heartbeats already started inside startHeartbeats(); keep the var
+  # alive so the closure captures don't get GC'd.
+  discard heartbeats
   asyncCheck cronServiceInstance.start()
   asyncCheck gChanManager.startAll()
 

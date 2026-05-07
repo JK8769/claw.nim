@@ -93,6 +93,19 @@ type
     lock*: Lock
     storage*: string                  ## <office>/sessions
 
+const TransientKeyPrefix* = "__transient:"
+  ## Session keys with this prefix are NOT persisted to disk. They use
+  ## the SessionManager's in-memory state (so the iteration loop still
+  ## sees a coherent message list during a turn) but every write path
+  ## short-circuits before touching the JSONL or meta files. Used by
+  ## Layer 2 callers — heartbeat orchestrators, system events, anything
+  ## that wants a turn to run without leaving a session footprint on
+  ## disk. Caller is responsible for calling `clearSession` when done
+  ## to release in-memory state.
+
+proc isTransient*(key: string): bool {.inline.} =
+  key.startsWith(TransientKeyPrefix)
+
 # ── Paths ──────────────────────────────────────────────────────────
 
 proc logPath(sm: SessionManager, key: string): string =
@@ -152,6 +165,7 @@ proc loadMeta(sm: SessionManager, key: string): SessionMeta =
 
 proc writeMeta(sm: SessionManager, session: Session) =
   if sm.storage == "": return
+  if session.key.isTransient: return    # in-memory only — see TransientKeyPrefix
   try:
     writeFile(sm.metaPath(session.key), session.meta.toJson())
   except CatchableError: discard
@@ -252,6 +266,7 @@ proc getOrCreate*(sm: SessionManager, key: string): Session =
 
 proc appendToLog(sm: SessionManager, session: Session, msg: SessionMessage) =
   if sm.storage == "": return
+  if session.key.isTransient: return    # in-memory only — see TransientKeyPrefix
   try:
     let f = open(sm.logPath(session.key), fmAppend)
     f.writeLine($(%msg))

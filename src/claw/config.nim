@@ -42,6 +42,12 @@ type
     tools*: seq[string]
     deny*: seq[string]
     workstation*: bool
+    heartbeat_seconds*: int  ## 0 = no heartbeat. Positive = cadence in
+                             ## seconds for autonomous stateless ticks
+                             ## fired by the heartbeat orchestrator.
+                             ## See clawdsl.nim's `heartbeat <s>` agent
+                             ## directive and
+                             ## `services/heartbeat_orchestrator.nim`.
 
   AgentsSecurityConfig* = object
     allowed_paths*: seq[string]

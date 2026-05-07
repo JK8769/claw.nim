@@ -64,6 +64,12 @@ type
     resolvedDeps*: seq[string]
     resolvedEnvs*: seq[string]
     resolvedSkills*: seq[string]  ## uses ∪ practices.skills ∪ team.competencies.skills
+    heartbeatSeconds*: int        ## 0 = no heartbeat (default). Positive
+                                  ## = the cadence in seconds at which a
+                                  ## stateless tick fires for this agent.
+                                  ## See `services/heartbeat_orchestrator.nim`
+                                  ## for skip-if-busy + bloat policies the
+                                  ## tick goes through.
 
   ClawPerson* = object
     name*: string
@@ -363,6 +369,14 @@ template agent*(agentName: string, body: untyped) =
       for t in toolNames: a.deny.add(t)
     template workstation(enabled: bool) {.used.} =
       a.workstation = enabled
+    template heartbeat(seconds: int) {.used.} =
+      ## Opt this agent into autonomous heartbeat ticks at the given
+      ## cadence. The runtime fires a stateless one-shot turn (no
+      ## session JSONL accumulation) whose prompt comes from
+      ## `<office>/memory/HEARTBEAT.md` plus a built-in mailbox scan.
+      ## Skipped automatically if the agent has live tasks at tick
+      ## time. 0 (default) = no heartbeat.
+      a.heartbeatSeconds = seconds
     body
     spec.agents.add(a)
 
@@ -1108,6 +1122,8 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
       entry["thinking"] = %a.thinking.get
     if a.temperature != 0.0:
       entry["temperature"] = %a.temperature
+    if a.heartbeatSeconds > 0:
+      entry["heartbeat_seconds"] = %a.heartbeatSeconds
     # Resolved capabilities (from resolver pass)
     if a.resolvedTools.len > 0:
       entry["tools"] = %a.resolvedTools
