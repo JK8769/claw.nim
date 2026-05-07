@@ -1427,6 +1427,14 @@ proc identitySessionKey(al: AgentLoop, opts: ProcessOptions): string =
   ## person using the other's identity/context. Per-sender is strictly
   ## safer for @mention-triggered responses (groups don't auto-respond
   ## anyway as of the group-chat policy change).
+  ##
+  ## Transient sessions (those keyed with `TransientKeyPrefix` by Layer 2
+  ## callers like the heartbeat orchestrator) are passed through
+  ## verbatim. Otherwise the rewrite would clobber the prefix and make
+  ## the SessionManager's transient-skip-disk path unreachable —
+  ## defeating the no-bloat property the prefix exists to provide.
+  if opts.sessionKey.isTransient:
+    return opts.sessionKey
   if opts.sessionKey.startsWith("system:"):
     return opts.sessionKey.replace(":", "_")
 
@@ -1549,12 +1557,24 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     maxIterations: al.maxIterations,
     toolLog: @[],
     model: al.model)
-  al.liveTasks[opts.sessionKey] = snapshot
+  # Capture the key the snapshot is INSERTED under, so the defer
+  # deletes the same entry. `opts.sessionKey` gets rewritten by
+  # `identitySessionKey` further down (channel-keyed → identity-keyed
+  # for normal users; transient keys pass through). Without this
+  # capture, defer'd `liveTasks.del(opts.sessionKey)` runs against the
+  # rewritten value and leaves the original entry stuck in the table.
+  # Manifests for normal users as a same-key overwrite on the next
+  # turn (silently fine), but for unique-per-call keys (heartbeat
+  # ticks with timestamps) every tick leaks one entry that lives
+  # until process restart, making /agent display tasks that finished
+  # hours ago as still running.
+  let snapshotKey = opts.sessionKey
+  al.liveTasks[snapshotKey] = snapshot
   defer:
     snapshot.finishedAt = epochTime()
     al.liveLastFinished = snapshot
     al.liveTurnCount.inc
-    al.liveTasks.del(opts.sessionKey)
+    al.liveTasks.del(snapshotKey)
   # Refresh the cached graph so identifiers stamped by the gateway's
   # bind/invite pipeline are visible for resolution. If the caller
   # already loaded (and possibly mutated) a graph for this message,
