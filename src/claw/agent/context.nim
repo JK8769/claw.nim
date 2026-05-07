@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 3
+const PolicyRulesVersion* = 4
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -313,17 +313,38 @@ const PolicyRulesVersion* = 3
   ##       section (eliminates the `read_file` round-trip); Phase C
   ##       handbook tightened to imperative MUST-rules with concrete
   ##       triggers (>5 row table → MUST sheet; etc.).
+  ##   4 — policyHashInputs now hashes channel-active skill recipes
+  ##       too, so future SKILL.md edits auto-invalidate sessions
+  ##       (closes the blind spot from v3). No prompt-shape change.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
   ## Returns the canonical input string for the session policy hash.
   ## Composed of: PolicyRulesVersion + the resolved Handbooks section
-  ## content for this agent. Stable across runs given identical inputs;
-  ## any handbook edit or rules-version bump changes the resulting
-  ## hash, which is how `applyPolicyUpdate` detects "discipline
-  ## changed since this session was last touched".
+  ## content + the channel-active skill recipes (when the agent has
+  ## any channel-tagged skill in scope). Stable across runs given
+  ## identical inputs; any handbook edit, rules-version bump, OR
+  ## channel-active SKILL.md edit changes the resulting hash, which
+  ## is how `applyPolicyUpdate` detects "discipline changed since
+  ## this session was last touched".
+  ##
+  ## Why include channel-active skill content: with `# Channel-Active
+  ## Skill Recipes` inlined into the prompt, a SKILL.md edit (e.g.
+  ## tightening a row threshold) is now structurally a
+  ## discipline-of-delivery change. Without hashing the recipes, the
+  ## edit is silently invisible to existing sessions until the user
+  ## happens to start a new one. Hashing every channel where the
+  ## agent might land makes the marker fire correctly regardless of
+  ## which channel the next message arrives on.
+  var recipeHash = ""
+  for ch in ["feishu"]:    # extend with new channels as they're added
+    let r = cb.skillsLoader.buildChannelActiveSkillRecipes(
+      cb.allowedSkills, ch)
+    if r.len > 0:
+      recipeHash.add("\n--ch:" & ch & "--\n" & r)
   result = "v" & $PolicyRulesVersion & "\n" &
-           cb.buildHandbooksSection(agentName, practices)
+           cb.buildHandbooksSection(agentName, practices) &
+           recipeHash
 
 proc computePolicyHash*(cb: ContextBuilder, agentName: string,
                         practices: seq[string]): string =
