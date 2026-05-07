@@ -137,38 +137,42 @@ method getDefaultModel*(p: FallbackLLMProvider): string =
 
 proc estimateRequestTokens*(messages: seq[providers_types.Message],
                              tools: seq[providers_types.ToolDefinition]): int =
-  ## Estimate the request's token count with a rune-aware split that
-  ## handles CJK content properly (see `roughTokenCount` for the
-  ## per-codepoint reasoning). Counts every field that goes on the
-  ## wire:
+  ## Estimate the request's token count with rune-aware accounting on
+  ## every field that can carry CJK content (see `roughTokenCount`).
+  ## v2 of this proc only applied rune-counting to `content` and
+  ## `reasoning_content`, leaving `tc.function.arguments` and
+  ## `tc.arguments` JSON values on the cheap `bytes/4` path. That
+  ## was wrong: a sungrow tool call with a Chinese plant name in its
+  ## arguments (e.g. `{"plant":"荣鑫二期"}`) has CJK chars that BPE
+  ## tokenises ~1:1, but `bytes/4` reads the 3-byte UTF-8 encoding
+  ## as 0.75 tokens — under-counting by 4×. Tool RESULTS (which
+  ## live in `content`) were always rune-counted, but the calls
+  ## themselves slipped through.
   ##
-  ##   - message content / reasoning_content / tool_call_id / name
-  ##   - each `tool_calls` entry's id, type, function name+arguments,
-  ##     and structured arguments table
-  ##   - tool definitions (name + description + JSON schema)
-  ##
-  ## User-content fields (`content`, `reasoning_content`) are the
-  ## CJK-heavy ones, so they go through `roughTokenCount`. The other
-  ## fields are JSON-structural / ASCII-dominated, so a fixed
-  ## `bytes/4` is fine and cheaper.
-  var asciiTokens = 0    # accumulated as quartered bytes for the ASCII parts
-  var richTokens  = 0    # accumulated as direct token estimates for CJK fields
+  ## Now: any string field that COULD plausibly contain user/tool/
+  ## domain content goes through `roughTokenCount`. Pure structural
+  ## fields (ids, type strings) stay on bytes/4 — they're always
+  ## ASCII so the result is identical.
+  var asciiBytes = 0     # for ASCII-only structural fields
+  var richTokens = 0     # rune-aware accumulation
   for m in messages:
-    richTokens  += roughTokenCount(m.content)
-    richTokens  += roughTokenCount(m.reasoning_content)
-    asciiTokens += m.tool_call_id.len + m.name.len
+    richTokens += roughTokenCount(m.content)
+    richTokens += roughTokenCount(m.reasoning_content)
+    richTokens += roughTokenCount(m.name)
+    asciiBytes += m.tool_call_id.len
     for tc in m.tool_calls:
-      asciiTokens += tc.id.len + tc.`type`.len + tc.function.name.len +
-                     tc.function.arguments.len + tc.name.len
+      asciiBytes += tc.id.len + tc.`type`.len + tc.function.name.len
+      richTokens += roughTokenCount(tc.function.arguments)
+      richTokens += roughTokenCount(tc.name)
       for k, v in tc.arguments.pairs:
-        asciiTokens += k.len
-        asciiTokens += ($v).len
+        asciiBytes += k.len
+        richTokens += roughTokenCount($v)
   for t in tools:
-    asciiTokens += t.`type`.len + t.function.name.len +
-                   t.function.description.len
+    asciiBytes += t.`type`.len + t.function.name.len
+    richTokens += roughTokenCount(t.function.description)
     if t.function.parameters != nil:
-      asciiTokens += ($t.function.parameters).len
-  richTokens + (asciiTokens div 4)
+      richTokens += roughTokenCount($t.function.parameters)
+  richTokens + (asciiBytes div 4)
 
 proc fitsEntry(estTokens: int, entry: FallbackEntry): bool =
   ## True when the request payload is small enough for this entry, OR

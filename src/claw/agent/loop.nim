@@ -308,13 +308,15 @@ proc estimateTokens(messages: seq[providers_types.Message]): int =
   for m in messages:
     richTokens += providers_fallback.roughTokenCount(m.content)
     richTokens += providers_fallback.roughTokenCount(m.reasoning_content)
-    asciiBytes += m.tool_call_id.len + m.name.len
+    richTokens += providers_fallback.roughTokenCount(m.name)
+    asciiBytes += m.tool_call_id.len
     for tc in m.tool_calls:
-      asciiBytes += tc.id.len + tc.`type`.len + tc.function.name.len +
-                    tc.function.arguments.len + tc.name.len
+      asciiBytes += tc.id.len + tc.`type`.len + tc.function.name.len
+      richTokens += providers_fallback.roughTokenCount(tc.function.arguments)
+      richTokens += providers_fallback.roughTokenCount(tc.name)
       for k, v in tc.arguments.pairs:
         asciiBytes += k.len
-        asciiBytes += ($v).len
+        richTokens += providers_fallback.roughTokenCount($v)
   return richTokens + (asciiBytes div 4)
 
 proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
@@ -871,6 +873,17 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     # filter so guard-trip and chain-skip agree on what "too big"
     # means. Single source of truth lives in providers/fallback.nim.
     let headroomPct = providers_fallback.ContextHeadroomPct
+    # Per-iteration size telemetry — surfaces in the gateway log so
+    # operators can correlate "the estimator said 200K, server saw
+    # 265K" cases against actual rejections, narrowing the slop
+    # ratio from guesswork to data.
+    debugCF("agent", "Mid-turn token estimate", {
+      "session": opts.sessionKey,
+      "iteration": $iteration,
+      "estimate": $midTurnTokens,
+      "cap": $midTurnCap,
+      "headroom_pct": $headroomPct,
+      "messages": $currentMessages.len}.toTable)
     if midTurnCap > 0 and
        midTurnTokens > (midTurnCap * headroomPct) div 100:
       let lastToolName =
