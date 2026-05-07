@@ -867,8 +867,12 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     # up without a second branch.
     let midTurnTokens = estimateTokens(currentMessages)
     let midTurnCap = al.effectiveContextWindow()
+    # Use the same headroom percentage as the chain's size-skip
+    # filter so guard-trip and chain-skip agree on what "too big"
+    # means. Single source of truth lives in providers/fallback.nim.
+    let headroomPct = providers_fallback.ContextHeadroomPct
     if midTurnCap > 0 and
-       midTurnTokens > (midTurnCap * 90) div 100:
+       midTurnTokens > (midTurnCap * headroomPct) div 100:
       let lastToolName =
         if currentMessages.len > 0 and
            currentMessages[^1].name.len > 0:
@@ -883,10 +887,10 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       finalContent = "Error communicating with LLM provider: " &
         "mid-turn size guard tripped at iteration " & $iteration &
         " — history grew to ~" & $midTurnTokens & " tokens, over " &
-        "90% of the chain's effective window (" & $midTurnCap &
-        "). Last tool: `" & lastToolName & "`. Likely cause: a " &
-        "tool returned an oversize inline payload — migrate it to " &
-        "the {summary, ref_path} cache pattern."
+        $headroomPct & "% of the chain's effective window (" &
+        $midTurnCap & "). Last tool: `" & lastToolName & "`. Likely " &
+        "cause: a tool returned an oversize inline payload — " &
+        "migrate it to the {summary, ref_path} cache pattern."
       break
 
     infoCF("agent", "LLM iteration", {"iteration": $iteration, "max": $al.maxIterations, "xml_tools": $useXmlTools, "messages_count": $currentMessages.len}.toTable)

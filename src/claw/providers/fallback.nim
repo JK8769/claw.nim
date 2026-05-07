@@ -65,16 +65,28 @@ const
     ## the failure-fallback log lines still want to identify which
     ## session triggered the event.
 
-  ContextHeadroomPct* = 90
-    ## Allow the request payload to consume at most 90% of an entry's
-    ## contextWindow; the remaining 10% is the chain's conservative
-    ## reserve for the response. Models with a published
-    ## max_output_tokens that's smaller will simply generate up to
-    ## that cap — this constant is only the cutoff for "the request
-    ## itself is too big for this entry to handle at all." Bumping
-    ## higher buys input headroom but risks the provider rejecting
-    ## the call when the response runs long; lowering buys safety at
-    ## the cost of triggering size-skip earlier.
+  ContextHeadroomPct* = 75
+    ## Allow the request payload to consume at most 75% of an entry's
+    ## contextWindow. Two reasons for the wide reserve:
+    ##
+    ## 1. Output budget — every model needs space for its response.
+    ##    Most LLMs we use cap output at 8K-32K, but reasoning models
+    ##    (DeepSeek V4 thinking, GPT-o1) can blow that out with
+    ##    chain-of-thought tokens.
+    ##
+    ## 2. Estimator slop. `estimateRequestTokens` uses `bytes/4` as
+    ##    a proxy. For ASCII / English / JSON that's accurate to
+    ##    within ~10%. For Chinese / CJK content, UTF-8 encodes each
+    ##    char as 3 bytes, while BPE tokenisers emit ~1 token/char —
+    ##    so `bytes/4` UNDER-counts by 1.25-1.5×. A 200K estimate
+    ##    can be 260K real on a Chinese-heavy thread.
+    ##
+    ## With 75% headroom: estimate=750K against a 1M model → cap=750K
+    ## → real ~975K (worst case 1.3× slop) — still under 1M. For a
+    ## 256K kimi-k2.5: cap=192K → real ~250K — under the 262K server
+    ## ceiling we observed. Bumping above 80% risks Moonshot-style
+    ## "exceeded model token limit" rejections; lowering below 70%
+    ## starts wasting headroom unnecessarily on ASCII workloads.
 
 proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
                               healthRegistry: ProviderHealthRegistry = nil):

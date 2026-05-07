@@ -386,7 +386,7 @@
         },
         {
           "id": "kimi-k2.5",
-          "context_length": 200000,
+          "context_length": 262144,
           "capabilities": [
             "tool-use",
             "reasoning",
