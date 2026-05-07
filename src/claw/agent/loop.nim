@@ -2206,11 +2206,39 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   contextBuilder.tools = toolsRegistry # Manually bridge for now
   contextBuilder.agentName = agentName
   contextBuilder.trust = cfg.trust
-  # Populate allowedSkills from this agent's ClawDSL uses
+  # Populate allowedSkills from this agent's ClawDSL uses, and capture
+  # practices so we can run the policy-update reconciliation below.
+  var agentPractices: seq[string]
   for na in cfg.agents.named:
     if na.name.toLowerAscii() == agentName.toLowerAscii():
       contextBuilder.allowedSkills = na.skills
+      agentPractices = na.practices
       break
+
+  # Policy-version reconciliation: when the agent's communication
+  # policy (handbooks + Important Rules version) has changed since a
+  # given session was last touched, append a system-role marker so the
+  # LLM stops using prior turns as stylistic precedent. Without this,
+  # the model imitates its own past style much more strongly than it
+  # follows freshly-tightened abstract rules — long-running sessions
+  # silently keep producing the old behavior even after the operator
+  # ships a discipline update. Idempotent across restarts.
+  let policyHash = contextBuilder.computePolicyHash(agentName, agentPractices)
+  if policyHash.len > 0:
+    let policyMarker = "[POLICY UPDATE — communication discipline tightened]\n\n" &
+      "The communication-discipline rules in your system prompt have been " &
+      "tightened since this session was last active. From this turn forward, " &
+      "follow the UPDATED handbook strictly. Specifically: never go more than " &
+      "2 consecutive tool calls without sending a `reply_progress` checkpoint, " &
+      "and end long-task replies with three explicit numbered next-step options. " &
+      "Prior turns in this conversation predate this rule and MUST NOT be " &
+      "treated as stylistic precedent."
+    let injected = sessionsManager.applyPolicyUpdate(policyHash, policyMarker)
+    if injected > 0:
+      infoCF("agent",
+             "Policy-update marker injected into existing sessions",
+             {"agent": agentName, "sessions": $injected,
+              "hash": policyHash}.toTable)
 
   regTagged(newUpdateContactTool(officeDir, contextBuilder), ["admin", "contacts", "core"], "update contact information in graph or guest ledger")
 

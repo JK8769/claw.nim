@@ -82,6 +82,18 @@ type
     summaryWatermark*: int            ## msg index at/above which history
                                       ## is still raw; anything below has
                                       ## been folded into `summary`.
+    policyHash*: string               ## hash of the communication policy
+                                      ## (handbooks + rules-version) at
+                                      ## last touch. When the office
+                                      ## sees a different hash on load,
+                                      ## a system-role marker is appended
+                                      ## so the LLM stops imitating its
+                                      ## pre-update style. Empty on
+                                      ## first run; jsony fills missing
+                                      ## fields with the type's zero
+                                      ## value, so old meta files load
+                                      ## fine and naturally trigger one
+                                      ## marker injection then settle.
 
   Session* = ref object
     key*: string
@@ -272,6 +284,47 @@ proc appendToLog(sm: SessionManager, session: Session, msg: SessionMessage) =
     f.writeLine($(%msg))
     f.close()
   except CatchableError: discard
+
+# ── Policy-version reconciliation ──────────────────────────────────
+
+proc applyPolicyUpdate*(sm: SessionManager, currentHash: string,
+                        marker: string): int =
+  ## Compare each persistent session's stored `policyHash` against
+  ## `currentHash`. For sessions with a non-empty message history AND
+  ## a stale hash, append a system-role marker so the LLM stops
+  ## treating prior turns as stylistic precedent. Returns the number
+  ## of sessions that received a marker.
+  ##
+  ## Sessions skipped:
+  ##   - transient (in-memory only, no precedent issue)
+  ##   - empty (no precedent to override; just stamp the hash)
+  ##   - already on currentHash (no change since last touch)
+  ##
+  ## Idempotent: stamping the hash AFTER injection means a second call
+  ## with the same currentHash is a no-op even if the gateway restarts.
+  result = 0
+  if currentHash.len == 0: return    # caller couldn't compute — skip
+  acquire(sm.lock)
+  defer: release(sm.lock)
+  for key, session in sm.sessions:
+    if key.isTransient: continue
+    if session.meta.policyHash == currentHash: continue
+    if session.messages.len > 0:
+      let now = getTime().toUnixFloat()
+      let m = SessionMessage(
+        ts: now,
+        speaker: "system:policy",
+        role: "system",
+        content: marker,
+        attachments: @[]
+      )
+      session.messages.add(m)
+      session.meta.messageCount = session.messages.len
+      session.meta.updated = now
+      sm.appendToLog(session, m)
+      inc result
+    session.meta.policyHash = currentHash
+    sm.writeMeta(session)
 
 proc addRichMessage*(sm: SessionManager, key: string, msg: SessionMessage) =
   ## Preferred API — caller supplies speaker + timestamp + attachments.

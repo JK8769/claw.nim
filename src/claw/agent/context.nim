@@ -1,4 +1,5 @@
 import std/[os, times, strutils, sequtils, tables, json, options]
+import nimcrypto/[sha2, hash]
 import ../providers/types as providers_types
 
 import ../skills/loader as skills_loader
@@ -294,6 +295,41 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   if blocks.len == 0: return ""
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
+
+const PolicyRulesVersion* = 1
+  ## Bumped when the Important Rules section in `buildBaseContext` (or
+  ## any other always-on, non-handbook prompt fragment) changes in a
+  ## way that should invalidate prior session stylistic precedent. Mixed
+  ## into `policyHashInputs` so that a binary-side rule change triggers
+  ## a marker injection on existing sessions, not just handbook edits.
+
+proc policyHashInputs*(cb: ContextBuilder, agentName: string,
+                       practices: seq[string]): string =
+  ## Returns the canonical input string for the session policy hash.
+  ## Composed of: PolicyRulesVersion + the resolved Handbooks section
+  ## content for this agent. Stable across runs given identical inputs;
+  ## any handbook edit or rules-version bump changes the resulting
+  ## hash, which is how `applyPolicyUpdate` detects "discipline
+  ## changed since this session was last touched".
+  result = "v" & $PolicyRulesVersion & "\n" &
+           cb.buildHandbooksSection(agentName, practices)
+
+proc computePolicyHash*(cb: ContextBuilder, agentName: string,
+                        practices: seq[string]): string =
+  ## SHA-256 (first 16 hex chars) of `policyHashInputs`. Returns "" when
+  ## the inputs are empty (agent has no handbooks to draw from), which
+  ## tells the caller to skip the policy-update mechanism for this
+  ## agent — there's no precedent that needs invalidating either way.
+  let inputs = cb.policyHashInputs(agentName, practices)
+  if inputs.strip.len == 0: return ""
+  var ctx: sha256
+  ctx.init()
+  ctx.update(cast[ptr byte](inputs[0].addr), uint(inputs.len))
+  let digest = ctx.finish()
+  var hex = ""
+  for b in digest.data:
+    hex.add(toHex(b.int, 2).toLowerAscii)
+  return hex[0..15]
 
 proc buildToolsSection(cb: ContextBuilder): string =
   ## In deferred mode (registry has hidden tools), lists only tools
