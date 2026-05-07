@@ -261,6 +261,28 @@ proc getCappedHistory(al: AgentLoop, sessionKey: string):
   for i, m in raw:
     result[i] = capMessageSize(m)
 
+proc effectiveContextWindow*(al: AgentLoop): int =
+  ## Resolve the contextWindow that summarisation thresholds should
+  ## use for THIS turn. When the agent's provider is a fallback
+  ## chain, defers to the chain's `effectiveContextWindow` — which
+  ## returns the primary's window when primary is healthy, or the
+  ## smallest currently-usable fallback's window when primary is
+  ## degraded. Falls back to the construction-time `al.contextWindow`
+  ## when the chain has no usable entries with known windows (or the
+  ## provider isn't a fallback wrapper at all).
+  ##
+  ## Why: Lexi's primary (deepseek-v4-flash) has a 1M window, her
+  ## fallback (kimi-k2.5) has 200K. With both healthy, summarising
+  ## at the primary's 75% (750K) preserves headroom. The moment
+  ## deepseek 402's, the next call goes to kimi — which can't take
+  ## 750K. Summarising at the FALLBACK's 75% (150K) lets the chain
+  ## stay operational instead of size-exhausting every turn.
+  if al.provider of providers_fallback.FallbackLLMProvider:
+    let fp = providers_fallback.FallbackLLMProvider(al.provider)
+    let dyn = fp.effectiveContextWindow()
+    if dyn > 0: return dyn
+  al.contextWindow
+
 proc estimateTokens(messages: seq[providers_types.Message]): int =
   ## Heuristic: total characters across every field that goes on the
   ## wire to the LLM, divided by 4. Counts:
@@ -303,7 +325,12 @@ proc sessionStatus*(al: AgentLoop, sessionKey: string): SessionStatus =
   let history = al.getCappedHistory(sessionKey)
   let summary = al.sessions.getSummary(sessionKey)
   let tokens = estimateTokens(history)
-  let cw = al.contextWindow
+  # `effectiveContextWindow` reflects the chain's CURRENT routing —
+  # so when the primary is unhealthy, /session status reports the
+  # threshold the loop is actually using (smaller fallback's), not
+  # the primary's. Saves operators wondering why summarisation
+  # fired at 150K instead of 750K.
+  let cw = al.effectiveContextWindow()
   let thr = (cw * 75) div 100
   acquire(al.summarizingLock)
   let summarising = al.summarizing.getOrDefault(sessionKey, false)
@@ -591,8 +618,10 @@ proc summarizeSession(al: AgentLoop, sessionKey: string) {.async.} =
   if history.len <= 4: return
   let toSummarize = history[0 .. ^5]
 
-  # Oversized Message Guard
-  let maxMessageTokens = al.contextWindow div 2
+  # Oversized Message Guard — sized off the EFFECTIVE window so a
+  # turn that has to fit the smaller fallback gets a tighter
+  # per-message cap, not the primary's generous one.
+  let maxMessageTokens = al.effectiveContextWindow() div 2
   var validMessages: seq[providers_types.Message] = @[]
   for m in toSummarize:
     if m.isUser or m.isAssistant:
@@ -699,21 +728,21 @@ proc maybeSummarize(al: AgentLoop, opts: ProcessOptions) =
 
   let history = al.getCappedHistory(sessionKey)
   let tokenEstimate = estimateTokens(history)
-  # 75% of the model's actual context window. Pure token-based —
-  # no message-count short-circuit. The old `history.len > 20` cap
-  # fired at <1% of a 1M-token model's capacity and was responsible
-  # for the "Lexi forgets everything" pattern: long analytical
-  # threads got summarised every ~10-20 messages, and each rewrite
-  # diluted the previous summary, so older facts vanished into a
-  # one-paragraph blob.
-  let threshold = (al.contextWindow * 75) div 100
+  # 75% of the EFFECTIVE context window. Tracks which chain entry
+  # the next call would actually hit, so when the primary is
+  # unhealthy and the fallback is smaller, summarisation fires
+  # earlier — keeping the thread fitting whatever's currently
+  # serving requests. With a healthy primary, this is identical to
+  # using `al.contextWindow` directly.
+  let cw = al.effectiveContextWindow()
+  let threshold = (cw * 75) div 100
 
   if tokenEstimate > threshold:
     al.summarizing[sessionKey] = true
     release(al.summarizingLock)
 
-    let pct = if al.contextWindow > 0:
-                (tokenEstimate * 100) div al.contextWindow
+    let pct = if cw > 0:
+                (tokenEstimate * 100) div cw
               else: 0
     let canNotify = al.bus != nil and
                     opts.channel.len > 0 and

@@ -154,6 +154,42 @@ proc shouldFallback(errMsg: string): bool =
     if "API error " & code in errMsg: return true
   false
 
+proc effectiveContextWindow*(p: FallbackLLMProvider): int =
+  ## Which contextWindow should drive summarisation thresholds RIGHT
+  ## NOW, given the chain's current health state?
+  ##
+  ## The goal: when the primary is healthy, the loop should get the
+  ## primary's full headroom (no penalty for having a smaller
+  ## fallback in the chain). When the primary is unhealthy and a
+  ## smaller-window fallback would be the next attempt, the loop
+  ## needs to summarise EARLIER so the thread fits the fallback —
+  ## otherwise the chain size-skips every entry and exhausts.
+  ##
+  ## Resolution:
+  ##   1. Primary (entries[0]) is healthy AND has a known window
+  ##      → primary.contextWindow.
+  ##   2. Otherwise → smallest contextWindow across currently-usable
+  ##      entries. If primary is sad, this is the cap that any next
+  ##      attempt will hit; summarising to fit it keeps the chain
+  ##      operational.
+  ##   3. No usable entries with known windows → 0. Caller falls
+  ##      back to whatever static default it knows (typically the
+  ##      AgentLoop's construction-time `contextWindow`).
+  if p.entries.len == 0: return 0
+  let primary = p.entries[0]
+  let primaryHealthy =
+    p.healthRegistry == nil or p.healthRegistry.isUsable(primary.name)
+  if primaryHealthy and primary.contextWindow > 0:
+    return primary.contextWindow
+  # Primary sad → take the smallest usable fallback.
+  for entry in p.entries:
+    let healthy =
+      p.healthRegistry == nil or p.healthRegistry.isUsable(entry.name)
+    if not healthy: continue
+    if entry.contextWindow <= 0: continue
+    if result == 0 or entry.contextWindow < result:
+      result = entry.contextWindow
+
 proc nextUsableEntry*(p: FallbackLLMProvider, estTokens: int = 0):
                      tuple[idx: int, name: string, model: string,
                            exhausted: bool] =
