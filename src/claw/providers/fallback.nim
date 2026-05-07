@@ -93,9 +93,9 @@ const
     ## the failure-fallback log lines still want to identify which
     ## session triggered the event.
 
-  ContextHeadroomPct* = 75
-    ## Allow the request payload to consume at most 75% of an entry's
-    ## contextWindow. Two reasons for the wide reserve:
+  ContextHeadroomPct* = 60
+    ## Allow the request payload to consume at most 60% of an entry's
+    ## contextWindow. Three reasons for the wide reserve:
     ##
     ## 1. Output budget — every model needs space for its response.
     ##    Most LLMs we use cap output at 8K-32K, but reasoning models
@@ -109,12 +109,23 @@ const
     ##    so `bytes/4` UNDER-counts by 1.25-1.5×. A 200K estimate
     ##    can be 260K real on a Chinese-heavy thread.
     ##
-    ## With 75% headroom: estimate=750K against a 1M model → cap=750K
-    ## → real ~975K (worst case 1.3× slop) — still under 1M. For a
-    ## 256K kimi-k2.5: cap=192K → real ~250K — under the 262K server
-    ## ceiling we observed. Bumping above 80% risks Moonshot-style
-    ## "exceeded model token limit" rejections; lowering below 70%
-    ## starts wasting headroom unnecessarily on ASCII workloads.
+    ## 3. Empirically observed slop. SunGrowCN's Lexi sessions
+    ##    consistently real-tokenise at 265K against a 196K cap when
+    ##    the rune-aware estimator says <196K — so even with
+    ##    rune-counting we're still under by ~35%. Operating
+    ##    hypothesis: tool_call/result JSON contains JSON-encoded
+    ##    Chinese strings inside `tc.function.arguments` that get
+    ##    tokenised more aggressively than 1:1 per CJK char on
+    ##    Moonshot's tokeniser. Until we have real per-call
+    ##    estimate-vs-server-count data, conservative is correct.
+    ##
+    ## With 60% headroom: estimate=600K against a 1M model → cap=600K
+    ## → real ~900K (worst case 1.5× slop) — still under 1M. For a
+    ## 256K kimi-k2.5: cap=153K → real ~230K — comfortably under
+    ## the 262K server ceiling. Cost: trims usable headroom by 15
+    ## percentage points vs the 75% setting; summarisation fires
+    ## earlier on long threads. Bump back up once we have data
+    ## confirming the estimator/server gap is below 20%.
 
 proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
                               healthRegistry: ProviderHealthRegistry = nil):

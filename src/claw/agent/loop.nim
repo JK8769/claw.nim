@@ -875,9 +875,10 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let headroomPct = providers_fallback.ContextHeadroomPct
     # Per-iteration size telemetry — surfaces in the gateway log so
     # operators can correlate "the estimator said 200K, server saw
-    # 265K" cases against actual rejections, narrowing the slop
-    # ratio from guesswork to data.
-    debugCF("agent", "Mid-turn token estimate", {
+    # 265K" cases against actual rejections. INFO level (not debug)
+    # because operators usually filter debug; this signal is too
+    # important to lose in normal log filtering.
+    infoCF("agent", "Mid-turn token estimate", {
       "session": opts.sessionKey,
       "iteration": $iteration,
       "estimate": $midTurnTokens,
@@ -1014,6 +1015,35 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     except Exception as e:
       errorCF("agent", "LLM API request failed", {"error": e.msg, "iteration": $iteration}.toTable)
       snapshot.lastError = "LLM: " & e.msg
+      # Estimator-vs-server calibration log. When the server rejects
+      # with "exceeded model token limit: N (requested: M)", log the
+      # gap between our estimate and M so the operator can read the
+      # slop ratio directly. Format-tolerant — the substring search
+      # works across opencode-go, OpenRouter wrap, etc., without
+      # parsing JSON. If we can't find the requested-count, we skip.
+      if "exceeded model token limit" in e.msg or
+         "exceeded model context limit" in e.msg or
+         "context length exceeded" in e.msg:
+        var serverCount = ""
+        let reqIdx = e.msg.find("requested: ")
+        if reqIdx >= 0:
+          let after = e.msg[reqIdx + 11 ..^ 1]
+          for c in after:
+            if c in {'0'..'9'}: serverCount.add(c)
+            else: break
+        let estLast = estimateTokens(currentMessages)
+        let ratio =
+          if serverCount.len > 0 and estLast > 0:
+            let r = (try: parseInt(serverCount).float except: 0.0)
+            if r > 0: r / estLast.float else: 0.0
+          else: 0.0
+        infoCF("agent", "Estimator vs server slop", {
+          "session": opts.sessionKey,
+          "iteration": $iteration,
+          "our_estimate": $estLast,
+          "server_count": serverCount,
+          "ratio_server_over_estimate": $ratio,
+          "model": al.model}.toTable)
       if finalContent == "":
         finalContent = "Error communicating with LLM provider: " & e.msg
       break
