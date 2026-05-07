@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 2
+const PolicyRulesVersion* = 3
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -309,6 +309,10 @@ const PolicyRulesVersion* = 2
   ##       filters/highlights by current channel; technical-communication
   ##       handbook adds a Phase C clause about consulting channel-tagged
   ##       skills before defaulting to inline markdown.
+  ##   3 — channel-active skill recipes inlined as a top-level prompt
+  ##       section (eliminates the `read_file` round-trip); Phase C
+  ##       handbook tightened to imperative MUST-rules with concrete
+  ##       triggers (>5 row table → MUST sheet; etc.).
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
@@ -783,6 +787,18 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
 The following skills extend your capabilities. To use a skill, call `read_file` with path `<location>/SKILL.md` — where `<location>` is the exact value in that skill's `<location>` tag below. Do not guess paths.
 
 $1""".format(skillsSummary))
+
+  # Inline the full SKILL.md content for channel-active skills.
+  # Without this, the agent has the catalog but not the patterns —
+  # `<active_for_channel>true</active_for_channel>` plus a handbook
+  # clause was empirically not enough to overcome the default
+  # inline-markdown bias. Inlining the decision matrix eliminates the
+  # `read_file` round-trip and puts the patterns where the model
+  # attends most (top-level prompt section).
+  let channelRecipes = cb.skillsLoader.buildChannelActiveSkillRecipes(
+    cb.allowedSkills, channel)
+  if channelRecipes != "":
+    parts.add(channelRecipes)
 
   # Handbooks — per-competency HOW-TO rules, pulled via practices +
   # team-inherited competencies. Applies only when the agent actually

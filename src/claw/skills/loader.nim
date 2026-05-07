@@ -243,3 +243,53 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
       s.emitOne(lines, activeForChannel = false)
   lines.add("</skills>")
   return lines.join("\n")
+
+proc buildChannelActiveSkillRecipes*(sl: SkillsLoader,
+                                      allowedNames: seq[string],
+                                      currentChannel: string): string =
+  ## Inline the FULL SKILL.md body (frontmatter stripped) for any skill
+  ## tagged for the current channel. Returned as a top-level prompt
+  ## section so the agent has the decision matrix always-on, not behind
+  ## a `read_file` round-trip.
+  ##
+  ## Why: `<active_for_channel>true</active_for_channel>` plus a handbook
+  ## clause saying "consult the SKILL.md before delivering" was not
+  ## strong enough on its own to override the model's default
+  ## inline-markdown bias. Inlining the recipes eliminates the extra
+  ## tool call AND puts the patterns where the model's attention is
+  ## strongest (top-level system-prompt sections).
+  ##
+  ## Cost: ~2-3K tokens per channel-active skill, paid once per turn.
+  ## Empty when channel is unspecified, "social" (introspection), or
+  ## no allowed skill matches the channel.
+  if currentChannel.len == 0 or currentChannel.toLowerAscii() == "social":
+    return ""
+  let skills = sl.listSkills()
+  if skills.len == 0: return ""
+  var blocks: seq[string]
+  for s in skills:
+    # Allowedness gate matches buildSkillsSummary's logic.
+    if allowedNames.len > 0 and s.source != "workstation":
+      let nameHyphen = s.name.replace("_", "-")
+      if s.name notin allowedNames and nameHyphen notin allowedNames:
+        continue
+    # Channel match.
+    if s.channels.len == 0: continue
+    var matches = false
+    for c in s.channels:
+      if c.toLowerAscii() == currentChannel.toLowerAscii():
+        matches = true; break
+    if not matches: continue
+    # Inline content.
+    if not fileExists(s.path): continue
+    let content = stripFrontmatter(readFile(s.path)).strip()
+    if content.len == 0: continue
+    blocks.add("## " & s.name & " (active for `" & currentChannel & "`)\n\n" & content)
+  if blocks.len == 0: return ""
+  return "# Channel-Active Skill Recipes\n\nThe following skill " &
+         "content is INLINED below because the skill is tagged for " &
+         "the current channel (`" & currentChannel & "`). You do NOT " &
+         "need to call `read_file` to access these recipes — apply " &
+         "the decision matrices and patterns below DIRECTLY when " &
+         "planning Phase C delivery.\n\n" &
+         blocks.join("\n\n---\n\n")
