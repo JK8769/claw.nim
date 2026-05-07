@@ -310,24 +310,46 @@ proc maybeTranslate(cfg: ref Config, src, userSample: string,
   except:
     return src
 
+proc resolveSenderEntity*(graph: WorldGraph, msg: InboundMessage): WorldEntityID =
+  ## Resolve a sender to an entity ID using a channel-aware identifier
+  ## chain. For most channels this is just (channelKey, sender_id);
+  ## Feishu adds tenant-stable union_id / user_id fallbacks because
+  ## Feishu issues a different open_id per app, so a binding made
+  ## via one app won't match a message arriving through another.
+  ##
+  ## The chain in order:
+  ##   1. `<channel>:<app_id>` + sender_id  (or bare `<channel>` if no app_id)
+  ##   2. Feishu only — `feishu:union` + metadata.union_id
+  ##   3. Feishu only — `feishu:user`  + metadata.user_id
+  ##
+  ## Returns 0 when no chain hits. Mirrors the dispatcher's auth-gate
+  ## fallback (gateway.nim message-recognition path) so admin/CLI
+  ## callers get the same identity resolution as regular messages.
+  if graph == nil: return WorldEntityID(0)
+  let channelKey =
+    if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
+      msg.channel & ":" & msg.metadata["app_id"]
+    else: msg.channel
+  let (entID, _) = graph.resolveUserGraph(channelKey, msg.sender_id)
+  if uint32(entID) > 0: return entID
+  if msg.channel == "feishu":
+    let uid = msg.metadata.getOrDefault("union_id", "")
+    if uid.len > 0:
+      let (x, _) = graph.resolveUserGraph("feishu:union", uid)
+      if uint32(x) > 0: return x
+    let usid = msg.metadata.getOrDefault("user_id", "")
+    if usid.len > 0:
+      let (x, _) = graph.resolveUserGraph("feishu:user", usid)
+      if uint32(x) > 0: return x
+  WorldEntityID(0)
+
 proc resolveCallerNc(cfg: ref Config, msg: InboundMessage): string =
   ## Resolve the caller's `nc:N` alias from an inbound message.
   ## Returns "" when the world graph won't load or the user has no
   ## entity binding yet — call sites decide between "error" and
   ## "fall back to an explicit nc:id arg".
-  ##
-  ## Channel-key construction matches `resolveCallerPermission` (and
-  ## the binding flow): when an `app_id` metadata field is present
-  ## (Feishu multi-app, etc.), it's appended so the same `sender_id`
-  ## across two app installs resolves to two distinct entities.
-  let workspace = cfg[].workspacePath()
-  let g = loadWorld(workspace)
-  if g == nil: return ""
-  let channelKey =
-    if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-      msg.channel & ":" & msg.metadata["app_id"]
-    else: msg.channel
-  let (entID, _) = g.resolveUserGraph(channelKey, msg.sender_id)
+  let g = loadWorld(cfg[].workspacePath())
+  let entID = resolveSenderEntity(g, msg)
   if uint32(entID) == 0: return ""
   toAlias(entID)
 
@@ -336,14 +358,8 @@ proc resolveCallerPermission(cfg: ref Config, msg: InboundMessage): Permission =
   ## tiers (pmSuperAdmin > pmAdmin > pmInternal > pmAny). The entry
   ## gate accepts pmInternal+; per-subcommand checks tighten further
   ## (e.g. /user bind needs pmSuperAdmin, /user add needs pmAdmin).
-  let workspace = cfg[].workspacePath()
-  let graph = loadWorld(workspace)
-  if graph == nil: return pmAny
-  let channelKey =
-    if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-      msg.channel & ":" & msg.metadata["app_id"]
-    else: msg.channel
-  let (entID, _) = graph.resolveUserGraph(channelKey, msg.sender_id)
+  let graph = loadWorld(cfg[].workspacePath())
+  let entID = resolveSenderEntity(graph, msg)
   if uint32(entID) == 0 or not graph.entities.hasKey(entID):
     return pmAny
   let p = graph.entities[entID].role.toLowerAscii
@@ -2424,18 +2440,8 @@ Options:
           if msg.sender_id.startsWith("system:"):
             recognized = true
           if g2 != nil and not recognized:
-            let (entID, _) = g2.resolveUserGraph(channelKey2, msg.sender_id)
-            if uint32(entID) > 0: recognized = true
-            if not recognized and msg.channel == "feishu":
-              let uid = msg.metadata.getOrDefault("union_id", "")
-              if uid.len > 0:
-                let (x, _) = g2.resolveUserGraph("feishu:union", uid)
-                if uint32(x) > 0: recognized = true
-              if not recognized:
-                let usid = msg.metadata.getOrDefault("user_id", "")
-                if usid.len > 0:
-                  let (x, _) = g2.resolveUserGraph("feishu:user", usid)
-                  if uint32(x) > 0: recognized = true
+            if uint32(resolveSenderEntity(g2, msg)) > 0:
+              recognized = true
           if not recognized:
             # Structured trace so the JSONL log captures every refusal
             # with enough context to diagnose ghost-reception cases.
@@ -2482,24 +2488,7 @@ Options:
         if response == "":
           let g3 = msgGraph
           if g3 != nil:
-            let channelKey3 =
-              if msg.metadata.hasKey("app_id") and msg.metadata["app_id"].len > 0:
-                msg.channel & ":" & msg.metadata["app_id"]
-              else: msg.channel
-            var entID = WorldEntityID(0)
-            let (rid, _) = g3.resolveUserGraph(channelKey3, msg.sender_id)
-            if uint32(rid) > 0:
-              entID = rid
-            elif msg.channel == "feishu":
-              let uid = msg.metadata.getOrDefault("union_id", "")
-              if uid.len > 0:
-                let (x, _) = g3.resolveUserGraph("feishu:union", uid)
-                if uint32(x) > 0: entID = x
-              if uint32(entID) == 0:
-                let usid = msg.metadata.getOrDefault("user_id", "")
-                if usid.len > 0:
-                  let (x, _) = g3.resolveUserGraph("feishu:user", usid)
-                  if uint32(x) > 0: entID = x
+            let entID = resolveSenderEntity(g3, msg)
             if uint32(entID) > 0 and g3.entities.hasKey(entID):
               let ent = g3.entities[entID]
               # Internal users bypass the gate entirely.
