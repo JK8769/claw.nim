@@ -296,7 +296,21 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 10
+proc buildAgentMemorySection(cb: ContextBuilder): string =
+  ## Inject `<office>/memory/MEMORY.md` if present — the agent's
+  ## always-on reflex layer (cross-conversation, never names a
+  ## specific partner). Reflexes here are agent-specific lessons
+  ## that don't fit in any cross-agent competency. Often empty for
+  ## a freshly-bootstrapped agent; filled by operator hand or by
+  ## promoted reflections over time. Skipped when the file is
+  ## missing or empty.
+  let path = cb.workspace / "memory" / "MEMORY.md"
+  if not fileExists(path): return ""
+  let body = try: readFile(path).strip except: ""
+  if body.len == 0: return ""
+  return "# Personal Reflexes\n\nLessons specific to you. Apply alongside the cross-agent competency handbooks above.\n\n" & body
+
+const PolicyRulesVersion* = 11
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -367,6 +381,20 @@ const PolicyRulesVersion* = 10
   ##       promoted to a card-with-buttons instead of rejected by
   ##       the table-row guard. Bot-MCP path for `docs +create`
   ##       confirmed working on this deployment.
+  ##  11 — memory-as-substrate Phase 1.5: technical-communication
+  ##       gains a Phase 0 intake section (scope confirmation,
+  ##       trigger-words ≠ commitment, "ask one focused question
+  ##       when intent is ambiguous") and a TC-9 async-handoff rule
+  ##       (task_id is not the deliverable). New competencies
+  ##       `solar-operator` and `data-analyst` (orthogonal — solar
+  ##       knows what data means; data-analyst knows what to do
+  ##       with it; compose for end-to-end). Anygen SKILL.md now
+  ##       documents async semantics; sungrow SKILL.md trims
+  ##       "default" wording and cross-references anygen. Agent's
+  ##       per-office MEMORY.md is now loaded as a "Personal
+  ##       Reflexes" section between competency handbooks and
+  ##       partner memory — empty by default, filled by hand-
+  ##       curation or promoted reflections over time.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
@@ -395,6 +423,7 @@ proc policyHashInputs*(cb: ContextBuilder, agentName: string,
       recipeHash.add("\n--ch:" & ch & "--\n" & r)
   result = "v" & $PolicyRulesVersion & "\n" &
            cb.buildHandbooksSection(agentName, practices) &
+           cb.buildAgentMemorySection() &
            recipeHash
 
 proc computePolicyHash*(cb: ContextBuilder, agentName: string,
@@ -907,6 +936,13 @@ $1""".format(skillsSummary))
         break
     let handbookSection = cb.buildHandbooksSection(recipientID, practices)
     if handbookSection != "": parts.add(handbookSection)
+
+    # Per-agent reflex layer — sits between cross-agent handbooks
+    # and the per-conversation memory pulled below. MEMORY.md is
+    # the always-on summary; raw experiences/reflections live in
+    # JSONL files and are recall-on-demand only.
+    let agentMemorySection = cb.buildAgentMemorySection()
+    if agentMemorySection != "": parts.add(agentMemorySection)
 
   # Memory — two-tier:
   #   1. conversation memory scoped to THIS partner's nc:id file only
