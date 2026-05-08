@@ -1,35 +1,38 @@
-import std/[os, times, strutils, locks, asyncdispatch]
+## Heartbeat — prompt + audit-log helpers.
+##
+## **History note (2026-05-09):** the in-process timer loop that this
+## module used to own is gone. Heartbeats are now scheduled-task entries
+## in `services/scheduler.nim` (kind=`heartbeat_tick`), registered at
+## boot by `services/heartbeat_orchestrator.nim`, and dispatched from
+## `gateway.nim`'s cronHandlerLogic. What remains here are the two pure
+## helpers the dispatcher calls — prompt construction (which scans the
+## agent's mailbox + reads HEARTBEAT.md every tick, freshly) and audit
+## logging.
+##
+## Why split: the scheduler already has the timer + persistence + audit
+## machinery; running a parallel heartbeat-only timer was duplicate
+## plumbing. Moving the dispatch through the scheduler also makes
+## heartbeats discoverable via `/schedule list`, debuggable via the
+## same logs as other scheduled work, and reconciled at boot via the
+## same path as skill-declared schedules.
+
+import std/[os, times, strutils]
 import ../agent/context
 
-type
-  HeartbeatService* = ref object
-    workspace*: string
-    onHeartbeat*: proc (prompt: string): Future[void] {.async.}
-    interval*: Duration
-    enabled*: bool
-    lock*: Lock
-    running*: bool
-
-proc newHeartbeatService*(workspace: string, onHeartbeat: proc (prompt: string): Future[void] {.async.}, intervalS: int, enabled: bool): HeartbeatService =
-  var hs = HeartbeatService(
-    workspace: workspace,
-    onHeartbeat: onHeartbeat,
-    interval: initDuration(seconds = intervalS),
-    enabled: enabled,
-    running: false
-  )
-  initLock(hs.lock)
-  return hs
-
-proc buildPrompt(hs: HeartbeatService): string =
-  let notesFile = hs.workspace / "memory" / "HEARTBEAT.md"
+proc buildHeartbeatPrompt*(workspace: string): string =
+  ## Build the synthetic-message body the scheduler hands to
+  ## `AgentLoop.processOneShot` when a heartbeat_tick fires.
+  ##
+  ## Pure read of disk state at call time — `mail/` directory and
+  ## `memory/HEARTBEAT.md`. Re-runs every tick so file edits land
+  ## without a gateway restart.
+  let notesFile = workspace / "memory" / "HEARTBEAT.md"
   var notes = ""
   if fileExists(notesFile):
     notes = readFile(notesFile)
 
-  # Check for unread mail
   var mailList = ""
-  let mailFiles = scanMailbox(hs.workspace)
+  let mailFiles = scanMailbox(workspace)
   if mailFiles.len > 0:
     mailList = "\n**MAILBOX ALERT**: You have new/unread files in your `mail/` directory: " & mailFiles.join(", ") & ". Please review them if they contain important instructions or coordination.\n"
 
@@ -48,8 +51,13 @@ Be proactive in identifying potential issues or improvements.
 $3
 """.format(now, mailList, notes)
 
-proc log(hs: HeartbeatService, message: string) =
-  let logFile = hs.workspace / "memory" / "heartbeat.log"
+proc logHeartbeat*(workspace, message: string) =
+  ## Append a timestamped line to `<workspace>/memory/heartbeat.log`.
+  ## Used by the dispatcher for "skipped — busy", "skipped — empty",
+  ## and "tick errored" notes that don't belong in the gateway's
+  ## global log. Failures are silent (auditing should never crash a
+  ## tick).
+  let logFile = workspace / "memory" / "heartbeat.log"
   let timestamp = now().format("yyyy-MM-dd HH:mm:ss")
   try:
     let f = open(logFile, fmAppend)
@@ -57,27 +65,3 @@ proc log(hs: HeartbeatService, message: string) =
     f.close()
   except:
     discard
-
-proc runLoop(hs: HeartbeatService) {.async.} =
-  while hs.running:
-    if not hs.enabled: 
-      await sleepAsync(1000)
-      continue
-
-    let prompt = hs.buildPrompt()
-    if hs.onHeartbeat != nil:
-      try:
-        await hs.onHeartbeat(prompt)
-      except Exception as e:
-        hs.log("Heartbeat error: " & e.msg)
-    
-    await sleepAsync(hs.interval.inMilliseconds.int)
-
-proc start*(hs: HeartbeatService) {.async.} =
-  if hs.running: return
-  if not hs.enabled: return
-  hs.running = true
-  discard runLoop(hs)
-
-proc stop*(hs: HeartbeatService) =
-  hs.running = false

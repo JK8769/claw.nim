@@ -245,6 +245,36 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
             "source_skill": job.sourceSkill}.toTable)
     return
 
+  if job.payload.kind == "heartbeat_tick":
+    # The framework-fold of the prior HeartbeatService timer. Same
+    # behaviour as the old runLoop: skip-if-busy (defer cleanly when
+    # the agent has live work — would compete for provider chain),
+    # rebuild the prompt fresh from the agent's mailbox + HEARTBEAT.md
+    # (so file edits land without restart), dispatch via processOneShot
+    # so no JSONL accumulates between ticks.
+    if not gCtx.offices.hasKey(officeKey):
+      gCtx.offices[officeKey] = makeAgentLoop(agentName)
+    let office = gCtx.offices[officeKey]
+    if office.liveTaskCount > 0:
+      infoCF("cronHandler",
+             "heartbeat_tick skipped — agent busy",
+             {"job": job.name, "agent": agentName,
+              "live_tasks": $office.liveTaskCount}.toTable)
+      return
+    let agentWorkspace = gCtx.cfg.workspacePath() / "offices" / officeKey
+    let prompt = buildHeartbeatPrompt(agentWorkspace)
+    try:
+      discard await office.processOneShot(
+        prompt, tools_registry.SystemHeartbeatSender)
+      infoCF("cronHandler", "heartbeat_tick completed",
+             {"job": job.name, "agent": agentName}.toTable)
+    except CatchableError as e:
+      logHeartbeat(agentWorkspace, "Heartbeat error: " & e.msg)
+      warnCF("cronHandler", "heartbeat_tick raised — continuing",
+             {"job": job.name, "agent": agentName,
+              "error": e.msg}.toTable)
+    return
+
   if job.payload.deliver:
     var meta = initTable[string, string]()
     if job.payload.replyToMessageID.len > 0:
@@ -2307,19 +2337,6 @@ Options:
   # message doesn't pay the office-construction latency.
   if not gCtx.offices.hasKey("lexi"):
     gCtx.offices["lexi"] = makeAgentLoop("Lexi")
-  # Heartbeat orchestration: Layer 2 reads each agent's
-  # `heartbeat_seconds` from BASE.json and spawns one stateless-tick
-  # service per opted-in agent. Replaces the previous hardcoded
-  # "Lexi every 4h" path. Operators now declare per-agent cadences
-  # in BASE.nims (`agent "Atlas": heartbeat 1800` etc.) and the
-  # orchestrator handles skip-if-busy + non-persisting dispatch.
-  # See `services/heartbeat_orchestrator.nim` for the policy details.
-  let officeFor = proc(name: string): AgentLoop {.gcsafe.} =
-    {.cast(gcsafe).}:
-      let key = name.toLowerAscii
-      if gCtx == nil: return nil
-      if gCtx.offices.hasKey(key): return gCtx.offices[key]
-      return nil
   # Load skill-declared schedules from each skill's SCHEDULES.json
   # and reconcile with the persistent scheduler store. This runs once
   # per gateway boot — same way `requires.tools` and `requires.deps`
@@ -2395,7 +2412,13 @@ Options:
                 "kept": $r.kept,
                 "removed": $r.removed}.toTable)
 
-  let heartbeats = startHeartbeats(cfg, officeFor)
+  # Heartbeats fold into the unified scheduler — register one
+  # heartbeat_tick scheduled job per opted-in agent. Replaces the
+  # prior per-agent HeartbeatService timer. Same skip-if-busy
+  # behaviour, same processOneShot dispatch, fewer parallel timer
+  # loops; everything visible via /schedule list and
+  # automation/jobs.json.
+  registerHeartbeats(cfg, cronServiceInstance)
 
   # IPC setup — stdio (Zen mode) or socket (headless daemon)
   var stdioServer: StdioServer = nil
@@ -3002,9 +3025,8 @@ Options:
         await sleepAsync(1000)
   )()
 
-  # heartbeats already started inside startHeartbeats(); keep the var
-  # alive so the closure captures don't get GC'd.
-  discard heartbeats
+  # Heartbeats live as scheduled jobs in cronServiceInstance; no
+  # separate timer machinery to start.
   asyncCheck cronServiceInstance.start()
   asyncCheck gChanManager.startAll()
 
