@@ -329,15 +329,33 @@ proc buildPostContent*(text: string): string =
   let lines = text.split("\n")
 
   var i = 0
+  # Group consecutive non-fenced, non-table lines into a single `tag:md`
+  # paragraph so Feishu's md renderer styles bold/italic/inline-code/
+  # headers/lists/links across the whole prose chunk. Without this, each
+  # line becomes a separate `tag:text` paragraph (parseLine's default)
+  # and we lose all markdown styling on prose content.
+  var prosePending: seq[string] = @[]
+
+  proc flushProse() =
+    if prosePending.len == 0: return
+    let prose = prosePending.join("\n")
+    if prose.strip.len > 0:
+      rows.add(%*[{"tag": "md", "text": prose}])
+    prosePending = @[]
+
   while i < lines.len:
     let line = lines[i]
     let trimmed = line.strip()
 
     # Fenced code block: ` ```<lang> ... ``` `
-    # Promotes to a `tag:code_block` element so Feishu renders it as a
-    # proper code box (scroll + copy + syntax highlight) instead of
-    # leaving it as monospaced text inside `tag:md`.
+    # Promotes to a `tag:code_block` element so Feishu renders it with
+    # syntax highlighting (60+ languages supported per the open-platform
+    # docs). Note: Feishu IM does NOT add scroll/copy buttons to
+    # code_block elements (those are Lark Docs / CardKit features) —
+    # large files should be sent as separate `--file` attachments by
+    # the framework auto-emit path, not embedded inline here.
     if trimmed.startsWith("```"):
+      flushProse()
       let lang = trimmed[3..^1].strip()
       var codeLines: seq[string] = @[]
       inc i
@@ -356,6 +374,7 @@ proc buildPostContent*(text: string): string =
 
     # Detect table: look for separator row
     if i + 1 < lines.len and line.contains("|") and isTableSeparatorRow(lines[i+1]):
+      flushProse()
       let headerCells = splitTableRow(line)
       let numCols = headerCells.len
       var colWidths = newSeq[int](numCols)
@@ -394,9 +413,13 @@ proc buildPostContent*(text: string): string =
       i = j
       continue
 
-    rows.add(parseLine(line))
+    # Accumulate prose lines so they're flushed together as one
+    # `tag:md` paragraph (preserves Feishu's markdown rendering of
+    # bold/italic/inline-code/headers/lists/links across multiple lines).
+    prosePending.add(line)
     inc i
 
+  flushProse()
   result = $ %*{"zh_cn": {"content": rows}}
 
 proc tryExtractInteractiveCard*(content: string): Option[string] =

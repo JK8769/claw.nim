@@ -1,4 +1,4 @@
-import std/[asyncdispatch, json, tables, strutils]
+import std/[asyncdispatch, json, tables, strutils, parseutils, sequtils, algorithm]
 import types
 
 type
@@ -70,6 +70,112 @@ proc countLines(content: string): int =
   result = 1
   for ch in content:
     if ch == '\n': result.inc
+
+# ── Phase 2: trailing-numbered-options detection + CardKit promotion ──
+#
+# When an agent's `reply` content ends with 2-4 numbered options (TC-6
+# pattern), we auto-promote the message to a Feishu interactive card
+# with action buttons. The card body is the prose above the options;
+# each option becomes a button whose `value.action` is the option text.
+# Feishu's `card.action.trigger` callback (already handled in
+# `feishu.nim:733-751`) converts a click into an inbound message
+# routed back to the agent — so the user gets one-click follow-ups
+# instead of having to type "1" or copy the option text.
+#
+# Detection is conservative: only triggers when the trailing block is
+# 2-4 consecutive `<N>. <text>` lines starting at 1, with non-empty
+# text. Anything else falls through to the normal text path.
+
+type ExtractedOptions = object
+  found: bool
+  prefix: string
+  options: seq[string]
+
+proc extractTrailingOptions(content: string): ExtractedOptions =
+  ## Look at content's tail. If it ends with 2-4 consecutive
+  ## "<N>. <text>" lines starting at 1, return found=true with the
+  ## body (before the list) and the option texts (without the number).
+  let lines = content.splitLines()
+  result.found = false
+  if lines.len < 2: return
+
+  var idx = lines.len - 1
+  while idx >= 0 and lines[idx].strip.len == 0: dec idx
+
+  type Collected = tuple[num: int, text: string, lineIdx: int]
+  var collected: seq[Collected] = @[]
+  while idx >= 0:
+    let stripped = lines[idx].strip(leading = true, trailing = false)
+    var num: int = 0
+    let parsed = parseInt(stripped, num, 0)
+    if parsed > 0 and parsed < stripped.len and stripped[parsed] == '.':
+      let after = stripped[parsed+1 ..< stripped.len].strip()
+      if after.len > 0 and num >= 1 and num <= 9:
+        collected.add((num, after, idx))
+        dec idx
+        continue
+    break
+
+  if collected.len < 2 or collected.len > 4:
+    return
+
+  # Reverse for chronological order; verify numbers are 1..N
+  collected.reverse
+  for i, c in collected:
+    if c.num != i + 1: return
+
+  result.found = true
+  result.options = collected.mapIt(it.text)
+  let firstOptLine = collected[0].lineIdx
+  if firstOptLine > 0:
+    var prefixLines = lines[0 ..< firstOptLine]
+    while prefixLines.len > 0 and prefixLines[^1].strip.len == 0:
+      prefixLines.setLen(prefixLines.len - 1)
+    result.prefix = prefixLines.join("\n")
+  else:
+    result.prefix = ""
+
+proc buildOptionsCard(prefix: string, options: seq[string]): string =
+  ## Build CardKit 2.0 JSON for the auto-promoted options card.
+  ## Body = markdown rendering of `prefix` (whatever the agent wrote
+  ## before the numbered list); actions = one button per option, with
+  ## the full option text as the click `value.action`.
+  ##
+  ## Returns the nimclaw_feishu envelope expected by the feishu
+  ## channel adapter's `tryExtractInteractiveCard`.
+  let buttons = newJArray()
+  for i, opt in options:
+    # Truncate very long button labels for visual fit; the full option
+    # text still flows through `value.action` so the click callback
+    # carries the complete instruction.
+    let label = if opt.len > 28: opt[0 ..< 25] & "..." else: opt
+    let btnType =
+      if i == 0: "primary"
+      elif options.len >= 3 and i == options.len - 1: "danger"
+      else: "default"
+    buttons.add(%*{
+      "tag": "button",
+      "text": {"tag": "plain_text", "content": label},
+      "type": btnType,
+      "value": {"action": opt}
+    })
+
+  let elements = newJArray()
+  if prefix.strip.len > 0:
+    elements.add(%*{"tag": "markdown", "content": prefix})
+  elements.add(%*{"tag": "action", "actions": buttons})
+
+  let card = %*{
+    "schema": "2.0",
+    "body": {"elements": elements}
+  }
+
+  return $(%*{
+    "nimclaw_feishu": {
+      "msg_type": "interactive",
+      "card": card
+    }
+  })
 
 method name*(t: ReplyTool): string = "reply"
 method description*(t: ReplyTool): string = "Send the FINAL answer for the current task to the user. For long tasks: a synthesis (TL;DR + key findings + decisions) plus three explicit numbered next-step options. On Feishu specifically: do NOT include file paths, bash commands, or full terminal output that the framework auto-emitted earlier in this turn — operators have already seen those. Focus the reply on what the work MEANS and what to do next. For short tasks: a direct answer is fine. NOT for in-flight progress (use `reply_progress` for that)."
@@ -211,13 +317,30 @@ method execute*(t: ReplyTool, args: Table[string, JsonNode]): Future[string] {.a
         t.guardRetryCount[t.sessionKey] = curRetries + 1
         return rejection
     # else: max retries reached — fall through to send with prefix
-  let outboundContent =
+  var outboundContent =
     if t.channel == "feishu" and isPlainTextReply and
        t.guardRetryCount.getOrDefault(t.sessionKey, 0) >= GuardMaxRetries:
       "[discipline violation: format guards failed after " &
       $GuardMaxRetries & " retries — content sent as-is]\n\n" & content
     else:
       content
+
+  # Phase 2 — auto-promote trailing numbered options into a CardKit
+  # interactive card. When the agent ends a reply with 2-4 numbered
+  # options (TC-6 pattern) on Feishu, ship as an interactive card with
+  # action buttons so the user can click instead of typing the option
+  # text. Card click → Feishu card.action.trigger callback →
+  # feishu.nim creates an inbound message routing back to the agent
+  # (handler at feishu.nim:733-751 already exists). Only triggers on
+  # plain-text replies on the feishu channel; explicit `feishu_card`
+  # replies skip this path.
+  if t.channel == "feishu" and isPlainTextReply:
+    let extracted = extractTrailingOptions(outboundContent)
+    if extracted.found:
+      outboundContent = buildOptionsCard(extracted.prefix, extracted.options)
+      # Reset metadata format — the card carries its own structure;
+      # markdown flag would just confuse the channel adapter.
+      metadata.del("format")
 
   try:
     await t.sendCallback(t.channel, t.chatID, outboundContent, t.agentName, t.replyToMessageID, t.appID, metadata)

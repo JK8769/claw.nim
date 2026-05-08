@@ -1592,6 +1592,45 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                 "session": opts.sessionKey,
                 "chars": $viz.len,
                 "iteration": $iteration}.toTable)
+
+              # Phase 1 — Lark Doc / file-attachment handoff for large
+              # files. Feishu IM `tag:code_block` gives syntax
+              # highlighting but no scroll/copy. For files above the
+              # threshold, send the FULL content as a separate
+              # file-attachment message so the user can click the
+              # filename and get Feishu's full file viewer (preview,
+              # copy, forward, download). Sidesteps the lark docs
+              # +create user-auth requirement; bot auth is enough for
+              # file attachments. Only applies to write_file with the
+              # path+content args; spawn/shell don't have a single
+              # file artifact to attach.
+              if tc.name == "write_file" and
+                 tc.arguments.hasKey("path") and
+                 tc.arguments.hasKey("content"):
+                let path = tc.arguments["path"].getStr()
+                let content = tc.arguments["content"].getStr()
+                if path.len > 0 and countLines(content) > 30:
+                  let basename = path.lastPathPart
+                  var fileMeta = initTable[string, string]()
+                  fileMeta["file"] = path
+                  fileMeta["framework_emit"] = "true"
+                  try:
+                    await al.sendCallback(opts.channel, opts.chatID,
+                                           "📁 Full file: " & basename,
+                                           al.agentName,
+                                           opts.replyToMessageID,
+                                           opts.appID, fileMeta)
+                    al.sessions.addWithSpeaker(opts.sessionKey,
+                      "assistant",
+                      "📁 Full file attached: `" & path & "`",
+                      "framework:auto-emit")
+                    infoCF("agent", "Auto-emit file attachment", {
+                      "path": path,
+                      "session": opts.sessionKey,
+                      "lines": $countLines(content)}.toTable)
+                  except Exception as e:
+                    warnCF("agent", "Auto-emit file attach failed",
+                      {"error": e.msg, "path": path}.toTable)
             except Exception as e:
               warnCF("agent", "Auto-emit failed",
                 {"error": e.msg, "tool": tc.name}.toTable)
