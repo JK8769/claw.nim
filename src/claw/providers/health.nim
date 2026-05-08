@@ -116,6 +116,13 @@ proc errorClass*(errMsg: string): tuple[
   ##   - 5xx → transient backend hiccup; usually clears in seconds.
   ##   - Curly request failed → network drop or upstream cut the
   ##     connection mid-stream; same shape as 5xx.
+  ##   - "Cancelled by user request" → /session stop killed the
+  ##     in-flight POST. Not a provider fault; surfaces here only
+  ##     because curly's cancel API uses the same error path as a
+  ##     real network error. Don't penalise the provider for our
+  ##     own intentional cancel.
+  if "Cancelled by user request" in errMsg:
+    return (hsHealthy, 0)
   if "Insufficient Balance" in errMsg or "(402)" in errMsg:
     return (hsUnhealthy, 0)
   if "(401)" in errMsg:
