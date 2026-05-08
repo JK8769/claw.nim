@@ -2,7 +2,7 @@
 ## gateway — Long-running gateway process: agents, channels, cron.
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
-import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
+import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode, sequtils]
 import lib/curl as curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop,
        agent/context as agent_ctx,
@@ -319,10 +319,85 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
         readResults.add(ReadResult(
           duty: duty, content: "Error: " & e.msg, isEmpty: false))
 
-    # Phase 2 — Auto-act. (Stub for now; sub-commit 2 ships hint-only.
-    # When auto mode lands, evaluate `when`, substitute {result.X}
-    # into autoArgs, fire tool deterministically, capture confirmation
-    # for the prompt phase.)
+    # Phase 2 — Auto-act. For each duty with act.mode == hamAuto,
+    # evaluate the `when` predicate against the read result, build
+    # tool args via template substitution, fire the tool
+    # deterministically (no LLM round-trip), capture a one-line
+    # confirmation for the prompt phase so the agent sees what
+    # already happened.
+    proc applyHeartbeatTemplate(s: string, readResult: string): string =
+      ## Minimal template substitution for auto.args. Supported tokens:
+      ##   {date}     → YYYY-MM-DD
+      ##   {datetime} → YYYY-MM-DD HH:MM:SS
+      ##   {result}   → the duty's read.result as a string (whole)
+      ## JSON-path patterns like {result.key.nested} are reserved
+      ## for a follow-up; for now they pass through unchanged.
+      let now = now()
+      result = s
+      result = result.replace("{date}", now.format("yyyy-MM-dd"))
+      result = result.replace("{datetime}", now.format("yyyy-MM-dd HH:mm:ss"))
+      result = result.replace("{result}", readResult)
+    proc substituteJsonArgs(node: JsonNode, readResult: string): JsonNode =
+      ## Walk a JSON node tree, applying template substitution to all
+      ## string leaves. Object/array structure preserved; non-strings
+      ## (numbers, bools, null) untouched.
+      if node == nil: return nil
+      case node.kind
+      of JString: result = %applyHeartbeatTemplate(node.getStr(), readResult)
+      of JObject:
+        result = newJObject()
+        for k, v in node.fields:
+          result[k] = substituteJsonArgs(v, readResult)
+      of JArray:
+        result = newJArray()
+        for v in node.items:
+          result.add(substituteJsonArgs(v, readResult))
+      else: result = node
+    var autoActions: seq[string] = @[]
+    for rr in readResults:
+      if rr.duty.act.mode != hamAuto: continue
+      let shouldFire = case rr.duty.act.`when`:
+        of "always": true
+        of "result_not_empty": not rr.isEmpty
+        else: not rr.isEmpty
+      if not shouldFire: continue
+      if rr.duty.act.autoTool.len == 0:
+        warnCF("cronHandler", "auto act has no tool — skipping",
+               {"duty": rr.duty.id}.toTable)
+        continue
+      var autoArgs = initTable[string, JsonNode]()
+      let templated = substituteJsonArgs(rr.duty.act.autoArgs, rr.content)
+      if templated != nil and templated.kind == JObject:
+        for k, v in templated.fields:
+          autoArgs[k] = v
+      let autoCtx = tools_types.ToolContext(
+        channel: "system",
+        sessionKey: "system:heartbeat:" & job.id & ":" & rr.duty.id & ":auto",
+        senderID: "nc:1",
+        recipientID: "nc:1",
+        role: "system",
+        agentName: "scheduler",
+        agentID: "nc:1",
+        logicalUserID: "nc:1",
+        graph: office.contextBuilder.graph,
+      )
+      try:
+        let actResult = await office.tools.executeWithContext(
+          rr.duty.act.autoTool, autoArgs, autoCtx)
+        let preview =
+          if actResult.len > 120: actResult[0 ..< 120] & "…"
+          else: actResult
+        autoActions.add("[" & rr.duty.sourceCompetency & "." & rr.duty.id &
+                        "] auto: " & rr.duty.act.autoTool & " → " & preview)
+        infoCF("cronHandler", "Heartbeat auto-act fired",
+               {"agent": agentName, "duty": rr.duty.id,
+                "tool": rr.duty.act.autoTool}.toTable)
+      except Exception as e:
+        autoActions.add("[" & rr.duty.sourceCompetency & "." & rr.duty.id &
+                        "] auto: " & rr.duty.act.autoTool & " → ERROR: " & e.msg)
+        warnCF("cronHandler", "Heartbeat auto-act failed",
+               {"agent": agentName, "duty": rr.duty.id,
+                "tool": rr.duty.act.autoTool, "error": e.msg}.toTable)
 
     # Phase 3 — Prompt. Assemble structured sections.
     var sections: seq[string] = @[]
@@ -359,6 +434,12 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
       sections.add("## " & title & " [" & rr.duty.sourceCompetency & "]\n\n" &
                    rr.content)
 
+    # Auto-actions already fired (so the agent knows what's been done
+    # without needing to re-do it or wonder)
+    if autoActions.len > 0:
+      sections.add("## Auto-actions fired this tick\n\n" &
+                   autoActions.mapIt("- " & it).join("\n"))
+
     # Suggested actions (hint mode duties whose `when` evaluated truthy)
     var hints: seq[string] = @[]
     for rr in readResults:
@@ -373,16 +454,25 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     if hints.len > 0:
       sections.add("## Suggested actions for this tick\n\n" & hints.join("\n"))
 
+    # Nothing-to-do predicate: skip the LLM call entirely when every
+    # source returned empty AND no auto-actions fired. The dispatcher
+    # already burned the deterministic gather pass (cheap), but a
+    # ~30K-prompt LLM call to reflect on "nothing happened" is wasted
+    # tokens. Skip-then-log gives the operator visibility into how
+    # often quiet ticks are saving cost.
+    if sections.len == 0:
+      infoCF("cronHandler", "heartbeat_tick skipped — nothing to do",
+             {"job": job.name, "agent": agentName,
+              "duty_count": $duties.len}.toTable)
+      logHeartbeat(agentWorkspace, "Skipped — nothing to do")
+      return
+
     let nowStr = now().format("yyyy-MM-dd HH:mm")
-    var prompt = "# Heartbeat Tick\n\nTime: " & nowStr & "\n\n"
-    if sections.len > 0:
-      prompt.add(sections.join("\n\n") & "\n\n")
-    else:
-      prompt.add("_No active sources this tick — nothing flagged._\n\n")
-    prompt.add(
+    var prompt = "# Heartbeat Tick\n\nTime: " & nowStr & "\n\n" &
+                 sections.join("\n\n") & "\n\n" &
       "**Communication discipline**: this is a routine internal tick. " &
       "Don't message the user unless your standing instructions or a " &
-      "suggested action explicitly call for it.\n")
+      "suggested action explicitly call for it.\n"
 
     try:
       discard await office.processOneShot(
@@ -390,7 +480,8 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
       infoCF("cronHandler", "heartbeat_tick completed",
              {"job": job.name, "agent": agentName,
               "duty_count": $duties.len,
-              "section_count": $sections.len}.toTable)
+              "section_count": $sections.len,
+              "auto_actions": $autoActions.len}.toTable)
     except CatchableError as e:
       logHeartbeat(agentWorkspace, "Heartbeat error: " & e.msg)
       warnCF("cronHandler", "heartbeat_tick raised — continuing",
