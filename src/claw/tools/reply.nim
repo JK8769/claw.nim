@@ -285,11 +285,23 @@ method execute*(t: ReplyTool, args: Table[string, JsonNode]): Future[string] {.a
   let isPlainTextReply = not (args.hasKey("image") or args.hasKey("file") or
                                args.hasKey("feishu_card") or
                                (args.getOrDefault("msg_type").getStr("") == "interactive" and args.hasKey("card")))
-  if t.channel == "feishu" and isPlainTextReply and content.len > 0:
+  # Phase 2 — extract trailing numbered options FIRST so the format
+  # guards below check the body alone. A reply with both an analytical
+  # table and 3 next-step options should be promoted to a card with
+  # the table in body + buttons for options, not rejected because
+  # the WHOLE content (including options as numbered list) has too
+  # many "rows" by accidental detection.
+  var extractedOptions: ExtractedOptions
+  var bodyForGuards = content
+  if t.channel == "feishu" and isPlainTextReply:
+    extractedOptions = extractTrailingOptions(content)
+    if extractedOptions.found:
+      bodyForGuards = extractedOptions.prefix
+  if t.channel == "feishu" and isPlainTextReply and bodyForGuards.len > 0:
     let curRetries = t.guardRetryCount.getOrDefault(t.sessionKey, 0)
     if curRetries < GuardMaxRetries:
-      let rows = countMarkdownTableDataRows(content)
-      let lines = countLines(content)
+      let rows = countMarkdownTableDataRows(bodyForGuards)
+      let lines = countLines(bodyForGuards)
       var rejection = ""
       if rows >= GuardTableRowThreshold:
         rejection = "Reply rejected by Feishu format guard: detected " &
@@ -326,21 +338,21 @@ method execute*(t: ReplyTool, args: Table[string, JsonNode]): Future[string] {.a
       content
 
   # Phase 2 — auto-promote trailing numbered options into a CardKit
-  # interactive card. When the agent ends a reply with 2-4 numbered
-  # options (TC-6 pattern) on Feishu, ship as an interactive card with
-  # action buttons so the user can click instead of typing the option
-  # text. Card click → Feishu card.action.trigger callback →
-  # feishu.nim creates an inbound message routing back to the agent
-  # (handler at feishu.nim:733-751 already exists). Only triggers on
-  # plain-text replies on the feishu channel; explicit `feishu_card`
-  # replies skip this path.
-  if t.channel == "feishu" and isPlainTextReply:
-    let extracted = extractTrailingOptions(outboundContent)
-    if extracted.found:
-      outboundContent = buildOptionsCard(extracted.prefix, extracted.options)
-      # Reset metadata format — the card carries its own structure;
-      # markdown flag would just confuse the channel adapter.
-      metadata.del("format")
+  # interactive card. Options were extracted earlier (before guards)
+  # so a reply with [analytical body + 3 options] gets the body in
+  # the card body and the options as buttons — instead of being
+  # rejected by the table-row guard if the body has a table that
+  # the agent decided to keep inline. Card click → Feishu
+  # card.action.trigger callback → feishu.nim creates an inbound
+  # message routing back to the agent (handler at feishu.nim:733-751
+  # already exists). Only triggers on plain-text replies on the feishu
+  # channel; explicit `feishu_card` replies skip this path.
+  if t.channel == "feishu" and isPlainTextReply and extractedOptions.found:
+    outboundContent = buildOptionsCard(extractedOptions.prefix,
+                                        extractedOptions.options)
+    # Reset metadata format — the card carries its own structure;
+    # markdown flag would just confuse the channel adapter.
+    metadata.del("format")
 
   try:
     await t.sendCallback(t.channel, t.chatID, outboundContent, t.agentName, t.replyToMessageID, t.appID, metadata)

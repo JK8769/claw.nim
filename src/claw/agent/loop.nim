@@ -13,7 +13,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers, task_list]
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers]
 import ../services/cron as cron_service
 import curly
 import ../lib/malebolgia
@@ -175,16 +175,26 @@ type
                                 ## in `runAgentLoop` can send synthetic
                                 ## visibility messages on the agent's
                                 ## behalf without going through a tool.
-    taskListTool*: TaskListTool
-                                ## Plan-state primitive (TodoWrite-style).
-                                ## Held here so the dispatch loop can
-                                ## read item counts + recent completion
-                                ## timestamps for plan-derived iteration-
-                                ## budget scaling and the 80% productive-
-                                ## progress auto-extend gate. nil when
-                                ## the tool isn't registered for this
-                                ## agent (it always is in the standard
-                                ## newAgentLoop path).
+    replyProgressTool*: ReplyProgressTool
+                                ## Plan-state lives on reply_progress
+                                ## (was a separate task_list tool, then
+                                ## consolidated). Held here so the
+                                ## dispatch loop can read item counts +
+                                ## recent completion timestamps for
+                                ## plan-derived iteration-budget scaling
+                                ## and the 80% productive-progress
+                                ## auto-extend gate. nil when the tool
+                                ## isn't registered (always is in the
+                                ## standard newAgentLoop path).
+    larkTool*: LarkCliTool
+                                ## Held so framework auto-emit can call
+                                ## `createDocViaBot` for large `write_file`
+                                ## results — uploads the file as a Lark
+                                ## Doc and embeds a clickable link in the
+                                ## snippet message (single message UX,
+                                ## replaces the prior separate file-
+                                ## attachment second message). nil if
+                                ## lark-cli binary isn't found.
     # Live state — observable via `/agent <name>` from chat. One entry per
     # in-flight task so concurrent turns (e.g. Jerry + 杰瑞 both on Atlas)
     # each get their own snapshot. Keyed by session_key — same-session
@@ -1100,8 +1110,8 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let usedPct = (iteration * 100) div max(maxIter, 1)
     if usedPct >= IterationSoftThresholdPct and
        maxIter < IterationHardCap and
-       al.taskListTool != nil:
-      let list = al.taskListTool.lists.getOrDefault(opts.sessionKey, @[])
+       al.replyProgressTool != nil:
+      let list = al.replyProgressTool.items.getOrDefault(opts.sessionKey, @[])
       var completedCount = 0
       var unfinishedCount = 0
       for item in list:
@@ -1126,12 +1136,12 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     if usedPct >= IterationSoftThresholdPct and not budgetWarningInjected:
       let warning = "[FRAMEWORK NUDGE — iteration budget at " & $usedPct &
         "%] You have used " & $iteration & " of " & $maxIter & " iterations. " &
-        "If your `task_list` has unfinished items AND you're making " &
-        "progress (completing items, varied tool calls), the framework " &
-        "will auto-extend up to " & $IterationHardCap & " total. " &
-        "Otherwise, wrap up NOW with a final `reply` summarizing what " &
-        "you have. Hitting the hard cap forces a synthetic summary " &
-        "with no chance for you to compose your own."
+        "If your `reply_progress.items` plan has unfinished items AND " &
+        "you're making progress (completing items, varied tool calls), " &
+        "the framework will auto-extend up to " & $IterationHardCap &
+        " total. Otherwise, wrap up NOW with a final `reply` " &
+        "summarizing what you have. Hitting the hard cap forces a " &
+        "synthetic summary with no chance for you to compose your own."
       let warningMsg = providers_types.Message(
         role: providers_types.RoleSystem, content: warning)
       currentMessages.add(warningMsg)
@@ -1642,8 +1652,40 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         var autoEmittedVisibility = false
         if tc.name notin CommTools and opts.channel == "feishu" and
            al.effectiveTechComm(opts.sessionKey):
-          let viz = formatVisibilityMessage(tc.name, tc.arguments, result)
+          var viz = formatVisibilityMessage(tc.name, tc.arguments, result)
           if viz.len > 0 and al.sendCallback != nil:
+            # For large `write_file` results, upload the FULL content
+            # to a Lark Doc and append a clickable link to the
+            # visibility message. Single-message UX (no separate file
+            # attachment), and the user gets the full Doc treatment
+            # (scroll + copy + share) when they click.
+            if tc.name == "write_file" and
+               tc.arguments.hasKey("path") and
+               tc.arguments.hasKey("content") and
+               al.larkTool != nil:
+              let path = tc.arguments["path"].getStr()
+              let content = tc.arguments["content"].getStr()
+              if path.len > 0 and countLines(content) > 30:
+                let basename = path.lastPathPart
+                let docTitle = basename
+                let docUrlOpt = await al.larkTool.createDocViaBot(
+                  docTitle, content, opts.appID)
+                if docUrlOpt.isSome:
+                  let url = docUrlOpt.get
+                  viz.add("\n\n📁 [Full file: " & basename &
+                          "](" & url & ")")
+                  infoCF("agent", "Auto-emit Lark Doc created",
+                    {"path": path, "url": url,
+                     "lines": $countLines(content)}.toTable)
+                else:
+                  # Fallback: doc creation failed (auth, scope, etc.).
+                  # Just note the path; user can `cat` it locally.
+                  viz.add("\n\n📁 Full file at: `" & path & "`")
+                  warnCF("agent", "Auto-emit Lark Doc failed; " &
+                                  "falling back to path text",
+                    {"path": path,
+                     "lines": $countLines(content)}.toTable)
+
             var meta = initTable[string, string]()
             meta["progress"] = "true"
             meta["format"] = "markdown"
@@ -1670,45 +1712,6 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                 "session": opts.sessionKey,
                 "chars": $viz.len,
                 "iteration": $iteration}.toTable)
-
-              # Phase 1 — Lark Doc / file-attachment handoff for large
-              # files. Feishu IM `tag:code_block` gives syntax
-              # highlighting but no scroll/copy. For files above the
-              # threshold, send the FULL content as a separate
-              # file-attachment message so the user can click the
-              # filename and get Feishu's full file viewer (preview,
-              # copy, forward, download). Sidesteps the lark docs
-              # +create user-auth requirement; bot auth is enough for
-              # file attachments. Only applies to write_file with the
-              # path+content args; spawn/shell don't have a single
-              # file artifact to attach.
-              if tc.name == "write_file" and
-                 tc.arguments.hasKey("path") and
-                 tc.arguments.hasKey("content"):
-                let path = tc.arguments["path"].getStr()
-                let content = tc.arguments["content"].getStr()
-                if path.len > 0 and countLines(content) > 30:
-                  let basename = path.lastPathPart
-                  var fileMeta = initTable[string, string]()
-                  fileMeta["file"] = path
-                  fileMeta["framework_emit"] = "true"
-                  try:
-                    await al.sendCallback(opts.channel, opts.chatID,
-                                           "📁 Full file: " & basename,
-                                           al.agentName,
-                                           opts.replyToMessageID,
-                                           opts.appID, fileMeta)
-                    al.sessions.addWithSpeaker(opts.sessionKey,
-                      "assistant",
-                      "📁 Full file attached: `" & path & "`",
-                      "framework:auto-emit")
-                    infoCF("agent", "Auto-emit file attachment", {
-                      "path": path,
-                      "session": opts.sessionKey,
-                      "lines": $countLines(content)}.toTable)
-                  except Exception as e:
-                    warnCF("agent", "Auto-emit file attach failed",
-                      {"error": e.msg, "path": path}.toTable)
             except Exception as e:
               warnCF("agent", "Auto-emit failed",
                 {"error": e.msg, "tool": tc.name}.toTable)
@@ -1725,19 +1728,20 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         else:
           consecutiveNonCommTools += 1
 
-        # Plan-derived budget scale: when the agent calls `task_list`
-        # with N items, bump the per-turn iteration cap to
-        # `min(N × 8, IterationHardCap)`. Monotonic — only grows.
-        # Cheaper than parsing reply_progress for plan-text patterns;
-        # the agent provides item count explicitly via the tool.
-        if tc.name == "task_list" and al.taskListTool != nil:
-          let list = al.taskListTool.lists.getOrDefault(opts.sessionKey, @[])
+        # Plan-derived budget scale: when `reply_progress` is called
+        # with the optional `items` array (TodoWrite-style plan), bump
+        # the per-turn iteration cap to `min(N × 8, IterationHardCap)`.
+        # Monotonic — only grows. Folded into reply_progress (was a
+        # separate task_list tool); the agent provides plan state on
+        # the same tool that already announces progress.
+        if tc.name == "reply_progress" and al.replyProgressTool != nil:
+          let list = al.replyProgressTool.items.getOrDefault(opts.sessionKey, @[])
           if list.len > 0:
             let scaled = min(list.len * 8, IterationHardCap)
             if scaled > maxIter:
               let oldMax = maxIter
               maxIter = scaled
-              infoCF("agent", "Iteration budget scaled from task_list", {
+              infoCF("agent", "Iteration budget scaled from reply_progress.items", {
                 "session": opts.sessionKey,
                 "items": $list.len,
                 "old_max": $oldMax,
@@ -2701,16 +2705,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let rpTool = newReplyProgressTool()
   rpTool.setSendCallback(callback)
   rpTool.setTags(@["messaging", "core"])
-  rpTool.setSearchHint("send progress checkpoint update")
+  rpTool.setSearchHint("send progress checkpoint update plan items")
   toolsRegistry.register(rpTool)
-
-  # Plan-state primitive — TodoWrite-style. Held on AgentLoop so the
-  # iteration-budget logic in the dispatch loop can read item counts +
-  # recent completions without a circular registry lookup.
-  let tlTool = newTaskListTool()
-  tlTool.setTags(@["agent", "planning", "core"])
-  tlTool.setSearchHint("task list todo plan items checkpoint progress state")
-  toolsRegistry.register(tlTool)
 
   let larkTool = newLarkCliTool()
   if larkTool.larkCliBin.len > 0:
@@ -2894,7 +2890,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     memTool: memTool,
     techCommDefault: techCommDefault,
     sendCallback: callback,
-    taskListTool: tlTool
+    replyProgressTool: rpTool,
+    larkTool: larkTool
   )
   debugCF("agentLoop", "Instance created", {"agent": agentName}.toTable)
   initLock(al.summarizingLock)

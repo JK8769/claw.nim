@@ -193,3 +193,79 @@ method execute*(t: LarkCliTool, args: Table[string, JsonNode]): Future[string] {
     return result
   except Exception as e:
     return "Error executing lark-cli: " & e.msg
+
+import std/options as std_options
+
+proc createDocViaBot*(t: LarkCliTool, title, markdown: string,
+                      appID: string = ""): Future[std_options.Option[string]] {.async.} =
+  ## Create a Lark Doc via `docs +create --as bot`. Returns the
+  ## `doc_url` on success, none on failure. Used by framework
+  ## auto-emit (agent loop) to upload large file content for
+  ## clickable file-link UX in Feishu — replaces the prior
+  ## "send a separate file attachment" path.
+  ##
+  ## Bot identity routes through the MCP layer; verified working
+  ## (returns docx URL) on the SunGrowCN Feishu apps. If MCP scope
+  ## isn't configured the call returns none and the caller should
+  ## fall back to inline-snippet-only.
+  if t.larkCliBin.len == 0:
+    return std_options.none(string)
+  if title.len == 0 or markdown.len == 0:
+    return std_options.none(string)
+
+  # Resolve config dir from appID context (for multi-app deployments)
+  # or fall back to the tool's default. Same logic as the standard
+  # execute() method, just inlined.
+  var configDir = t.defaultConfigDir
+  let resolvedAppID = if appID.len > 0: appID else: t.appID
+  if resolvedAppID.len > 0:
+    let appDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & resolvedAppID
+    if fileExists(appDir / "config.json"):
+      configDir = appDir
+  if configDir.len == 0:
+    return std_options.none(string)
+
+  let env = newStringTable(modeCaseSensitive)
+  for key, val in envPairs():
+    env[key] = val
+  env["LARKSUITE_CLI_CONFIG_DIR"] = configDir
+
+  let fullArgs = @["docs", "+create", "--as", "bot",
+                   "--title", title, "--markdown", markdown]
+
+  try:
+    let p = startProcess(t.larkCliBin, args = fullArgs, env = env,
+                         options = {poUsePath, poStdErrToStdOut})
+    let startTime = now()
+    var output = ""
+    while p.running:
+      if (now() - startTime) > t.timeout:
+        p.terminate()
+        discard p.waitForExit(3000)
+        p.close()
+        return std_options.none(string)
+      let chunk = p.outputStream.readStr(4096)
+      if chunk.len > 0:
+        output.add(chunk)
+      await sleepAsync(50)
+    output.add(p.outputStream.readAll())
+    let code = p.peekExitCode()
+    p.close()
+    if code != 0:
+      return std_options.none(string)
+    # Parse JSON: { "ok": true, "data": { "doc_url": "..." } }
+    try:
+      let j = parseJson(output.strip())
+      if not j.getOrDefault("ok").getBool(false):
+        return std_options.none(string)
+      let data = j.getOrDefault("data")
+      if data.kind != JObject:
+        return std_options.none(string)
+      let url = data.getOrDefault("doc_url").getStr()
+      if url.len == 0:
+        return std_options.none(string)
+      return std_options.some(url)
+    except CatchableError:
+      return std_options.none(string)
+  except Exception:
+    return std_options.none(string)

@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 9
+const PolicyRulesVersion* = 10
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -356,6 +356,17 @@ const PolicyRulesVersion* = 9
   ##       past assistant message saying 'I hit the 40 cap' and
   ##       gives up immediately on the next turn even though the
   ##       cap is now 80" failure mode.
+  ##  10 — three UX consolidations: (a) `task_list` tool merged into
+  ##       `reply_progress` (optional `items` param; one tool, one
+  ##       mental model), (b) write_file >30 lines now uploads to a
+  ##       Lark Doc via `lark docs +create --as bot` and embeds a
+  ##       clickable link in the snippet message — single-message UX
+  ##       (replaces the prior separate file-attachment second
+  ##       message), (c) reply.nim extracts trailing numbered options
+  ##       BEFORE format guards so a "table + 3 options" reply gets
+  ##       promoted to a card-with-buttons instead of rejected by
+  ##       the table-row guard. Bot-MCP path for `docs +create`
+  ##       confirmed working on this deployment.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
