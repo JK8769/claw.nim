@@ -13,7 +13,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers]
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers, task_list]
 import ../services/cron as cron_service
 import curly
 import ../lib/malebolgia
@@ -175,6 +175,16 @@ type
                                 ## in `runAgentLoop` can send synthetic
                                 ## visibility messages on the agent's
                                 ## behalf without going through a tool.
+    taskListTool*: TaskListTool
+                                ## Plan-state primitive (TodoWrite-style).
+                                ## Held here so the dispatch loop can
+                                ## read item counts + recent completion
+                                ## timestamps for plan-derived iteration-
+                                ## budget scaling and the 80% productive-
+                                ## progress auto-extend gate. nil when
+                                ## the tool isn't registered for this
+                                ## agent (it always is in the standard
+                                ## newAgentLoop path).
     # Live state — observable via `/agent <name>` from chat. One entry per
     # in-flight task so concurrent turns (e.g. Jerry + 杰瑞 both on Atlas)
     # each get their own snapshot. Keyed by session_key — same-session
@@ -1054,15 +1064,83 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   var consecutiveNonCommTools = 0
   var nudgeInjectedForStreak = false
 
+  # Dynamic iteration budget. Starts at the agent's configured cap
+  # (`al.maxIterations`) but can grow within this single processDirect
+  # call based on two signals:
+  #   1. Plan-derived scale: when the agent calls `task_list` with N
+  #      items, bump to `min(N × 8, IterationHardCap)`.
+  #   2. Productive-progress auto-extend: at 80% utilization, if the
+  #      loop detector is quiet AND the task_list shows recent
+  #      completions, silently extend by 20.
+  # Local var (not modifying al.maxIterations) so concurrent sessions
+  # for the same agent don't collide. See claude-code-style design
+  # notes: the iteration counter conflates productive long work and
+  # stuck loops, so we use signals (loop detector + plan completions)
+  # to decide which case we're in.
+  const IterationHardCap = 150
+  const IterationSoftThresholdPct = 80
+  var maxIter = al.maxIterations
+  var budgetWarningInjected = false
+
   # See `sanitizeForProvider` below for the rules. Run once before
   # entering the iteration loop so anything stale from getHistory
   # gets cleaned up upfront.
   sanitizeForProvider(currentMessages)
 
-  while iteration < al.maxIterations and finalContent == "":
+  while iteration < maxIter and finalContent == "":
     iteration += 1
     snapshot.iteration = iteration
     al.updateStatus(ctx, "Thinking", "Running iteration", iteration)
+
+    # Dynamic budget: at the soft threshold (80% used), check
+    # productive-progress signals. If still working productively,
+    # silently extend; either way (extended or not), inject a soft
+    # warning ONCE per turn so the agent has a chance to wrap up
+    # consciously instead of getting force-summarized at the wall.
+    let usedPct = (iteration * 100) div max(maxIter, 1)
+    if usedPct >= IterationSoftThresholdPct and
+       maxIter < IterationHardCap and
+       al.taskListTool != nil:
+      let list = al.taskListTool.lists.getOrDefault(opts.sessionKey, @[])
+      var completedCount = 0
+      var unfinishedCount = 0
+      for item in list:
+        case item.status
+        of tisCompleted: completedCount.inc
+        of tisInProgress, tisPending: unfinishedCount.inc
+      let loopQuiet = loopDetector.streak < 3
+      let productive = unfinishedCount > 0 and completedCount > 0 and loopQuiet
+      if productive:
+        let extension = min(20, IterationHardCap - maxIter)
+        if extension > 0:
+          let oldMax = maxIter
+          maxIter += extension
+          infoCF("agent", "Iteration budget auto-extended (productive)", {
+            "session": opts.sessionKey,
+            "iteration": $iteration,
+            "old_max": $oldMax,
+            "new_max": $maxIter,
+            "completed": $completedCount,
+            "unfinished": $unfinishedCount,
+            "loop_streak": $loopDetector.streak}.toTable)
+    if usedPct >= IterationSoftThresholdPct and not budgetWarningInjected:
+      let warning = "[FRAMEWORK NUDGE — iteration budget at " & $usedPct &
+        "%] You have used " & $iteration & " of " & $maxIter & " iterations. " &
+        "If your `task_list` has unfinished items AND you're making " &
+        "progress (completing items, varied tool calls), the framework " &
+        "will auto-extend up to " & $IterationHardCap & " total. " &
+        "Otherwise, wrap up NOW with a final `reply` summarizing what " &
+        "you have. Hitting the hard cap forces a synthetic summary " &
+        "with no chance for you to compose your own."
+      let warningMsg = providers_types.Message(
+        role: providers_types.RoleSystem, content: warning)
+      currentMessages.add(warningMsg)
+      al.sessions.addFullMessage(opts.sessionKey, warningMsg)
+      budgetWarningInjected = true
+      infoCF("agent", "Iteration budget soft warning injected", {
+        "session": opts.sessionKey,
+        "iteration": $iteration,
+        "max": $maxIter}.toTable)
 
     # Mid-turn size guard. `maybeSummarize` runs at TURN boundaries
     # (post-loop), but a single turn's tool-call results can balloon
@@ -1117,7 +1195,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         "migrate it to the {summary, ref_path} cache pattern."
       break
 
-    infoCF("agent", "LLM iteration", {"iteration": $iteration, "max": $al.maxIterations, "xml_tools": $useXmlTools, "messages_count": $currentMessages.len}.toTable)
+    infoCF("agent", "LLM iteration", {"iteration": $iteration, "max": $maxIter, "xml_tools": $useXmlTools, "messages_count": $currentMessages.len}.toTable)
 
     let strategy = inferStrategy(al.model)
 
@@ -1647,6 +1725,24 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         else:
           consecutiveNonCommTools += 1
 
+        # Plan-derived budget scale: when the agent calls `task_list`
+        # with N items, bump the per-turn iteration cap to
+        # `min(N × 8, IterationHardCap)`. Monotonic — only grows.
+        # Cheaper than parsing reply_progress for plan-text patterns;
+        # the agent provides item count explicitly via the tool.
+        if tc.name == "task_list" and al.taskListTool != nil:
+          let list = al.taskListTool.lists.getOrDefault(opts.sessionKey, @[])
+          if list.len > 0:
+            let scaled = min(list.len * 8, IterationHardCap)
+            if scaled > maxIter:
+              let oldMax = maxIter
+              maxIter = scaled
+              infoCF("agent", "Iteration budget scaled from task_list", {
+                "session": opts.sessionKey,
+                "items": $list.len,
+                "old_max": $oldMax,
+                "new_max": $maxIter}.toTable)
+
       # reply/message already delivered the turn's final content — break
       # before the LLM gets another turn and calls reply again.
       if ctx.responseSent:
@@ -1682,11 +1778,11 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
 
   # If loop exhausted maxIterations without breaking, make one final LLM call for summary
   if finalContent == "" and (lastResponseContent != "" or toolCallLog.len > 0):
-    warnCF("agent", "Tool loop exhausted maxIterations without final response", {"iterations": $iteration, "max": $al.maxIterations, "tool_calls": $toolCallLog.len}.toTable)
+    warnCF("agent", "Tool loop exhausted maxIterations without final response", {"iterations": $iteration, "max": $maxIter, "tool_calls": $toolCallLog.len}.toTable)
 
     # Build a compact context for the summary call — full message history is too long for GLM-5
     infoCF("agent", "Making final summary LLM call after loop exhaustion", initTable[string, string]())
-    var exhaustPrompt = "You were performing a task for the user but reached the maximum number of tool iterations (" & $al.maxIterations & "). Provide your FINAL response to the user NOW. Do NOT call any tools."
+    var exhaustPrompt = "You were performing a task for the user but reached the maximum number of tool iterations (" & $maxIter & "). Provide your FINAL response to the user NOW. Do NOT call any tools."
     if toolCallLog.len > 0:
       exhaustPrompt.add("\n\nHere is what you did:\n" & toolCallLog.join("\n") & "\n\nSummarize the results, including any errors or failures. If a step failed, tell the user what went wrong.")
     else:
@@ -2604,6 +2700,14 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   rpTool.setSearchHint("send progress checkpoint update")
   toolsRegistry.register(rpTool)
 
+  # Plan-state primitive — TodoWrite-style. Held on AgentLoop so the
+  # iteration-budget logic in the dispatch loop can read item counts +
+  # recent completions without a circular registry lookup.
+  let tlTool = newTaskListTool()
+  tlTool.setTags(@["agent", "planning", "core"])
+  tlTool.setSearchHint("task list todo plan items checkpoint progress state")
+  toolsRegistry.register(tlTool)
+
   let larkTool = newLarkCliTool()
   if larkTool.larkCliBin.len > 0:
     larkTool.setTags(@["feishu", "lark", "docs", "calendar", "platform"])
@@ -2785,7 +2889,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     curly: toolCurly,
     memTool: memTool,
     techCommDefault: techCommDefault,
-    sendCallback: callback
+    sendCallback: callback,
+    taskListTool: tlTool
   )
   debugCF("agentLoop", "Instance created", {"agent": agentName}.toTable)
   initLock(al.summarizingLock)

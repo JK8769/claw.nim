@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 7
+const PolicyRulesVersion* = 8
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -340,6 +340,15 @@ const PolicyRulesVersion* = 7
   ##       (interpretation) vs framework (visibility) layers; file
   ##       snippet sizes bumped to 30/40 lines with smart truncation
   ##       (Feishu code blocks scroll + offer copy buttons).
+  ##   8 — Claude-Code-style iteration budget. Default cap raised
+  ##       40 → 80; new `task_list` tool (TodoWrite-style) feeds two
+  ##       framework signals: (a) plan-derived budget scale on each
+  ##       call (`min(N items × 8, 150)`), (b) productive-progress
+  ##       auto-extend at 80% utilization (loop detector quiet AND
+  ##       todos still completing → +20). Soft warning injected
+  ##       once per turn at 80% so the agent can wrap up
+  ##       consciously. Phase A handbook adds spawn-per-step
+  ##       recommendation for tasks ≥3 analytical steps.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
