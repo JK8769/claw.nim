@@ -7,7 +7,7 @@
 ## but not the key.
 
 import std/[strutils, json]
-import ../lib/curly_with_cancel as curly, webby/httpheaders
+import ../lib/curl as curly, webby/httpheaders
 import registry
 
 type

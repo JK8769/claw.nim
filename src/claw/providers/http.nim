@@ -2,8 +2,8 @@ import std/[asyncdispatch, json, strutils, tables, os]
 # Vendored curly with `cancelAllInFlight*` for /session stop. The
 # upstream curly.nim has internal cancel machinery (multi_remove_handle
 # on dequeued entries) but no public API. Our fork adds it; see
-# claw/lib/curly_with_cancel.nim for the diff.
-import ../lib/curly_with_cancel as curly, webby/httpheaders
+# claw/lib/curl.nim for the diff.
+import ../lib/curl as curly, webby/httpheaders
 import ../lib/malebolgia
 import ../lib/http_retry
 import types

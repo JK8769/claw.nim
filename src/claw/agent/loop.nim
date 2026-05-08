@@ -15,7 +15,7 @@ import ../tools/base as tools_base
 import ../tools/loop_detector
 import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers]
 import ../services/cron as cron_service
-import ../lib/curly_with_cancel as curly
+import ../lib/curl as curly
 import ../lib/malebolgia
 import ../skills/installer as skills_installer
 import ../skills/loader as skills_loader

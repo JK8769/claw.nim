@@ -1,5 +1,5 @@
 import std/[asyncdispatch, json, strutils, tables, os]
-import ../lib/curly_with_cancel as curly, webby/httpheaders, regex
+import ../lib/curl as curly, webby/httpheaders, regex
 import base
 import ../bus, ../bus_types, ../config, ../logger, ../services/voice
 import ../lib/malebolgia
