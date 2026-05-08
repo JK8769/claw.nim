@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 4
+const PolicyRulesVersion* = 5
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -316,6 +316,13 @@ const PolicyRulesVersion* = 4
   ##   4 — policyHashInputs now hashes channel-active skill recipes
   ##       too, so future SKILL.md edits auto-invalidate sessions
   ##       (closes the blind spot from v3). No prompt-shape change.
+  ##   5 — framework-level enforcement: agent loop tracks consecutive
+  ##       non-comm tool calls and injects a TC-2 nudge into the
+  ##       message stream after threshold; reply tool runs Feishu
+  ##       format guards (markdown table rows >=6 → reject and route
+  ##       to lark sheets, lines >300 → route to lark docs) with a
+  ##       max-retry safety valve. Discipline becomes deterministic,
+  ##       independent of model size or attention budget.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =

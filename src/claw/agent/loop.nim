@@ -844,6 +844,21 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   let useXmlTools = isXmlToolProvider(al.model)
   let toolCtx = buildToolContext(al, opts, logicalUserID)
 
+  # TC-2 enforcement: framework-level checkpoint discipline. Tracks
+  # consecutive non-communication tool calls (write_file, spawn, shell,
+  # etc) since the last `reply`/`reply_progress`/`message`/`forward`.
+  # When the streak reaches the threshold, the agent loop injects a
+  # synthetic system message into `currentMessages` BEFORE the next
+  # LLM iteration — putting the "you must checkpoint now" reminder
+  # in the model's most recent attention zone, where it cannot be
+  # diluted by 100K+ tokens of prompt-rules. See comms-discipline
+  # design notes: rule-only enforcement was empirically unreliable
+  # at large prompt sizes; this counter makes TC-2 deterministic.
+  const CommTools = ["reply", "reply_progress", "message", "forward"]
+  const ConsecutiveNonCommThreshold = 2
+  var consecutiveNonCommTools = 0
+  var nudgeInjectedForStreak = false
+
   # See `sanitizeForProvider` below for the rules. Run once before
   # entering the iteration loop so anything stale from getHistory
   # gets cleaned up upfront.
@@ -1342,10 +1357,49 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         currentMessages.add(toolResultMsg)
         al.sessions.addFullMessage(opts.sessionKey, toolResultMsg)
 
+        # TC-2 streak tracking. Reset on a checkpoint-class tool;
+        # increment otherwise. The injection check happens AFTER the
+        # whole iteration's tool dispatch finishes (below the for
+        # loop) so a single iteration with one non-comm + one comm
+        # tool is a wash, not a violation.
+        if tc.name in CommTools:
+          consecutiveNonCommTools = 0
+          nudgeInjectedForStreak = false
+        else:
+          consecutiveNonCommTools += 1
+
       # reply/message already delivered the turn's final content — break
       # before the LLM gets another turn and calls reply again.
       if ctx.responseSent:
         break
+
+      # TC-2 nudge: the streak just exceeded the threshold and we
+      # haven't already nudged for this streak. Inject ONE synthetic
+      # system message that the next LLM iteration sees in its most
+      # recent context. Reset `nudgeInjectedForStreak` only happens on
+      # a comm-tool call (above), so if the model ignores and does
+      # another non-comm tool, no spam — but we still went on record.
+      # Operators see the nudge in JSONL persistence; it's part of
+      # the conversation now.
+      if consecutiveNonCommTools >= ConsecutiveNonCommThreshold and
+         not nudgeInjectedForStreak:
+        let nudge = "[FRAMEWORK NUDGE — TC-2 enforcement] " &
+          "You have made " & $consecutiveNonCommTools &
+          " consecutive non-communication tool calls without a " &
+          "checkpoint. Per rule TC-2, you MUST send a `reply_progress` " &
+          "with the latest concrete finding from your last tool result " &
+          "BEFORE the next tool call. Do not call another tool until " &
+          "you have sent the checkpoint. The user has been waiting in " &
+          "silence and cannot see what you are doing."
+        let nudgeMsg = providers_types.Message(
+          role: providers_types.RoleSystem, content: nudge)
+        currentMessages.add(nudgeMsg)
+        al.sessions.addFullMessage(opts.sessionKey, nudgeMsg)
+        nudgeInjectedForStreak = true
+        infoCF("agent", "TC-2 nudge injected", {
+          "session": opts.sessionKey,
+          "streak": $consecutiveNonCommTools,
+          "iteration": $iteration}.toTable)
 
   # If loop exhausted maxIterations without breaking, make one final LLM call for summary
   if finalContent == "" and (lastResponseContent != "" or toolCallLog.len > 0):
