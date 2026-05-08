@@ -315,6 +315,19 @@ proc inferLangFromPath(path: string): string =
   of ".r": "r"
   else: ""
 
+proc displayPath(path: string): string =
+  ## Strip the agent's workspace prefix from a path so visibility
+  ## messages don't burn screen space on `/Users/owaf/.nimclaw-Foo/
+  ## workspace/offices/lexi/workstation/`. Anything containing
+  ## `/workstation/` collapses to `workstation/<rest>`; paths
+  ## outside the workstation (system files, /tmp scratch, etc.)
+  ## return unchanged.
+  let marker = "/workstation/"
+  let idx = path.find(marker)
+  if idx >= 0:
+    return "workstation" & path[idx + marker.len - 1 ..< path.len]
+  return path
+
 proc firstNLines(s: string, n: int): string =
   ## Return the first `n` lines of `s` (newline-delimited). Used for
   ## visibility-message snippets — keeps chat orientation-only, not
@@ -355,7 +368,7 @@ proc fileSnippet(path, content: string,
     snippet = content.strip(leading = false)
   elif total <= mediumCap * 2:
     snippet = firstNLines(content, mediumCap)
-    footer = "\n\n_…(" & $(total - mediumCap) & " more lines, full file at `" & path & "`)_"
+    footer = "\n\n_…(" & $(total - mediumCap) & " more lines, full file at `" & displayPath(path) & "`)_"
   else:
     snippet = firstNLines(content, longCap)
     footer = "\n\n_…(" & $(total - longCap) & " more lines. For files this size, consider `lark docs +create` to make the full content shareable.)_"
@@ -394,14 +407,14 @@ proc formatVisibilityMessage*(toolName: string,
     let path = args["path"].getStr()
     let content = args["content"].getStr()
     if path.len == 0 or content.len == 0: return ""
-    var sb = "📝 Wrote `" & path & "`\n\n"
+    var sb = "📝 Wrote `" & displayPath(path) & "`\n\n"
     sb.add(fileSnippet(path, content))
     return sb
   of "edit":
     if not args.hasKey("file_path"): return ""
     let path = args["file_path"].getStr()
     if path.len == 0: return ""
-    var sb = "✏️ Edited `" & path & "`"
+    var sb = "✏️ Edited `" & displayPath(path) & "`"
     if args.hasKey("new_string"):
       let newStr = args["new_string"].getStr()
       if newStr.len > 0:
@@ -419,6 +432,19 @@ proc formatVisibilityMessage*(toolName: string,
       let after = task[execIdx + 9 ..< task.len]
       let lineEnd = after.find('\n')
       cmd = if lineEnd < 0: after.strip() else: after[0 ..< lineEnd].strip()
+    # Title-only auto-emit. Subagent results are intermediate —
+    # structured markdown the parent agent consumes and synthesizes,
+    # not raw stdout to show the user verbatim. Two prior bugs made
+    # showing the output bad UX:
+    #   - the result often contains its own ```fenced``` blocks; the
+    #     outputSnippet wrap broke at the first inner fence and only
+    #     a prefix rendered (looked like "title only, no content").
+    #   - when the result was cleanly truncatable, "(N more lines
+    #     truncated)" became the last visible message and the parent
+    #     agent treated it as "I already replied", skipping the
+    #     final reply_progress / reply that the user expects.
+    # Trust the parent to emit a substantive summary after the
+    # subagent returns; only announce the task here.
     var sb = "⚙️ "
     if cmd.len > 0:
       sb.add("Ran:\n```bash\n" & cmd & "\n```")
@@ -429,9 +455,6 @@ proc formatVisibilityMessage*(toolName: string,
         sb.add("Subagent task `" & label & "`: " & preview)
       else:
         sb.add("Subagent task: " & preview)
-    let outBlock = outputSnippet(toolResult)
-    if outBlock.len > 0:
-      sb.add("\n\n" & outBlock)
     return sb
   of "shell":
     if not args.hasKey("command"): return ""
@@ -1769,8 +1792,19 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
               if path.len > 0 and countLines(content) > 30:
                 let basename = path.lastPathPart
                 let docTitle = basename
+                # Wrap in a fenced code block with the language tag
+                # so lark-cli's markdown→Lark Doc converter renders
+                # it as a syntax-highlighted code block element
+                # rather than plain text paragraphs. Without this,
+                # `--markdown content` treats Python source as
+                # prose and the Doc UX is bad (no copy-with-format,
+                # no syntax colours).
+                let lang = inferLangFromPath(path)
+                let docMarkdown =
+                  if lang.len > 0: "```" & lang & "\n" & content & "\n```"
+                  else: "```\n" & content & "\n```"
                 let docUrlOpt = await al.larkTool.createDocViaBot(
-                  docTitle, content, opts.appID)
+                  docTitle, docMarkdown, opts.appID)
                 if docUrlOpt.isSome:
                   let url = docUrlOpt.get
                   viz.add("\n\n📁 [Full file: " & basename &
@@ -1781,7 +1815,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                 else:
                   # Fallback: doc creation failed (auth, scope, etc.).
                   # Just note the path; user can `cat` it locally.
-                  viz.add("\n\n📁 Full file at: `" & path & "`")
+                  viz.add("\n\n📁 Full file at: `" & displayPath(path) & "`")
                   warnCF("agent", "Auto-emit Lark Doc failed; " &
                                   "falling back to path text",
                     {"path": path,
