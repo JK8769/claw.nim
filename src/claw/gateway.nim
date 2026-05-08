@@ -7,6 +7,7 @@ import lib/curl as curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop,
        agent/context as agent_ctx,
        agent/cortex, agent/binding, agent/invites, agent/todo as agent_todo,
+       agent/notes as agent_notes,
        cli_admin, system_commands
 import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
@@ -17,7 +18,7 @@ import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
 import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator,
-                  heartbeat_decl]
+                  heartbeat_decl, notes_watcher]
 import skills/loader as skills_loader_mod
 import daemon/[socket, status]
 
@@ -424,6 +425,17 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     let todoBlock = todoStore.renderPendingForPrompt()
     if todoBlock.len > 0:
       sections.add("## Pending TODO (process at this tick)\n\n" & todoBlock)
+
+    # Past-due notes from notes.org — TODOs whose `<date>` tag is
+    # already in the past. Future-dated TODOs are picked up by the
+    # notes-watcher and fire their own one-off agent_tick at the
+    # exact due time; this section catches the ones that didn't get
+    # processed when they fired (or were date-only without time, so
+    # they roll into the next heartbeat after the date passes).
+    let notesStore = newNotesStore(agentWorkspace)
+    let notesBlock = notesStore.renderPastDueForPrompt()
+    if notesBlock.len > 0:
+      sections.add("## Past-due scheduled notes\n\n" & notesBlock)
 
     # Per-duty read sections (skip duties whose read came back empty)
     for rr in readResults:
@@ -2633,6 +2645,13 @@ Options:
   # loops; everything visible via /schedule list and
   # automation/jobs.json.
   registerHeartbeats(cfg, cronServiceInstance)
+
+  # Notes-watcher: scans each agent's notes.org every 5 min,
+  # registers future-dated TODOs as one-off agent_tick scheduler
+  # entries. Initial scan at boot picks up any notes left from
+  # prior runs. Async loop runs forever; resilient to per-agent
+  # parse errors.
+  asyncCheck startNotesWatcher(cfg, cronServiceInstance)
 
   # IPC setup — stdio (Zen mode) or socket (headless daemon)
   var stdioServer: StdioServer = nil
