@@ -1499,8 +1499,18 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    default; `reset` = clear the override (back to default);\n" &
              "    `status` (or no arg) = show the effective state.\n" &
              "    Example: `/session technical on`\n\n" &
-             "Note: clears the conversation, NOT the agent's `memory_store`\n" &
-             "entries (those persist by design — that's their purpose)."
+             "  `/session stop`\n" &
+             "    Cancel the agent's in-flight turn for YOUR session\n" &
+             "    in the current chat. The dispatch loop exits at its\n" &
+             "    next iteration or tool-dispatch boundary (usually\n" &
+             "    within a few seconds). Conversation history preserved.\n" &
+             "    Use when the agent is working on the wrong task and\n" &
+             "    you want to halt without restarting the gateway.\n" &
+             "    Example: `/session stop`\n\n" &
+             "Note: `clear`/`reset` wipe the conversation, NOT the agent's\n" &
+             "`memory_store` entries (those persist by design — that's their\n" &
+             "purpose). `stop` doesn't wipe anything; it only halts the\n" &
+             "current turn."
     let sub = parts[1]
     if sub == "status":
       # No agent arg → default to whichever office handled this slash
@@ -1711,6 +1721,31 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "`. Auto-emit visibility messages on tool calls will " &
              (if eff: "fire" else: "be suppressed") & " until you " &
              "change it again."
+    elif sub == "stop":
+      # Set the cancellation flag for the caller's session with the
+      # current chat's agent. The agent's dispatch loop checks the
+      # flag at the top of each iteration AND before each tool
+      # dispatch — when set, breaks with a "cancelled by user"
+      # finalContent and clears the flag. Doesn't kill the gateway,
+      # doesn't disrupt other users; just halts THIS turn for THIS
+      # session. The current in-flight tool call (if any) finishes;
+      # the loop exits as soon as it reaches its next iteration or
+      # tool-dispatch boundary, typically within a few seconds.
+      let callerNc = resolveCallerNc(cfg, msg)
+      if callerNc == "":
+        return "Couldn't resolve your `nc:id` from this channel. " &
+               "Use `/session clear " & al.agentName.toLowerAscii &
+               "` to wipe instead."
+      let sessionKey = callerNc.replace(":", "_")
+      al.requestCancel(sessionKey)
+      return "Stopping in-flight turn for `" & sessionKey &
+             "` with **" & al.agentName & "**.\n\n" &
+             "The loop ends at its next iteration or tool-dispatch " &
+             "boundary (usually within a few seconds; up to ~30s if " &
+             "stuck waiting on a slow `spawn`/`shell`). Conversation " &
+             "history is preserved — your next prompt continues from " &
+             "wherever the agent stopped. To wipe history too, " &
+             "follow up with `/session reset`."
     elif sub == "list":
       # Enumerate caller's sessions across every declared agent.
       # For each agent: message count, summary length (rough proxy

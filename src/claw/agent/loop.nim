@@ -195,6 +195,17 @@ type
                                 ## replaces the prior separate file-
                                 ## attachment second message). nil if
                                 ## lark-cli binary isn't found.
+    cancelRequested*: Table[string, bool]
+                                ## Per-session cancellation flag set by
+                                ## `/session stop`. The dispatch loop
+                                ## reads it at the top of each iteration
+                                ## AND before each tool dispatch — when
+                                ## true, breaks with a "cancelled by
+                                ## user" finalContent and clears the
+                                ## flag. Lock-protected since the slash
+                                ## command handler runs in a different
+                                ## async chain than the dispatch loop.
+    cancelLock*: Lock
     # Live state — observable via `/agent <name>` from chat. One entry per
     # in-flight task so concurrent turns (e.g. Jerry + 杰瑞 both on Atlas)
     # each get their own snapshot. Keyed by session_key — same-session
@@ -227,6 +238,26 @@ proc effectiveTechComm*(al: AgentLoop, sessionKey: string): bool =
     if ovr == "on": return true
     if ovr == "off": return false
   al.techCommDefault
+
+proc requestCancel*(al: AgentLoop, sessionKey: string) =
+  ## Set the cancel flag for `sessionKey`. The dispatch loop checks
+  ## this between iterations and before each tool dispatch — when
+  ## set, it breaks with a "cancelled by user" finalContent and
+  ## clears the flag. Called from the `/session stop` slash command
+  ## handler in gateway.nim.
+  acquire(al.cancelLock)
+  defer: release(al.cancelLock)
+  al.cancelRequested[sessionKey] = true
+
+proc isCancelRequested*(al: AgentLoop, sessionKey: string): bool =
+  acquire(al.cancelLock)
+  defer: release(al.cancelLock)
+  al.cancelRequested.getOrDefault(sessionKey, false)
+
+proc clearCancel*(al: AgentLoop, sessionKey: string) =
+  acquire(al.cancelLock)
+  defer: release(al.cancelLock)
+  al.cancelRequested.del(sessionKey)
 
 proc inferLangFromPath(path: string): string =
   ## Map a file extension to a markdown code-block language tag.
@@ -1098,6 +1129,19 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   sanitizeForProvider(currentMessages)
 
   while iteration < maxIter and finalContent == "":
+    # Cancellation check — set by /session stop. Clear flag and exit
+    # cleanly with a marker that distinguishes "user cancelled" from
+    # "iteration cap reached" or "loop detector tripped."
+    if al.isCancelRequested(opts.sessionKey):
+      al.clearCancel(opts.sessionKey)
+      finalContent = "[Cancelled by /session stop. " &
+        "Partial work may have completed before cancellation; " &
+        "check the messages above. This conversation continues — " &
+        "send a new prompt to resume.]"
+      infoCF("agent", "Turn cancelled by /session stop", {
+        "session": opts.sessionKey,
+        "iteration": $iteration}.toTable)
+      break
     iteration += 1
     snapshot.iteration = iteration
     al.updateStatus(ctx, "Thinking", "Running iteration", iteration)
@@ -1569,6 +1613,20 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         al.updateStatus(ctx, "Executing Tools", "Processing " & $toolNames.len & " tools", iteration)
 
       for tc in validCalls:
+        # Cancellation check before each tool dispatch — gives
+        # /session stop sub-second responsiveness even when the LLM
+        # has queued multiple tool calls in a single iteration.
+        if al.isCancelRequested(opts.sessionKey):
+          al.clearCancel(opts.sessionKey)
+          finalContent = "[Cancelled by /session stop. " &
+            "Stopped before executing `" & tc.name & "`. Partial " &
+            "work may have completed earlier; check messages above. " &
+            "Send a new prompt to resume.]"
+          infoCF("agent", "Turn cancelled mid-dispatch by /session stop", {
+            "session": opts.sessionKey,
+            "iteration": $iteration,
+            "next_tool": tc.name}.toTable)
+          break
         # Loop detection: catch identical repeated tool calls
         let argsJson = if tc.arguments.len > 0: %*tc.arguments else: newJObject()
         let loopResult = loopDetector.record(tc.name, argsJson)
@@ -2891,10 +2949,12 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     techCommDefault: techCommDefault,
     sendCallback: callback,
     replyProgressTool: rpTool,
-    larkTool: larkTool
+    larkTool: larkTool,
+    cancelRequested: initTable[string, bool]()
   )
   debugCF("agentLoop", "Instance created", {"agent": agentName}.toTable)
   initLock(al.summarizingLock)
+  initLock(al.cancelLock)
 
   # Resolve agentId from WorldGraph (nc:ID format)
   if contextBuilder.graph != nil and contextBuilder.graph.nameIndex.hasKey(agentName):
