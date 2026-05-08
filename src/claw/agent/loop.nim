@@ -2272,7 +2272,11 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
             "logicalUserID": logicalUserID,
             "session_key": opts.sessionKey,
             "chat_kind": $opts.chatKind}.toTable)
-    var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient, opts.botDisplayName, opts.mentionsJson, opts.appID)
+    # Pass static defaults to the system-prompt builder so the
+    # `## Iteration Budget` directive shows authoritative numbers.
+    # Hard cap is the literal in IterationHardCap below; kept as a
+    # literal here because the const lives in inner scope.
+    var messages = al.contextBuilder.buildMessages(logicalUserID, history, summary, opts.userMessage, opts.channel, opts.chatID, useXmlTools, targetRecipient, opts.botDisplayName, opts.mentionsJson, opts.appID, maxIterations = al.maxIterations, hardCapIterations = 150)
 
     # Snapshot the session length BEFORE adding the user message.
     # If the LLM call fails transiently (provider outage, no real

@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 8
+const PolicyRulesVersion* = 9
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -349,6 +349,13 @@ const PolicyRulesVersion* = 8
   ##       once per turn at 80% so the agent can wrap up
   ##       consciously. Phase A handbook adds spawn-per-step
   ##       recommendation for tasks ≥3 analytical steps.
+  ##   9 — Iteration Budget directive added to the runtime context
+  ##       section of the system prompt. Authoritative state lives
+  ##       in the system prompt (rebuilt fresh per turn), not in
+  ##       conversation history — fixes the "agent reads its own
+  ##       past assistant message saying 'I hit the 40 cap' and
+  ##       gives up immediately on the next turn even though the
+  ##       cap is now 80" failure mode.
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =
@@ -435,7 +442,9 @@ proc buildToolsSection(cb: ContextBuilder, allowed: seq[string]): string =
 proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
                  allowedTools: seq[string] = @[],
                  agentName: string = "",
-                 channel: string = ""): string =
+                 channel: string = "",
+                 maxIterations: int = 0,
+                 hardCapIterations: int = 0): string =
   let now = now().format("yyyy-MM-dd HH:mm (dddd) zzz")
   let workspacePath = absolutePath(cb.workspace)
   let runtime = hostOS & " " & hostCPU & ", Nim " & NimVersion
@@ -478,6 +487,28 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
       "skills BEFORE defaulting to inline markdown — the channel may " &
       "support richer formats (docs, sheets, cards) that fit the output " &
       "shape better."
+
+  # Iteration Budget directive: surface the current per-turn cap so
+  # the agent doesn't fall back on stale beliefs from prior assistant
+  # messages (observed failure mode: agent says "I hit the 40 cap"
+  # because it's literally what she said in turn N-2, not what's
+  # actually true now). The system prompt is rebuilt fresh each turn
+  # — authoritative state lives here, NOT in conversation history.
+  var iterationBudgetLine = ""
+  if maxIterations > 0:
+    let cap = if hardCapIterations > 0: hardCapIterations else: maxIterations
+    iterationBudgetLine = "\n\n## Iteration Budget\n" &
+      "Default cap this turn: " & $maxIterations & " LLM iterations. " &
+      "Auto-extends to " & $cap & " on productive progress (loop " &
+      "detector quiet AND `task_list` shows active progress). " &
+      "Calling `task_list` with N items also bumps the cap to " &
+      "`min(N × 8, " & $cap & ")` immediately. **Do not assume a " &
+      "static 40-iteration cap from anything you said in prior " &
+      "turns** — that was a prior version of this framework. The " &
+      "current dynamic budget is authoritative and lets you complete " &
+      "long analytical tasks if you maintain a `task_list` and keep " &
+      "tool calls varied (not stuck-loop)."
+
   let toolsSection =
     if useXmlTools:
       if allowedTools.len > 0: buildToolInstructionsFiltered(cb.tools, allowedTools) else: buildToolInstructions(cb.tools)
@@ -499,7 +530,7 @@ You are an AI agent in a nimclaw runtime. The `IDENTITY` section below declares 
 $1
 
 ## Runtime
-$2$5$6
+$2$5$6$7
 
 ## Workspace
 Your office is at: $3
@@ -520,7 +551,7 @@ $4
 
 4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.
 
-5. **Long tasks — checkpoint via `reply_progress`, never go silent** - For any task taking >3 tool calls or >30 seconds, you MUST: (a) BEFORE the first tool, send a `reply_progress` with a 1-3 sentence plan + numbered steps; (b) AFTER each major tool cluster (every 1-3 related calls that produce a finding), send a `reply_progress` with the concrete number/result and what's next; (c) END with a single `reply` that uses markdown structure, includes any generated file paths in backticks (full absolute paths, not basenames), and gives THREE explicit numbered next-step options (not a yes/no question). The user CANNOT see your tool results — only your messages. Never go more than 2 consecutive tool calls without a `reply_progress` checkpoint. This rule applies regardless of the language you're speaking in.""".format(now, runtime, workspacePath, toolsSection, modelLine, channelLine)
+5. **Long tasks — checkpoint via `reply_progress`, never go silent** - For any task taking >3 tool calls or >30 seconds, you MUST: (a) BEFORE the first tool, send a `reply_progress` with a 1-3 sentence plan + numbered steps; (b) AFTER each major tool cluster (every 1-3 related calls that produce a finding), send a `reply_progress` with the concrete number/result and what's next; (c) END with a single `reply` that uses markdown structure, includes any generated file paths in backticks (full absolute paths, not basenames), and gives THREE explicit numbered next-step options (not a yes/no question). The user CANNOT see your tool results — only your messages. Never go more than 2 consecutive tool calls without a `reply_progress` checkpoint. This rule applies regardless of the language you're speaking in.""".format(now, runtime, workspacePath, toolsSection, modelLine, channelLine, iterationBudgetLine)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
@@ -715,7 +746,7 @@ proc loadBootstrapFiles(cb: ContextBuilder, customIdentityPrompt: Option[string]
     if fileExists(idPath):
       result.add("## IDENTITY.md\n\n" & readFile(idPath) & "\n\n")
 
-proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools: bool = false, recipientID: string = "", channel: string = "social", botDisplayName: string = ""): string =
+proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools: bool = false, recipientID: string = "", channel: string = "social", botDisplayName: string = "", maxIterations: int = 0, hardCapIterations: int = 0): string =
   var parts: seq[string] = @[]
   
   # Check for named agent override
@@ -770,7 +801,7 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   elif identLow in ["guest", "customer"]:
     allowedTools = @["reply", "forward", "redeem_invite", "update_contact"]
 
-  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID, channel = channel))
+  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID, channel = channel, maxIterations = maxIterations, hardCapIterations = hardCapIterations))
   parts.add(socialSection)
 
   # Graph-sourced self-identity. IDENTITY declares WHO (name, role,
@@ -911,8 +942,8 @@ $1""".format(skillsSummary))
 
   return parts.join("\n\n---\n\n")
 
-proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_types.Message], summary: string, currentMessage: string, channel, chatID: string, useXmlTools: bool = false, recipientID: string = "", botDisplayName: string = "", mentionsJson: string = "", appID: string = ""): seq[providers_types.Message] =
-  var systemPrompt = cb.buildSystemPrompt(userID, useXmlTools, recipientID, channel, botDisplayName)
+proc buildMessages*(cb: ContextBuilder, userID: string, history: seq[providers_types.Message], summary: string, currentMessage: string, channel, chatID: string, useXmlTools: bool = false, recipientID: string = "", botDisplayName: string = "", mentionsJson: string = "", appID: string = "", maxIterations: int = 0, hardCapIterations: int = 0): seq[providers_types.Message] =
+  var systemPrompt = cb.buildSystemPrompt(userID, useXmlTools, recipientID, channel, botDisplayName, maxIterations, hardCapIterations)
   if channel != "" and chatID != "":
     # Customer-friendly display name (no nc:id, no role label) is the
     # ONLY name the LLM should use when talking to the user. Internal
