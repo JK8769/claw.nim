@@ -3,7 +3,7 @@
 ## Supports --stdio (Zen) and --daemon (headless) modes.
 
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
-import curly, webby/httpheaders
+import lib/curly_with_cancel as curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
 import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
@@ -933,6 +933,16 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
               output.add("  cooldown: expired (re-probes on next call)\n")
           if h.lastSuccessTime > 0 and h.state == provider_health.hsHealthy:
             output.add("  last success: " & $fromUnix(h.lastSuccessTime) & "\n")
+          # Performance tracking — only render when samples exist (skip
+          # untouched providers and ones loaded before perf was added).
+          if h.successCount > 0 and h.tokensPerSecAvg > 0.0:
+            output.add("  perf: " &
+                       formatFloat(h.tokensPerSecAvg, ffDecimal, 1) &
+                       " tok/s avg, " &
+                       formatFloat(h.avgResponseTimeSec, ffDecimal, 1) &
+                       "s/call (" & $h.successCount & " samples)\n")
+            let tmo = gCtx.healthRegistry.recommendedTimeoutSec(pName)
+            output.add("  next call timeout: " & $tmo & "s\n")
       output.add("\nUsage: `/provider reset <name>` to manually mark " &
                  "a provider healthy after fixing the underlying issue " &
                  "(top-up balance, rotate API key).")

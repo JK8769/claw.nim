@@ -46,7 +46,7 @@
 ## "tell me when you've fixed it" — fewer surprise auto-retries that
 ## the operator didn't ask for.
 
-import std/[json, locks, os, strutils, tables, times, options]
+import std/[json, locks, os, strutils, tables, times, options, algorithm]
 import ../logger
 
 type
@@ -62,6 +62,23 @@ type
     lastSuccessTime*: int64    ## Unix epoch seconds. 0 = never succeeded.
     cooldownUntil*: int64      ## Unix epoch seconds. Only meaningful when
                                 ## state == hsCoolingDown.
+    # Performance tracking (per-provider, not per-session). Updated on
+    # each successful chat() via `recordPerformance`. Used by
+    # `recommendedTimeoutSec` to set per-call timeouts based on actual
+    # observed latency instead of a static fallback. Persisted in the
+    # same JSON file as health state.
+    tokensPerSecAvg*: float    ## EMA over completion_tokens / duration.
+                                ## 0.0 when no samples yet.
+    avgResponseTimeSec*: float ## EMA over chat() round-trip duration.
+                                ## 0.0 when no samples yet.
+    responseTimeSamples*: seq[float]
+                                ## Sliding window of recent durations
+                                ## (last MaxPerfSamples). Used for
+                                ## p50/p99 estimation. Capped to
+                                ## prevent unbounded growth.
+    successCount*: int         ## Total successful chat() calls. Sets
+                                ## confidence floor for using observed
+                                ## p99 vs static fallback.
 
   ProviderHealthRegistry* = ref object
     health: TableRef[string, ProviderHealth]
@@ -71,6 +88,18 @@ type
 const
   CooldownRateLimitSec*  = 60   ## 429 — typical rate-limit window
   CooldownTransientSec*  = 30   ## 5xx, Curly network — transient backend
+  MaxPerfSamples*        = 100  ## Sliding window for p50/p99 estimation
+  PerfEMAAlpha*          = 0.2  ## EMA smoothing factor (0..1, higher = more responsive to recent)
+  PerfMinSamplesForP99*  = 30   ## Minimum samples before p99-based timeout is trusted
+  StaticTimeoutFallback* = 180  ## Used when not enough samples accumulated yet
+  TimeoutSafetyFactor*   = 1.5  ## Multiply observed p99 by this for actual timeout
+  MinTimeoutSec*         = 60   ## Floor for recommendedTimeoutSec
+  MaxTimeoutSec*         = 600  ## Ceiling for recommendedTimeoutSec
+  PerfPersistEveryN*     = 10   ## Persist performance samples to disk every Nth chat —
+                                ## state-changes (failure, recovery, reset) always persist
+                                ## immediately. Performance data is regenerable, so a crash
+                                ## losing the last <N samples is acceptable; the alternative
+                                ## is a per-chat blocking writeFile under the lock.
 
 proc errorClass*(errMsg: string): tuple[
                   state: HealthState, cooldownSec: int] =
@@ -111,6 +140,10 @@ proc serializeHealth(h: ProviderHealth): JsonNode =
     "lastFailureTime": h.lastFailureTime,
     "lastSuccessTime": h.lastSuccessTime,
     "cooldownUntil": h.cooldownUntil,
+    "tokensPerSecAvg": h.tokensPerSecAvg,
+    "avgResponseTimeSec": h.avgResponseTimeSec,
+    "responseTimeSamples": h.responseTimeSamples,
+    "successCount": h.successCount,
   }
 
 proc parseHealth(j: JsonNode): ProviderHealth =
@@ -123,6 +156,14 @@ proc parseHealth(j: JsonNode): ProviderHealth =
   result.lastFailureTime = j{"lastFailureTime"}.getBiggestInt(0)
   result.lastSuccessTime = j{"lastSuccessTime"}.getBiggestInt(0)
   result.cooldownUntil = j{"cooldownUntil"}.getBiggestInt(0)
+  result.tokensPerSecAvg = j{"tokensPerSecAvg"}.getFloat(0.0)
+  result.avgResponseTimeSec = j{"avgResponseTimeSec"}.getFloat(0.0)
+  result.successCount = j{"successCount"}.getInt(0)
+  if j.hasKey("responseTimeSamples") and
+     j["responseTimeSamples"].kind == JArray:
+    for v in j["responseTimeSamples"]:
+      if v.kind in {JFloat, JInt}:
+        result.responseTimeSamples.add(v.getFloat())
 
 proc loadFromDisk(path: string): TableRef[string, ProviderHealth] =
   result = newTable[string, ProviderHealth]()
@@ -183,6 +224,12 @@ proc recordSuccess*(reg: ProviderHealthRegistry, providerName: string) =
   ## Mark a provider healthy after a successful call. Resets any
   ## prior failure state — implicit recovery for cooling_down
   ## entries that re-probed and worked.
+  ##
+  ## Only persists when state actually transitioned (was broken, now
+  ## healthy). The healthy→healthy hot path is memory-only — a
+  ## successful chat doesn't pay for a writeFile under the lock.
+  ## Performance fields (lastSuccessTime + recordPerformance) catch
+  ## up on the next state-change or scheduled flush.
   if reg == nil or providerName.len == 0: return
   acquire(reg.lock)
   defer: release(reg.lock)
@@ -199,7 +246,66 @@ proc recordSuccess*(reg: ProviderHealthRegistry, providerName: string) =
     infoCF("provider_health",
            "Provider recovered",
            {"provider": providerName}.toTable)
-  reg.persistUnsafe()
+    reg.persistUnsafe()
+
+proc recordPerformance*(reg: ProviderHealthRegistry,
+                         providerName: string,
+                         durationSec: float,
+                         completionTokens: int) =
+  ## Record a successful chat() call's timing for tokens/sec tracking.
+  ## Updates EMAs and the sliding-window for p50/p99 computation.
+  ##
+  ## Persists every PerfPersistEveryN samples (not every call). The
+  ## sliding-window data is regenerable, so a crash losing the last
+  ## few samples is acceptable; the alternative is a blocking writeFile
+  ## under the lock on every successful chat.
+  if reg == nil or providerName.len == 0: return
+  if durationSec <= 0.0 or completionTokens <= 0: return
+  acquire(reg.lock)
+  defer: release(reg.lock)
+  var h = reg.health.getOrDefault(providerName,
+            ProviderHealth(state: hsHealthy))
+  let tps = completionTokens.float / durationSec
+  if h.successCount == 0:
+    # first sample: seed EMAs at the observed value
+    h.tokensPerSecAvg = tps
+    h.avgResponseTimeSec = durationSec
+  else:
+    h.tokensPerSecAvg = PerfEMAAlpha * tps +
+                         (1.0 - PerfEMAAlpha) * h.tokensPerSecAvg
+    h.avgResponseTimeSec = PerfEMAAlpha * durationSec +
+                           (1.0 - PerfEMAAlpha) * h.avgResponseTimeSec
+  h.responseTimeSamples.add(durationSec)
+  if h.responseTimeSamples.len > MaxPerfSamples:
+    h.responseTimeSamples.delete(0)
+  h.successCount.inc
+  reg.health[providerName] = h
+  if h.successCount mod PerfPersistEveryN == 0:
+    reg.persistUnsafe()
+
+proc recommendedTimeoutSec*(reg: ProviderHealthRegistry,
+                             providerName: string): int =
+  ## Compute a per-call timeout from observed response-time history.
+  ## Returns p99 × TimeoutSafetyFactor when ≥PerfMinSamplesForP99
+  ## samples have accumulated; otherwise falls back to
+  ## StaticTimeoutFallback. Operators can override per-provider via
+  ## explicit config; this is the framework's "what's reasonable
+  ## given recent observations" signal.
+  if reg == nil or providerName.len == 0: return StaticTimeoutFallback
+  acquire(reg.lock)
+  defer: release(reg.lock)
+  if not reg.health.hasKey(providerName): return StaticTimeoutFallback
+  let h = reg.health[providerName]
+  if h.successCount < PerfMinSamplesForP99 or
+     h.responseTimeSamples.len < PerfMinSamplesForP99:
+    return StaticTimeoutFallback
+  # Compute p99 from sliding window. Sort is fine for ≤100 samples.
+  var sorted = h.responseTimeSamples
+  sorted.sort()
+  let p99Idx = (sorted.len.float * 0.99).int.min(sorted.len - 1)
+  let p99Sec = sorted[p99Idx]
+  let target = (p99Sec * TimeoutSafetyFactor).int
+  return target.max(MinTimeoutSec).min(MaxTimeoutSec)
 
 proc recordFailure*(reg: ProviderHealthRegistry, providerName: string,
                      errMsg: string): HealthState =

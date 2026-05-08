@@ -1,5 +1,8 @@
 import std/[os, random, strutils, tables]
-import curly, webby/httpheaders
+# Use the vendored curly with cancel API support — keeps Curly type
+# consistent across the http stack so the cancel-in-flight call site
+# in providers/http.nim works on the same object instance.
+import curly_with_cancel as curly, webby/httpheaders
 import ../logger
 
 proc curlyPostWithRetry*(c: Curly, url, body: string, headers: HttpHeaders, timeout: int = 30, maxRetries: int = 9): tuple[code: int, body: string] =

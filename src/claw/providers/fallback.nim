@@ -34,7 +34,7 @@
 ## (cooldown expires → next probe → success → flip to healthy);
 ## persistent errors (402 / 401) require `/provider reset <name>`.
 
-import std/[asyncdispatch, tables, strutils, json, unicode]
+import std/[asyncdispatch, tables, strutils, json, unicode, times]
 import types as providers_types
 import ./health
 import ../logger
@@ -145,6 +145,14 @@ proc newFallbackLLMProvider*(entries: seq[FallbackEntry],
 
 method getDefaultModel*(p: FallbackLLMProvider): string =
   if p.entries.len > 0: p.entries[0].model else: ""
+
+method cancelInFlight*(p: FallbackLLMProvider) =
+  ## Broadcast cancel to every entry in the chain. The active call
+  ## lives on exactly one entry, but we don't track which — fan out
+  ## and let each provider no-op if it has nothing to cancel.
+  for entry in p.entries:
+    if entry.provider != nil:
+      entry.provider.cancelInFlight()
 
 proc estimateRequestTokens*(messages: seq[providers_types.Message],
                              tools: seq[providers_types.ToolDefinition]): int =
@@ -332,10 +340,28 @@ method chat*(p: FallbackLLMProvider,
     let callModel =
       if i == 0 and model.len > 0: model
       else: entry.model
+    # Smart per-call timeout: ask the registry what's reasonable for
+    # this provider given recent observations. Returns a static 180s
+    # fallback until ≥30 samples accumulate; after that, p99 × 1.5
+    # clamped to 60..600s. Threaded through options so HTTPProvider
+    # can pick it up without per-call provider mutation.
+    var entryOptions = fwdOptions
+    if p.healthRegistry != nil:
+      entryOptions[providers_types.TimeoutOption] =
+        %p.healthRegistry.recommendedTimeoutSec(entry.name)
     try:
-      let resp = await entry.provider.chat(messages, tools, callModel, fwdOptions)
+      let chatStart = epochTime()
+      let resp = await entry.provider.chat(messages, tools, callModel, entryOptions)
+      let chatDuration = epochTime() - chatStart
       if p.healthRegistry != nil:
         p.healthRegistry.recordSuccess(entry.name)
+        # Also record performance: tokens-per-second + sliding-window
+        # response-time samples. Used by `recommendedTimeoutSec` to
+        # set per-call timeouts after enough samples accumulate.
+        if resp.usage.completion_tokens > 0:
+          p.healthRegistry.recordPerformance(entry.name,
+                                              chatDuration,
+                                              resp.usage.completion_tokens)
       return resp
     except IOError as e:
       lastErr = e

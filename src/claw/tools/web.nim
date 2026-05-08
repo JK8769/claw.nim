@@ -1,6 +1,6 @@
 import std/[asyncdispatch, json, tables, strutils, uri]
 import regex
-import curly, webby/httpheaders
+import ../lib/curly_with_cancel as curly, webby/httpheaders
 import ../lib/malebolgia
 import types
 

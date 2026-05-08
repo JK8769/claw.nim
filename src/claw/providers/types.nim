@@ -43,11 +43,32 @@ type
 
   LLMProvider* = ref object of RootObj
 
+const
+  TimeoutOption* = "__timeout_sec"
+    ## Per-call timeout override (seconds), set by FallbackLLMProvider
+    ## from the health registry's `recommendedTimeoutSec`. HTTPProvider
+    ## reads this option key to override its static `timeout` field on
+    ## a per-request basis. Lives on the base type so both fallback
+    ## (writer) and http (reader) can reference one canonical name.
+
 method chat*(p: LLMProvider, messages: seq[Message], tools: seq[ToolDefinition], model: string, options: Table[string, JsonNode]): Future[LLMResponse] {.base, async.} =
   discard
 
 method getDefaultModel*(p: LLMProvider): string {.base.} =
   return ""
+
+method cancelInFlight*(p: LLMProvider) {.base.} =
+  ## Abort any HTTP requests this provider currently has in-flight.
+  ## Default no-op for providers that have no transport state to
+  ## cancel (mocks, in-memory). HTTP-backed providers override and
+  ## call into their underlying client (e.g. curly's
+  ## cancelAllInFlight). FallbackLLMProvider overrides to broadcast
+  ## across all entries.
+  ##
+  ## Idempotent: cancelling an already-cancelled or idle provider is
+  ## a no-op. Caller does not need to know whether a request is
+  ## actually outstanding.
+  discard
 
 # ── Role constants and semantic predicates ───────────────────────────
 # Centralise the canonical role string values so a typo (`"asistant"`)

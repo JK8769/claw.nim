@@ -1,5 +1,9 @@
 import std/[asyncdispatch, json, strutils, tables, os]
-import curly, webby/httpheaders
+# Vendored curly with `cancelAllInFlight*` for /session stop. The
+# upstream curly.nim has internal cancel machinery (multi_remove_handle
+# on dequeued entries) but no public API. Our fork adds it; see
+# claw/lib/curly_with_cancel.nim for the diff.
+import ../lib/curly_with_cancel as curly, webby/httpheaders
 import ../lib/malebolgia
 import ../lib/http_retry
 import types
@@ -108,9 +112,24 @@ proc newHTTPProvider*(apiKey, apiBase, defaultModel: string, timeout: int): HTTP
 method getDefaultModel*(p: HTTPProvider): string =
   return p.defaultModel
 
+method cancelInFlight*(p: HTTPProvider) =
+  if p.curly != nil:
+    p.curly.cancelAllInFlight()
+
 method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition], model: string, options: Table[string, JsonNode]): Future[LLMResponse] {.async.} =
   if p.apiBase == "":
     raise newException(ValueError, "API base not configured")
+
+  # Per-call timeout override — set by FallbackLLMProvider from the
+  # health registry. The request body is built from individual option
+  # reads (max_tokens, temperature, thinking), not by dumping the whole
+  # table, so this internal field never reaches the vendor.
+  var callTimeout = p.timeout
+  if options.hasKey(TimeoutOption):
+    let v = options[TimeoutOption]
+    if v.kind == JInt:
+      let t = v.getInt()
+      if t > 0: callTimeout = t
 
   var actualModel = model
   # Only strip prefixes if we are hitting certain internal providers or if explicitly requested.
@@ -275,12 +294,12 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
       "body": $requestBody
     }.toTable)
 
-  let fv = p.master.spawn doRequest(p.curly, url, $requestBody, headers, p.timeout)
-  
+  let fv = p.master.spawn doRequest(p.curly, url, $requestBody, headers, callTimeout)
+
   # Busy-wait for TaskVar in an async-friendly way
   while not fv.isReady:
     await sleepAsync(10)
-    
+
   var (code, body) = fv.sync()
 
   # Retry on 429/529 rate limiting with exponential backoff
@@ -289,7 +308,7 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
       let delay = retryAttempt * retryAttempt * 2  # 2s, 8s, 18s, 32s, 50s
       warnCF("http_provider", "Rate limited (" & $code & "), retrying", {"attempt": $retryAttempt, "delay_s": $delay}.toTable)
       await sleepAsync(delay * 1000)
-      let retryFv = p.master.spawn doRequest(p.curly, url, $requestBody, headers, p.timeout)
+      let retryFv = p.master.spawn doRequest(p.curly, url, $requestBody, headers, callTimeout)
       while not retryFv.isReady:
         await sleepAsync(10)
       (code, body) = retryFv.sync()
@@ -417,7 +436,14 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
 
   return llmResp
 
-proc createProvider*(model, apiKey, apiBase: string, timeout: int = 300): LLMProvider =
+proc createProvider*(model, apiKey, apiBase: string, timeout: int = 180): LLMProvider =
+  ## Default timeout lowered 300 → 180s (Tier 1 of the timeout-cap
+  ## work). Combined with /session stop's mid-LLM cancel via the
+  ## vendored curly's cancelAllInFlight, the worst-case wasted CPU
+  ## on a hung HTTP call drops from indefinite (12+ min observed
+  ## on opencode-go silent-trickle) to ≤180s. Smart per-request
+  ## timeout based on tokens-per-sec history will replace this
+  ## static value once enough samples accumulate (>=30 per provider).
   return newHTTPProvider(apiKey, apiBase, model, timeout)
 
 const PROVIDER_BASE_URLS* = {

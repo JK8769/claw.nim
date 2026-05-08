@@ -15,7 +15,7 @@ import ../tools/base as tools_base
 import ../tools/loop_detector
 import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers]
 import ../services/cron as cron_service
-import curly
+import ../lib/curly_with_cancel as curly
 import ../lib/malebolgia
 import ../skills/installer as skills_installer
 import ../skills/loader as skills_loader
@@ -271,19 +271,16 @@ proc chatWithCancel*(al: AgentLoop, sessionKey: string,
   ## complete; if set, raises a sentinel IOError that the agent loop
   ## catches and converts to a clean cancellation finalContent.
   ##
-  ## The underlying curly request continues running in its background
-  ## thread (Nim's asyncdispatch can't actually abort a libcurl request
-  ## from outside), but its result is discarded — the agent moves on.
-  ## Some wasted CPU until the abandoned request times out or completes;
-  ## no resource leak (TaskVar GC'd when the future drops out of scope).
-  ##
-  ## Use only on per-turn agent calls where cancellation is meaningful.
-  ## Don't wrap heartbeat/internal summary calls — those don't need
-  ## cancellation responsiveness and the polling adds latency.
+  ## On cancel we call provider.cancelInFlight() so the underlying
+  ## HTTP transport aborts immediately rather than running its full
+  ## timeout. Use only on per-turn agent calls — heartbeat and
+  ## internal summary calls don't need cancellation responsiveness
+  ## and the polling adds latency.
   let chatFuture = al.provider.chat(messages, tools, model, options)
   while not chatFuture.finished:
     await sleepAsync(200)
     if al.isCancelRequested(sessionKey):
+      al.provider.cancelInFlight()
       raise newException(IOError,
         "Cancelled by /session stop (mid-LLM-call)")
   return chatFuture.read
