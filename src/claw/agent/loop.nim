@@ -259,6 +259,35 @@ proc clearCancel*(al: AgentLoop, sessionKey: string) =
   defer: release(al.cancelLock)
   al.cancelRequested.del(sessionKey)
 
+proc chatWithCancel*(al: AgentLoop, sessionKey: string,
+                     messages: seq[providers_types.Message],
+                     tools: seq[providers_types.ToolDefinition],
+                     model: string,
+                     options: Table[string, JsonNode]):
+                     Future[providers_types.LLMResponse] {.async.} =
+  ## Wraps `provider.chat()` with cancellation polling so `/session stop`
+  ## can interrupt a hung HTTP call mid-flight. Polls the per-session
+  ## cancel flag every 200ms while waiting for the chat future to
+  ## complete; if set, raises a sentinel IOError that the agent loop
+  ## catches and converts to a clean cancellation finalContent.
+  ##
+  ## The underlying curly request continues running in its background
+  ## thread (Nim's asyncdispatch can't actually abort a libcurl request
+  ## from outside), but its result is discarded — the agent moves on.
+  ## Some wasted CPU until the abandoned request times out or completes;
+  ## no resource leak (TaskVar GC'd when the future drops out of scope).
+  ##
+  ## Use only on per-turn agent calls where cancellation is meaningful.
+  ## Don't wrap heartbeat/internal summary calls — those don't need
+  ## cancellation responsiveness and the polling adds latency.
+  let chatFuture = al.provider.chat(messages, tools, model, options)
+  while not chatFuture.finished:
+    await sleepAsync(200)
+    if al.isCancelRequested(sessionKey):
+      raise newException(IOError,
+        "Cancelled by /session stop (mid-LLM-call)")
+  return chatFuture.read
+
 proc inferLangFromPath(path: string): string =
   ## Map a file extension to a markdown code-block language tag.
   ## Empty string for unknown extensions; callers render an unlabeled
@@ -1353,8 +1382,25 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     sanitizeForProvider(currentMessages)
     var response: LLMResponse
     try:
-      response = await al.provider.chat(currentMessages, toolDefs, al.model, options)
+      response = await al.chatWithCancel(opts.sessionKey,
+                                          currentMessages, toolDefs,
+                                          al.model, options)
     except Exception as e:
+      # Specific handling for /session stop mid-LLM-call. The
+      # exception message carries a sentinel string set by
+      # chatWithCancel; on match, exit cleanly with a cancellation
+      # marker (NOT the generic "Error communicating with LLM
+      # provider" path which would look like a real failure to
+      # operators reading logs).
+      if "Cancelled by /session stop" in e.msg:
+        al.clearCancel(opts.sessionKey)
+        finalContent = "[Cancelled by /session stop. The in-flight " &
+          "LLM call was interrupted mid-request; partial work earlier " &
+          "in the turn (if any) is preserved in the conversation.]"
+        infoCF("agent", "Turn cancelled mid-LLM-call by /session stop", {
+          "session": opts.sessionKey,
+          "iteration": $iteration}.toTable)
+        break
       errorCF("agent", "LLM API request failed", {"error": e.msg, "iteration": $iteration}.toTable)
       snapshot.lastError = "LLM: " & e.msg
       # Estimator-vs-server calibration log. When the server rejects
