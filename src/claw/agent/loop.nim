@@ -1991,12 +1991,23 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
           "streak": $consecutiveNonCommTools,
           "iteration": $iteration}.toTable)
 
-  # If loop exhausted maxIterations without breaking, make one final LLM call for summary
-  if finalContent == "" and (lastResponseContent != "" or toolCallLog.len > 0):
-    warnCF("agent", "Tool loop exhausted maxIterations without final response", {"iterations": $iteration, "max": $maxIter, "tool_calls": $toolCallLog.len}.toTable)
+  # If the loop exited without producing finalContent AND without
+  # the agent calling reply/message (which set ctx.responseSent),
+  # make one final LLM call to recover a summary. Skipping when
+  # ctx.responseSent is already true matters: the reply tool
+  # delivers via sendCallback and never assigns to finalContent,
+  # so naive `finalContent == ""` would treat every terminal-reply
+  # turn as "exhausted" and burn a ~30K-prompt LLM call to produce
+  # a summary that the post-loop persist path then discards via
+  # the "Response already sent via tools, skipping final return
+  # message" branch. ctx.responseSent is the truthful signal that
+  # delivery happened.
+  if not ctx.responseSent and finalContent == "" and
+     (lastResponseContent != "" or toolCallLog.len > 0):
+    warnCF("agent", "Tool loop ended without final response", {"iterations": $iteration, "max": $maxIter, "tool_calls": $toolCallLog.len}.toTable)
 
     # Build a compact context for the summary call — full message history is too long for GLM-5
-    infoCF("agent", "Making final summary LLM call after loop exhaustion", initTable[string, string]())
+    infoCF("agent", "Making final summary LLM call", initTable[string, string]())
     var exhaustPrompt = "You were performing a task for the user but reached the maximum number of tool iterations (" & $maxIter & "). Provide your FINAL response to the user NOW. Do NOT call any tools."
     if toolCallLog.len > 0:
       exhaustPrompt.add("\n\nHere is what you did:\n" & toolCallLog.join("\n") & "\n\nSummarize the results, including any errors or failures. If a step failed, tell the user what went wrong.")
@@ -2022,7 +2033,7 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
       let extracted = extractTextFromResponse(lastResponseContent)
       if extracted.len > 0:
         finalContent = extracted
-  elif finalContent == "":
+  elif not ctx.responseSent and finalContent == "":
     warnCF("agent", "Tool loop ended with empty finalContent", {"iterations": $iteration}.toTable)
 
   return (finalContent, iteration, currentMessages)
