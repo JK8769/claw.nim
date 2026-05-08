@@ -305,17 +305,55 @@ proc tablesToCodeBlocks*(text: string): string =
       inc i
   result = parts.join("\n")
 
+proc hasFencedCodeBlock*(text: string): bool =
+  ## True when `text` has at least one line starting with three backticks
+  ## (after optional whitespace). Used to decide whether to ship to
+  ## Feishu via the rich post-format path (with `tag:code_block` elements
+  ## that render as scrollable, copyable code boxes) or the plain
+  ## `--markdown` path (simpler but renders fenced blocks as monospaced
+  ## text with no copy/scroll affordances).
+  for line in text.splitLines():
+    if line.strip().startsWith("```"):
+      return true
+  return false
+
 proc buildPostContent*(text: string): string =
   ## Convert text to Feishu native post JSON format.
-  ## Handles: bare URLs, markdown links [text](url), bold **text**, tables, and plain text.
-  ## URLs become clickable {"tag": "a"} elements.
+  ## Handles: bare URLs, markdown links [text](url), bold **text**,
+  ## tables, fenced code blocks, and plain text. URLs become clickable
+  ## {"tag": "a"} elements; fenced code blocks become {"tag":
+  ## "code_block", "language": ..., "text": ...} which Feishu renders
+  ## as a code box with syntax highlighting, vertical scroll, and a
+  ## copy button — strictly better than `tag:md`'s monospaced text.
   var rows: seq[JsonNode] = @[]
   let lines = text.split("\n")
 
-  # Table detection and rendering
   var i = 0
   while i < lines.len:
     let line = lines[i]
+    let trimmed = line.strip()
+
+    # Fenced code block: ` ```<lang> ... ``` `
+    # Promotes to a `tag:code_block` element so Feishu renders it as a
+    # proper code box (scroll + copy + syntax highlight) instead of
+    # leaving it as monospaced text inside `tag:md`.
+    if trimmed.startsWith("```"):
+      let lang = trimmed[3..^1].strip()
+      var codeLines: seq[string] = @[]
+      inc i
+      while i < lines.len:
+        let codeLine = lines[i]
+        if codeLine.strip().startsWith("```"):
+          inc i
+          break
+        codeLines.add(codeLine)
+        inc i
+      var elem = %*{"tag": "code_block", "text": codeLines.join("\n")}
+      if lang.len > 0:
+        elem["language"] = %lang
+      rows.add(%*[elem])
+      continue
+
     # Detect table: look for separator row
     if i + 1 < lines.len and line.contains("|") and isTableSeparatorRow(lines[i+1]):
       let headerCells = splitTableRow(line)
@@ -1326,9 +1364,23 @@ method send*(c: FeishuChannel, msg: OutboundMessage) {.async.} =
     args.add("--content")
     args.add(options.get(cardOpt))
   else:
-    # tablesToCodeBlocks is a no-op when there are no pipe tables
-    args.add("--markdown")
-    args.add(tablesToCodeBlocks(msg.content))
+    # tablesToCodeBlocks promotes pipe tables to fenced code blocks
+    # (Feishu's md tag doesn't render pipe tables; monospaced code
+    # blocks do). Then check if any code blocks remain — if so, ship
+    # via post-format with explicit `tag:code_block` elements so
+    # Feishu's IM client gives them the rich code-box UI (scroll +
+    # copy + syntax highlighting). Without this branch, lark-cli's
+    # `--markdown` flag would wrap everything in `tag:md` which leaves
+    # fenced blocks as plain monospaced text.
+    let prepared = tablesToCodeBlocks(msg.content)
+    if hasFencedCodeBlock(prepared):
+      args.add("--msg-type")
+      args.add("post")
+      args.add("--content")
+      args.add(buildPostContent(prepared))
+    else:
+      args.add("--markdown")
+      args.add(prepared)
 
   args.add("--as")
   args.add("bot")
