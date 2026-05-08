@@ -4,7 +4,9 @@
 
 import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorithm, options, osproc, times, sets, random, unicode]
 import lib/curl as curly, webby/httpheaders
-import config, logger, bus, bus_types, session, agent/loop, agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
+import config, logger, bus, bus_types, session, agent/loop,
+       agent/context as agent_ctx,
+       agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
 import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
@@ -13,7 +15,8 @@ import tools/types as tools_types
 import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
-import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator]
+import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator,
+                  heartbeat_decl]
 import skills/loader as skills_loader_mod
 import daemon/[socket, status]
 
@@ -246,12 +249,12 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     return
 
   if job.payload.kind == "heartbeat_tick":
-    # The framework-fold of the prior HeartbeatService timer. Same
-    # behaviour as the old runLoop: skip-if-busy (defer cleanly when
-    # the agent has live work — would compete for provider chain),
-    # rebuild the prompt fresh from the agent's mailbox + HEARTBEAT.md
-    # (so file edits land without restart), dispatch via processOneShot
-    # so no JSONL accumulates between ticks.
+    # Three-phase heartbeat dispatch:
+    #   1. Gather   — read HEARTBEAT.md, mail/, and run each
+    #                 competency-declared duty's read tool deterministically
+    #   2. Auto-act — fire any duty.act.auto whose `when` is truthy
+    #                 (deferred to a follow-up sub-commit; for now hint-only)
+    #   3. Prompt   — assemble structured sections, dispatch via processOneShot
     if not gCtx.offices.hasKey(officeKey):
       gCtx.offices[officeKey] = makeAgentLoop(agentName)
     let office = gCtx.offices[officeKey]
@@ -262,12 +265,123 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
               "live_tasks": $office.liveTaskCount}.toTable)
       return
     let agentWorkspace = gCtx.cfg.workspacePath() / "offices" / officeKey
-    let prompt = buildHeartbeatPrompt(agentWorkspace)
+
+    # Resolve agent's loaded competencies (practices ∪ team-inherited).
+    var practices: seq[string]
+    for a in gCtx.cfg.agents.named:
+      if a.name == agentName:
+        practices = a.practices
+        break
+    let competencies = office.contextBuilder.effectiveCompetencies(
+      agentName, practices)
+    let competenciesRoot = gCtx.cfg.workspacePath() / "competencies"
+    let duties = dutiesForAgent(competenciesRoot, competencies)
+
+    # Phase 1 — Gather. Run each duty's read tool deterministically.
+    type ReadResult = object
+      duty: HeartbeatDuty
+      content: string
+      isEmpty: bool
+    var readResults: seq[ReadResult]
+    for duty in duties:
+      if duty.read.tool.len == 0:
+        readResults.add(ReadResult(duty: duty, content: "", isEmpty: true))
+        continue
+      var args = initTable[string, JsonNode]()
+      if duty.read.args != nil and duty.read.args.kind == JObject:
+        for k, v in duty.read.args.fields:
+          args[k] = v
+      let toolCtx = tools_types.ToolContext(
+        channel: "system",
+        sessionKey: "system:heartbeat:" & job.id & ":" & duty.id,
+        senderID: "nc:1",
+        recipientID: "nc:1",
+        role: "system",
+        agentName: "scheduler",
+        agentID: "nc:1",
+        logicalUserID: "nc:1",
+        graph: office.contextBuilder.graph,
+      )
+      try:
+        let r = await office.tools.executeWithContext(
+          duty.read.tool, args, toolCtx)
+        let trimmed = r.strip()
+        let empty = trimmed.len == 0 or
+                    trimmed == "[]" or trimmed == "{}" or
+                    trimmed == "null"
+        readResults.add(ReadResult(
+          duty: duty, content: trimmed, isEmpty: empty))
+      except Exception as e:
+        warnCF("cronHandler", "Heartbeat duty read failed",
+               {"agent": agentName, "duty": duty.id,
+                "tool": duty.read.tool, "error": e.msg}.toTable)
+        readResults.add(ReadResult(
+          duty: duty, content: "Error: " & e.msg, isEmpty: false))
+
+    # Phase 2 — Auto-act. (Stub for now; sub-commit 2 ships hint-only.
+    # When auto mode lands, evaluate `when`, substitute {result.X}
+    # into autoArgs, fire tool deterministically, capture confirmation
+    # for the prompt phase.)
+
+    # Phase 3 — Prompt. Assemble structured sections.
+    var sections: seq[string] = @[]
+
+    # HEARTBEAT.md → user's standing instructions, verbatim
+    for path in [agentWorkspace / "HEARTBEAT.md",
+                 agentWorkspace / "memory" / "HEARTBEAT.md"]:  # legacy fallback
+      if fileExists(path):
+        let body = try: readFile(path).strip except: ""
+        if body.len > 0:
+          sections.add("## Standing instructions from your user\n\n" & body)
+        break
+
+    # Mailbox alert
+    let mailFiles = scanMailbox(agentWorkspace)
+    if mailFiles.len > 0:
+      sections.add("## Mailbox\n\n" & $mailFiles.len &
+                   " unread item(s): " & mailFiles.join(", "))
+
+    # Per-duty read sections (skip duties whose read came back empty)
+    for rr in readResults:
+      if rr.isEmpty: continue
+      let title =
+        if rr.duty.read.sectionTitle.len > 0: rr.duty.read.sectionTitle
+        else: rr.duty.title
+      sections.add("## " & title & " [" & rr.duty.sourceCompetency & "]\n\n" &
+                   rr.content)
+
+    # Suggested actions (hint mode duties whose `when` evaluated truthy)
+    var hints: seq[string] = @[]
+    for rr in readResults:
+      if rr.duty.act.mode != hamHint: continue
+      let shouldFire = case rr.duty.act.`when`:
+        of "always": true
+        of "result_not_empty": not rr.isEmpty
+        else: not rr.isEmpty
+      if shouldFire:
+        hints.add("- [" & rr.duty.sourceCompetency & "." & rr.duty.id & "] " &
+                  rr.duty.act.hint)
+    if hints.len > 0:
+      sections.add("## Suggested actions for this tick\n\n" & hints.join("\n"))
+
+    let nowStr = now().format("yyyy-MM-dd HH:mm")
+    var prompt = "# Heartbeat Tick\n\nTime: " & nowStr & "\n\n"
+    if sections.len > 0:
+      prompt.add(sections.join("\n\n") & "\n\n")
+    else:
+      prompt.add("_No active sources this tick — nothing flagged._\n\n")
+    prompt.add(
+      "**Communication discipline**: this is a routine internal tick. " &
+      "Don't message the user unless your standing instructions or a " &
+      "suggested action explicitly call for it.\n")
+
     try:
       discard await office.processOneShot(
         prompt, tools_registry.SystemHeartbeatSender)
       infoCF("cronHandler", "heartbeat_tick completed",
-             {"job": job.name, "agent": agentName}.toTable)
+             {"job": job.name, "agent": agentName,
+              "duty_count": $duties.len,
+              "section_count": $sections.len}.toTable)
     except CatchableError as e:
       logHeartbeat(agentWorkspace, "Heartbeat error: " & e.msg)
       warnCF("cronHandler", "heartbeat_tick raised — continuing",
