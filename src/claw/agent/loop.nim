@@ -2450,42 +2450,47 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     if finalContent == "":
       finalContent = opts.defaultResponse
 
-    # Transient LLM-error responses don't land in the session log.
-    # If the LLM call itself failed (no real assistant content was
-    # ever produced), `finalContent` was set in the catch block to
-    # "Error communicating with LLM provider: ..." — surface that
-    # to the operator so they can debug, but do NOT record it as
-    # the assistant's turn. Otherwise the next turn's LLM call sees
-    # the error string as Lexi's "last reply" and starts apologising
-    # for / explaining a system failure that wasn't hers, plus the
-    # user retrying compounds the same garbage three or four lines
-    # deep before they realise.
+    # Two reasons to drop everything from this turn:
+    #   - Transient LLM-error: the call itself failed (no real
+    #     assistant content was produced); surfacing the
+    #     "Error communicating with LLM provider: ..." string as
+    #     Lexi's "last reply" makes the next turn apologise for /
+    #     explain a system failure that wasn't hers.
+    #   - /session stop: the user explicitly aborted the turn,
+    #     usually because the agent was on the wrong track. Keeping
+    #     the cancelled iterations' tool calls in history would bias
+    #     the next turn toward continuing the wrong direction. Full
+    #     rollback gives the user a clean retry surface — exactly
+    #     the rollback semantics they asked for.
+    # In both cases the message text is still returned to the
+    # caller and shown to the user; only the JSONL record is
+    # rolled back to the pre-turn snapshot.
     let isTransientError = finalContent.startsWith(
       "Error communicating with LLM provider:")
+    let isCancelledTurn = finalContent.startsWith(
+      "[Cancelled by /session stop")
+    let shouldRollback = isTransientError or isCancelledTurn
 
-    if isTransientError:
-      # Roll the session back to BEFORE the user message was added.
-      # Removes the user's failed message AND anything else added
-      # during this turn (typically nothing — transient errors fire
-      # in iteration 1 before tools run, but this is robust if the
-      # error happens later). Without rollback, the user retries and
-      # the session accumulates duplicate user messages during the
-      # outage period.
+    if shouldRollback:
       al.sessions.rollbackTo(opts.sessionKey, preTurnMessageCount)
+      let kind =
+        if isCancelledTurn: "user cancellation (/session stop)"
+        else: "transient LLM-error"
       infoCF("agent",
-             "Rolled back turn due to transient LLM-error",
+             "Rolled back turn",
              {"session_key": opts.session_key,
+              "reason": kind,
               "rolled_back_to": $preTurnMessageCount,
               "preview": finalContent[0 ..< min(finalContent.len, 120)]}.toTable)
 
     if ctx.responseSent:
       infoCF("agent", "Response already sent via tools, skipping final return message", {"session_key": opts.session_key}.toTable)
       # Still add to history but return empty so gateway doesn't send it again
-      if not isTransientError:
+      if not shouldRollback:
         al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
       return ""
 
-    if not isTransientError:
+    if not shouldRollback:
       al.sessions.addWithSpeaker(opts.sessionKey, "assistant", finalContent, al.agentId)
 
     if opts.enableSummary:
