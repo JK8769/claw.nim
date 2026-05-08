@@ -48,6 +48,12 @@ type
     mcDaily      = "daily"
     mcReflection = "reflection"
     mcPreference = "preference"
+    mcExperience = "experience"     ## Auto-captured outcome event tied to a
+                                    ## partner interaction (cancellation,
+                                    ## praise, etc.). Always partner-file;
+                                    ## the framework writes these, not the
+                                    ## agent. Drives offline synthesis into
+                                    ## mcReflection entries on self.jsonl.
 
   MemoryEntry* = object
     key*: string
@@ -58,6 +64,16 @@ type
                                     ## whoever was talking for self.jsonl entries)
     timestamp*: float64             ## epoch seconds — gives the timeline
     storedAtTrust*: int             ## trust at write time (0 = legacy/unknown)
+    weight*: float64                ## Outcome-signal magnitude in [-1.0, +1.0].
+                                    ## 0.0 = no signal (default; back-compat for
+                                    ## entries written before mcExperience existed).
+                                    ## Negative = user pushed back (cancellation,
+                                    ## frustration); positive = user reinforced
+                                    ## (praise, thanks). Magnitude reflects
+                                    ## confidence in the signal — strong markers
+                                    ## like "做得真好" → 1.0; reflexive politeness
+                                    ## like "thanks" → 0.6. Drives clustering /
+                                    ## ranking during reflection synthesis.
     deleted*: bool                  ## tombstone
     deletedBy*: string
     deletedAt*: float64
@@ -149,6 +165,30 @@ proc storeSelf*(ms: MemoryStore, authorNcId, key, content: string,
       category: category, visibility: visibility,
       senderID: authorNcId, timestamp: epochTime(),
       storedAtTrust: storedAtTrust
+    ))
+
+proc recordExperience*(ms: MemoryStore, ncId, kind, content: string,
+                        weight: float64) =
+  ## Auto-captured outcome event for the partner identified by `ncId`.
+  ## Lands in that partner's isolated experience file; never crosses
+  ## into self.jsonl. Framework-only entry point: agents do not call
+  ## this directly. The offline MemoryConsolidationService reads
+  ## across these files (with entity-strip) to produce mcReflection
+  ## entries on self.jsonl.
+  ##
+  ## `kind` is a stable tag that the synthesizer keys on
+  ## ("cancelled_turn", "positive_feedback"). `content` is a short
+  ## human-readable summary anchored to the agent's recent work
+  ## ("iter 5: history queries on plant 荣鑫"). `weight` carries the
+  ## signal direction and confidence — see MemoryEntry.weight doc.
+  if not ncId.startsWith("nc:"): return
+  if kind.len == 0: return
+  appendEntry(ms.senderFile(ncId),
+    MemoryEntry(
+      key: kind, content: content,
+      category: mcExperience, visibility: mvPublic,
+      senderID: ncId, timestamp: epochTime(),
+      weight: weight
     ))
 
 # ── Recall ─────────────────────────────────────────────────────────

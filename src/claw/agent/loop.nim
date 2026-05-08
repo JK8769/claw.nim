@@ -8,6 +8,7 @@ export sanitize.sanitizeForProvider
 import ../skill_grant
 import ../billing/[subscription as sub_mod, usage as usage_mod]
 import context as agent_context
+import memory as agent_memory
 import xml_tools
 import ../schema
 import ../tools/registry as tools_registry
@@ -314,6 +315,81 @@ proc inferLangFromPath(path: string): string =
   of ".lua": "lua"
   of ".r": "r"
   else: ""
+
+proc detectPositiveMarker*(message: string):
+                            tuple[matched: bool, marker: string, weight: float] =
+  ## Light keyword/regex scan for explicit positive feedback in a
+  ## user message. Returns (true, the matched marker, suggested
+  ## weight) or (false, "", 0). No LLM call. Multilingual; weights
+  ## tuned for SunGrowCN's English/Mandarin operator base —
+  ## "做得真好" carries strong intent in CN, while "谢谢" is closer
+  ## to reflexive politeness and gets a lower weight.
+  ##
+  ## Phase 1 is intentionally conservative: only fire on markers
+  ## clearly tied to recognising work, not bare politeness. False
+  ## negatives (missed praise) are cheap; false positives pollute
+  ## the experience file. We can loosen as the synthesizer surfaces
+  ## what's actually useful.
+  if message.len == 0: return (false, "", 0.0)
+  let m = message.toLowerAscii()
+  # Strong markers — clearly recognising the agent's work
+  for marker in [
+    "good work", "great job", "great work", "well done", "excellent",
+    "perfect", "amazing job", "nicely done", "great answer",
+    "做得好", "做得真好", "干得漂亮", "干得好", "辛苦了"]:
+    if marker.toLowerAscii in m:
+      return (true, marker, 1.0)
+  # Medium markers — positive reinforcement, less explicitly tied to work
+  for marker in ["great!", "thanks!", "very helpful", "much appreciated",
+                  "不错", "很好", "棒"]:
+    if marker.toLowerAscii in m:
+      return (true, marker, 0.6)
+  return (false, "", 0.0)
+
+proc summarizeRecentAssistantTurn(messages: seq[providers_types.Message]): string =
+  ## Short preview of the most recent assistant content that the
+  ## user is likely praising. Walks back to the last assistant
+  ## message that has either content or tool calls. Used as the
+  ## `content` field on positive_feedback experience entries.
+  for i in countdown(messages.high, 0):
+    let msg = messages[i]
+    if not msg.isAssistant: continue
+    if msg.content.len > 0:
+      let preview =
+        if msg.content.len > 100: msg.content[0 ..< 100] & "…"
+        else: msg.content
+      return preview
+    if msg.tool_calls.len > 0:
+      let tc = msg.tool_calls[^1]
+      let name =
+        if tc.function.name.len > 0: tc.function.name
+        elif tc.name.len > 0: tc.name
+        else: "<unnamed>"
+      return name
+  return ""
+
+proc summarizeCancelledTurn(messages: seq[providers_types.Message],
+                              iteration: int): string =
+  ## Short human-readable preview of what the agent was attempting
+  ## right before /session stop fired. Used as the `content` field
+  ## on the cancellation experience entry. Walks backward through
+  ## the cancelled turn's messages to find the most recent assistant
+  ## tool call — that's the action the user objected to. Falls back
+  ## to "iter N (no tool call yet)" when the cancellation came
+  ## before any tool dispatch.
+  for i in countdown(messages.high, 0):
+    let m = messages[i]
+    if m.isAssistant and m.tool_calls.len > 0:
+      let tc = m.tool_calls[^1]
+      let name =
+        if tc.function.name.len > 0: tc.function.name
+        elif tc.name.len > 0: tc.name
+        else: "<unnamed>"
+      var argsPreview = tc.function.arguments
+      if argsPreview.len > 80:
+        argsPreview = argsPreview[0 ..< 80] & "…"
+      return "iter " & $iteration & ": " & name & "(" & argsPreview & ")"
+  return "iter " & $iteration & " (no tool call yet)"
 
 proc displayPath(path: string): string =
   ## Strip the agent's workspace prefix from a path so visibility
@@ -2434,6 +2510,26 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     al.sessions.addWithSpeaker(opts.sessionKey, "user",
       opts.userMessage, logicalUserID)
 
+    # Phase 1 outcome-signal capture: positive feedback. Scan the
+    # user's inbound message for explicit recognition markers and
+    # record an experience entry on the partner's experience file
+    # tied to the most recent assistant turn (what the user is
+    # praising). Cheap keyword check, no LLM call. The negative
+    # counterpart fires in the cancellation-rollback path below.
+    if logicalUserID.startsWith("nc:") and
+       al.contextBuilder != nil and al.contextBuilder.memory != nil:
+      let (matched, marker, weight) = detectPositiveMarker(opts.userMessage)
+      if matched:
+        let praisedWork = summarizeRecentAssistantTurn(messages)
+        let content = "marker=\"" & marker & "\"; praised: " & praisedWork
+        al.contextBuilder.memory.recordExperience(
+          logicalUserID, "positive_feedback", content, weight)
+        infoCF("agent", "Recorded positive_feedback experience",
+               {"session_key": opts.session_key,
+                "partner": logicalUserID,
+                "marker": marker,
+                "weight": $weight}.toTable)
+
     # Immediate feedback: notify bus that bot is "typing"
     al.bus.publishOutbound(OutboundMessage(
       channel: opts.channel,
@@ -2444,7 +2540,7 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
       app_id: opts.appID
     ))
 
-    let (finalContentRaw, iteration, _) = await al.runLLMIteration(ctx, messages, opts, logicalUserID, allowedTools, snapshot)
+    let (finalContentRaw, iteration, turnMessages) = await al.runLLMIteration(ctx, messages, opts, logicalUserID, allowedTools, snapshot)
     var finalContent = finalContentRaw
 
     if finalContent == "":
@@ -2472,6 +2568,24 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
     let shouldRollback = isTransientError or isCancelledTurn
 
     if shouldRollback:
+      # Capture the cancellation as a partner experience BEFORE the
+      # session JSONL is rolled back — this is the only signal we
+      # have that the user pushed back, and we need it to land in
+      # the partner's experience file so the offline synthesizer
+      # can later spot recurring "wrong direction" patterns and
+      # promote them into reflections / reflexes. Transient LLM
+      # errors are NOT experiences — they're framework failures,
+      # not signals about how the agent was doing.
+      if isCancelledTurn and logicalUserID.startsWith("nc:") and
+         al.contextBuilder != nil and al.contextBuilder.memory != nil:
+        let preview = summarizeCancelledTurn(turnMessages, iteration)
+        al.contextBuilder.memory.recordExperience(
+          logicalUserID, "cancelled_turn", preview, -1.0)
+        infoCF("agent", "Recorded cancellation experience",
+               {"session_key": opts.session_key,
+                "partner": logicalUserID,
+                "preview": preview}.toTable)
+
       al.sessions.rollbackTo(opts.sessionKey, preTurnMessageCount)
       let kind =
         if isCancelledTurn: "user cancellation (/session stop)"
