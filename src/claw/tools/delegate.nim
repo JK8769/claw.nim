@@ -1,7 +1,8 @@
-import std/[json, tables, strutils, options, asyncdispatch, strformat]
+import std/[json, tables, strutils, options, asyncdispatch, strformat, os]
 import types
 import ../config
 import ../agent/cortex
+import ../agent/todo as agent_todo
 import ../providers/http as providers_http
 import ../providers/types as providers_types
 
@@ -67,6 +68,10 @@ method parameters*(t: DelegateTool): Table[string, JsonNode] =
       "context": {
         "type": "string",
         "description": "Optional context to prepend."
+      },
+      "deferred": {
+        "type": "boolean",
+        "description": "If true, the prompt is appended to the peer's todo queue (`<peer-office>/notes/todo.jsonl`) for processing at her next heartbeat instead of invoking her synchronously. Use for non-urgent batch work — the peer handles it on her own cadence rather than being interrupted now. Default false (synchronous delegation, peer responds in this turn)."
       }
     },
     "required": %["agent", "prompt"]
@@ -102,6 +107,10 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
   var contextText: Option[string] = none(string)
   if args.hasKey("context"): contextText = some(args["context"].getStr())
 
+  let deferred = args.hasKey("deferred") and
+                 args["deferred"].kind == JBool and
+                 args["deferred"].getBool()
+
   let agentCfgOpt = t.findAgent(agentName)
 
   if agentCfgOpt.isSome:
@@ -116,6 +125,39 @@ method execute*(t: DelegateTool, args: Table[string, JsonNode]): Future[string] 
     fmt"Context: {contextText.get()}{'\n'}{'\n'}{promptText}"
   else:
     promptText
+
+  # Deferred mode: append the prompt to the peer's todo queue and
+  # return immediately. The peer processes the item at her next
+  # heartbeat tick rather than being interrupted synchronously.
+  # Cheaper for non-urgent batch work (no provider chain
+  # competition, no per-call LLM cost on the caller's turn) and
+  # matches the "batch like a senior professional" model — peer
+  # decides when to drain her queue rather than being yanked
+  # whenever a peer feels like it.
+  if deferred:
+    if t.workspace.len == 0:
+      return "Error: cannot defer — workspace not set on delegate tool"
+    # Resolve target office dir. Sibling of the caller's workspace:
+    # <co_workspace>/offices/<agent_lower>/
+    let officeRoot = parentDir(t.workspace)
+    let peerOffice = officeRoot / agentName.toLowerAscii()
+    let store = newTodoStore(peerOffice)
+    let summaryPreview =
+      if promptText.len > 80: promptText[0 ..< 80] & "…"
+      else: promptText
+    let id = store.append(
+      source = "delegated",
+      sourceID = lastPathPart(t.workspace),    # caller's office name
+      summary = summaryPreview,
+      body = fullPrompt,
+      priority = "normal",
+    )
+    if id.len == 0:
+      return "Error: failed to write to peer's todo queue"
+    return "Deferred to " & agentName & "'s todo queue (id=" & id &
+           "). She'll process it at her next heartbeat tick. " &
+           "Do NOT wait for a synchronous reply — this returned " &
+           "immediately by design."
 
   # Full delegation: route through the peer's AgentLoop so she has
   # her own tool registry (MCP servers, graph access, trust gate,

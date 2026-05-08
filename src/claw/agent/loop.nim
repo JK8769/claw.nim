@@ -14,7 +14,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers]
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers, defer_to_todo, mark_todo_done]
 import ../services/scheduler as cron_service
 import ../lib/curl as curly
 import ../lib/malebolgia
@@ -2463,6 +2463,15 @@ proc runAgentLoop*(al: AgentLoop, optsParam: ProcessOptions): Future[string] {.a
         if g.len > 0 and "*" notin g:
           allowedTools = g
 
+    # Heartbeat-context override. SystemHeartbeatSender resolves via
+    # graph fallback to "guest" (it's not an nc:id), which gives a
+    # narrow grant. The heartbeat tick is the agent operating on her
+    # OWN state, not an external party with limited trust — the
+    # appropriate gate is HeartbeatAllowedTools (intentional minimal
+    # set for batch-processing duties), not the Guest grant.
+    if logicalUserID == tools_registry.SystemHeartbeatSender:
+      allowedTools = @(tools_registry.HeartbeatAllowedTools)
+
     # Per-requester skill grants. The requester's Person entity can carry
     # `custom.allowed_skills = ["[user@]skill[/resource,…]", …]` — each
     # entry grants this specific requester the tools from that skill,
@@ -2819,6 +2828,12 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newListDirTool(workspace, officeDir, allowedPaths), ["filesystem", "data", "core"], "list directory contents")
   regTagged(newExecTool(workspace), ["system", "dev", "automation", "core"], "run shell commands and scripts")
   regTagged(newClockTool(), ["utility", "core"], "get current date and time")
+  # The per-agent todo store lives at <officeDir>/notes/todo.jsonl;
+  # pass officeDir not workspace, otherwise the tool writes to the
+  # company root and the heartbeat dispatcher (which reads from the
+  # office) can't see the tombstone.
+  regTagged(newDeferToTodoTool(officeDir), ["agent", "core"], "defer an item to your own todo queue, processed at next heartbeat")
+  regTagged(newMarkTodoDoneTool(officeDir), ["agent", "core"], "mark a todo queue entry as done after processing it")
 
   # --- Web tools ---
   regTagged(newWebSearchTool(expandEnv(cfg.tools.web.search.api_key), cfg.tools.web.search.max_results, toolCurly, createMaster()), ["web", "search", "data"], "search the internet for information")

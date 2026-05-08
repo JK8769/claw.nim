@@ -6,7 +6,8 @@ import std/[os, strutils, asyncdispatch, tables, posix, exitprocs, json, algorit
 import lib/curl as curly, webby/httpheaders
 import config, logger, bus, bus_types, session, agent/loop,
        agent/context as agent_ctx,
-       agent/cortex, agent/binding, agent/invites, cli_admin, system_commands
+       agent/cortex, agent/binding, agent/invites, agent/todo as agent_todo,
+       cli_admin, system_commands
 import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
@@ -340,6 +341,14 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     if mailFiles.len > 0:
       sections.add("## Mailbox\n\n" & $mailFiles.len &
                    " unread item(s): " & mailFiles.join(", "))
+
+    # Pending todo queue — items system-appended (mail arrival, peer
+    # delegate-deferred) plus agent self-defers from prior ticks. The
+    # agent's drain-the-queue work for this tick.
+    let todoStore = newTodoStore(agentWorkspace)
+    let todoBlock = todoStore.renderPendingForPrompt()
+    if todoBlock.len > 0:
+      sections.add("## Pending TODO (process at this tick)\n\n" & todoBlock)
 
     # Per-duty read sections (skip duties whose read came back empty)
     for rr in readResults:

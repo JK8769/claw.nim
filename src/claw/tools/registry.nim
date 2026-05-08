@@ -30,7 +30,8 @@ const
   # If a faster cadence on a specific tool is needed, schedule a
   # separate cron task — that cost is visible as cron, not heartbeat.
   HeartbeatAllowedTools* = ["read_file", "list_dir", "forward",
-                            "update_contact", "reply", "delegate"]
+                            "update_contact", "reply", "delegate",
+                            "defer_to_todo", "mark_todo_done"]
   # Synthetic sender id the gateway uses when the heartbeat service
   # invokes processDirect — agent/loop matches on this to apply the
   # allowlist above.
