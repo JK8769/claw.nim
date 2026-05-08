@@ -43,7 +43,7 @@ proc setSendCallback*(t: ReplyProgressTool, callback: types.SendCallback) =
 method name*(t: ReplyProgressTool): string = "reply_progress"
 
 method description*(t: ReplyProgressTool): string =
-  "Send a checkpoint update during a long-running task. Use this BETWEEN tool clusters to keep the user informed of progress — e.g. \"Step 1 done: loaded 35K rows, 9.6% have negative prices. Now computing regime statistics.\" Distinct from `reply` (which is for the final answer): use reply_progress for in-flight status, use reply for the conclusive answer at the end. Markdown formatting is supported. The user sees these as small status messages in the chat."
+  "Send an INTERPRETATION checkpoint during a long-running task — your plan, an analytical insight, a decision rationale, a pivot. NOT for showing tool work itself: file paths + code snippets, bash commands + terminal output are AUTO-EMITTED by the framework on supportive channels (Feishu) when technical-communication mode is on. You don't manage that — it's already happening. Use reply_progress to tell the user WHAT YOU'RE THINKING about the work, not to repeat WHAT YOU JUST DID. Examples: (1) \"Plan: 1) load data, 2) train, 3) backtest, 4) report.\" (2) \"Found 9.6% negative-price slots clustered in Nov-Dec — this means the model trained on uniform distributions will underestimate winter swings.\" (3) \"Pivoting to a per-month threshold; the global one masked the seasonal effect.\" Distinct from `reply` (the final answer with TL;DR + 3 options). Markdown supported. Renders as a small 📊-prefixed status message in chat."
 
 method parameters*(t: ReplyProgressTool): Table[string, JsonNode] =
   {

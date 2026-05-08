@@ -253,28 +253,72 @@ proc firstNLines(s: string, n: int): string =
     i.inc
   return s
 
+proc countLines(s: string): int =
+  ## Count newline-delimited lines in `s`. Empty string → 0.
+  if s.len == 0: return 0
+  result = 1
+  for ch in s:
+    if ch == '\n': result.inc
+
+proc fileSnippet(path, content: string,
+                  shortCap = 30, mediumCap = 40,
+                  longCap = 30): string =
+  ## Render a code-block file snippet with smart truncation. Feishu
+  ## scrolls within fenced code blocks and shows a copy button, so we
+  ## can be generous — but still cap on huge files to avoid chat
+  ## floods. Behavior by total line count:
+  ##   ≤ shortCap  → full content (no truncation marker)
+  ##   ≤ mediumCap*2 → first `mediumCap` lines + truncation footer
+  ##   else        → first `longCap` lines + footer + Doc-handoff hint
+  let lang = inferLangFromPath(path)
+  let total = countLines(content)
+  var snippet = ""
+  var footer = ""
+  if total <= shortCap:
+    snippet = content.strip(leading = false)
+  elif total <= mediumCap * 2:
+    snippet = firstNLines(content, mediumCap)
+    footer = "\n\n_…(" & $(total - mediumCap) & " more lines, full file at `" & path & "`)_"
+  else:
+    snippet = firstNLines(content, longCap)
+    footer = "\n\n_…(" & $(total - longCap) & " more lines. For files this size, consider `lark docs +create` to make the full content shareable.)_"
+  var sb = ""
+  if lang.len > 0:
+    sb.add("```" & lang & "\n" & snippet & "\n```")
+  else:
+    sb.add("```\n" & snippet & "\n```")
+  sb.add(footer)
+  return sb
+
+proc outputSnippet(toolResult: string, cap = 40): string =
+  ## Render a code-block output excerpt with truncation marker.
+  ## Feishu's code-block scrolls vertically; cap at `cap` lines to
+  ## keep the chat orientation-only on long stdout.
+  let stripped = toolResult.strip()
+  if stripped.len == 0: return ""
+  let total = countLines(stripped)
+  if total <= cap:
+    return "```\n" & stripped & "\n```"
+  let snippet = firstNLines(stripped, cap)
+  return "```\n" & snippet & "\n```\n\n_…(" & $(total - cap) & " more lines truncated)_"
+
 proc formatVisibilityMessage*(toolName: string,
                                 args: Table[string, JsonNode],
                                 toolResult: string): string =
   ## Synthesize a Pattern 5 visibility message from a tool call's
   ## args and result. Returns an empty string for tools without a
   ## meaningful visibility shape (read_file, mcp_*, jq, etc) — those
-  ## don't emit. Length-bounded: 15-line file snippets, 25-line
-  ## output excerpts. Operators see what changed; the LLM still
-  ## consumes the full tool result via the normal path.
+  ## don't emit. Length-bounded with smart truncation: small files
+  ## go in full, medium files show ~40 lines, large files show ~30
+  ## lines with a Doc-handoff hint. Output excerpts cap at 40 lines.
   case toolName
   of "write_file":
     if not args.hasKey("path") or not args.hasKey("content"): return ""
     let path = args["path"].getStr()
     let content = args["content"].getStr()
     if path.len == 0 or content.len == 0: return ""
-    let lang = inferLangFromPath(path)
-    let snippet = firstNLines(content, 15)
     var sb = "📝 Wrote `" & path & "`\n\n"
-    if lang.len > 0:
-      sb.add("```" & lang & "\n" & snippet & "\n```")
-    else:
-      sb.add("```\n" & snippet & "\n```")
+    sb.add(fileSnippet(path, content))
     return sb
   of "edit":
     if not args.hasKey("file_path"): return ""
@@ -284,13 +328,9 @@ proc formatVisibilityMessage*(toolName: string,
     if args.hasKey("new_string"):
       let newStr = args["new_string"].getStr()
       if newStr.len > 0:
-        let lang = inferLangFromPath(path)
-        let snippet = firstNLines(newStr, 10)
         sb.add("\n\n")
-        if lang.len > 0:
-          sb.add("```" & lang & "\n" & snippet & "\n```")
-        else:
-          sb.add("```\n" & snippet & "\n```")
+        sb.add(fileSnippet(path, newStr,
+                            shortCap = 20, mediumCap = 30, longCap = 20))
     return sb
   of "spawn":
     if not args.hasKey("task"): return ""
@@ -312,20 +352,18 @@ proc formatVisibilityMessage*(toolName: string,
         sb.add("Subagent task `" & label & "`: " & preview)
       else:
         sb.add("Subagent task: " & preview)
-    if toolResult.len > 0:
-      let resultSnippet = firstNLines(toolResult.strip(), 25)
-      if resultSnippet.len > 0:
-        sb.add("\n\n```\n" & resultSnippet & "\n```")
+    let outBlock = outputSnippet(toolResult)
+    if outBlock.len > 0:
+      sb.add("\n\n" & outBlock)
     return sb
   of "shell":
     if not args.hasKey("command"): return ""
     let cmd = args["command"].getStr()
     if cmd.len == 0: return ""
     var sb = "⚙️ Ran:\n```bash\n" & cmd & "\n```"
-    if toolResult.len > 0:
-      let resultSnippet = firstNLines(toolResult.strip(), 25)
-      if resultSnippet.len > 0:
-        sb.add("\n\n```\n" & resultSnippet & "\n```")
+    let outBlock = outputSnippet(toolResult)
+    if outBlock.len > 0:
+      sb.add("\n\n" & outBlock)
     return sb
   else:
     return ""

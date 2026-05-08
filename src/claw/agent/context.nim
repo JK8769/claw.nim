@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 6
+const PolicyRulesVersion* = 7
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -331,6 +331,15 @@ const PolicyRulesVersion* = 6
   ##       snippet / bash command + output excerpt. Operator can
   ##       toggle per session via `/session technical [on|off|reset]`
   ##       (override stored in SessionMeta).
+  ##   7 — role-clarity pass: feishu-rich-format SKILL.md slimmed
+  ##       (Pattern 5 removed, framework-owned section added);
+  ##       reply_progress description sharpened to "interpretation,
+  ##       not work-visibility"; reply description sharpened to
+  ##       "don't repeat auto-emitted content"; technical-
+  ##       communication HANDBOOK Phase B clarified into agent
+  ##       (interpretation) vs framework (visibility) layers; file
+  ##       snippet sizes bumped to 30/40 lines with smart truncation
+  ##       (Feishu code blocks scroll + offer copy buttons).
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =

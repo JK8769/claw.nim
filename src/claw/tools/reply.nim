@@ -72,7 +72,7 @@ proc countLines(content: string): int =
     if ch == '\n': result.inc
 
 method name*(t: ReplyTool): string = "reply"
-method description*(t: ReplyTool): string = "Send a direct message back to the current chat. Use this for status updates, quick answers, or proactive conversation during a task."
+method description*(t: ReplyTool): string = "Send the FINAL answer for the current task to the user. For long tasks: a synthesis (TL;DR + key findings + decisions) plus three explicit numbered next-step options. On Feishu specifically: do NOT include file paths, bash commands, or full terminal output that the framework auto-emitted earlier in this turn — operators have already seen those. Focus the reply on what the work MEANS and what to do next. For short tasks: a direct answer is fine. NOT for in-flight progress (use `reply_progress` for that)."
 method parameters*(t: ReplyTool): Table[string, JsonNode] =
   {
     "type": %"object",
