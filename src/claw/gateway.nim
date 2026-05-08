@@ -12,7 +12,7 @@ import tools/registry as tools_registry
 import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
-import services/[heartbeat, cron as cron_service, heartbeat_orchestrator]
+import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator]
 import daemon/[socket, status]
 
 proc isProcessAlive(pid: int): bool =

@@ -1,6 +1,6 @@
 import std/[asyncdispatch, json, tables, strutils, times, locks, options]
 import types
-import ../services/cron as cron_service
+import ../services/scheduler as cron_service
 import ../bus
 import ../utils
 
