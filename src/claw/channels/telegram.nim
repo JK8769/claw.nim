@@ -3,7 +3,6 @@ import ../lib/curl as curly, webby/httpheaders, regex
 import base
 import ../bus, ../bus_types, ../config, ../logger, ../services/voice
 import ../lib/malebolgia
-import ../lib/http_retry
 
 type
   TelegramChannel* = ref object of BaseChannel
@@ -63,7 +62,7 @@ proc apiCall(c: TelegramChannel, method_name: string, payload: JsonNode, retries
   headers["Content-Type"] = "application/json"
   
   proc doRequest(curly: Curly, url, body: string, headers: HttpHeaders): tuple[code: int, body: string] =
-    curlyPostWithRetry(curly, url, body, headers, timeout = 30)
+    curly.postWithRetry(url, body, headers, timeout = 30)
 
   let fv = c.master.spawn doRequest(c.curly, url, body, headers)
   

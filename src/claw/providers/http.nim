@@ -5,7 +5,6 @@ import std/[asyncdispatch, json, strutils, tables, os]
 # claw/lib/curl.nim for the diff.
 import ../lib/curl as curly, webby/httpheaders
 import ../lib/malebolgia
-import ../lib/http_retry
 import types
 import ../logger
 from ../tools/registry import sanitizeToolName
@@ -280,7 +279,7 @@ method chat*(p: HTTPProvider, messages: seq[Message], tools: seq[ToolDefinition]
   debugCF("http_provider", "Full request body", {"json": $requestBody}.toTable)
 
   proc doRequest(c: Curly, url, body: string, headers: HttpHeaders, timeout: int): tuple[code: int, body: string] {.gcsafe.} =
-    curlyPostWithRetry(c, url, body, headers, timeout)
+    c.postWithRetry(url, body, headers, timeout)
 
   # Instrumentation for opencode_go debugging
   if url.contains("/go/"):
