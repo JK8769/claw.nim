@@ -1,4 +1,5 @@
-import std/[os, times, strutils, locks, asyncdispatch, options, sequtils]
+import std/[os, times, strutils, locks, asyncdispatch, options, sequtils,
+            tables, sets]
 import jsony
 
 type
@@ -11,6 +12,15 @@ type
 
   CronPayload* = object
     kind*: string
+      ## Discriminator for execution mode. Recognised values:
+      ##   - "agent_turn" (default, legacy) — inject as a synthetic user
+      ##     message; agent's LLM loop processes it. Costs LLM tokens.
+      ##   - "tool_call" — invoke `tool` from the registry directly with
+      ##     `args` (no LLM). Attributed to `runAs`. Free.
+      ##   - "agent_tick" — like agent_turn but with system:* session_key
+      ##     and comm-tools disabled. The pattern heartbeat uses today;
+      ##     declarative scheduled-task ticks (memory reflect, periodic
+      ##     mailbox scan from a skill, etc.) reuse this kind.
     message*: string
     deliver*: bool
     channel*: string
@@ -32,6 +42,12 @@ type
     # picks up the correct app automatically.
     replyToMessageID*: string
     appID*: string
+    # tool_call kind only — name from the tool registry + JSON-encoded
+    # args. Empty / null on agent_turn / agent_tick payloads.
+    tool*: string
+    args*: string             ## JSON-encoded; parsed at dispatch time
+    runAs*: string            ## Identity to attribute the call to.
+                              ## Empty → default to "nc:1" (company-self).
 
   CronJobState* = object
     nextRunAtMs*: Option[int64]
@@ -49,6 +65,13 @@ type
     createdAtMs*: int64
     updatedAtMs*: int64
     deleteAfterRun*: bool
+    sourceSkill*: string
+      ## When non-empty, this job was registered from a skill's
+      ## SCHEDULES.json declaration. Used for lifecycle: when the
+      ## skill is removed or its schedules block changes, jobs
+      ## tagged with that source can be reconciled (revoked /
+      ## re-registered) without touching ad-hoc agent-cron jobs.
+      ## Empty for jobs added via the `cron` agent tool.
 
   CronStore* = object
     version*: int
@@ -147,6 +170,72 @@ proc addJob*(cs: CronService, name: string, schedule: CronSchedule, payload: Cro
   cs.store.jobs.add(job)
   cs.saveStoreUnsafe()
   return job
+
+proc reconcileSkillJobs*(cs: CronService, skillName: string,
+                          declared: seq[CronJob]): tuple[added, kept, removed: int] =
+  ## Reconcile the persistent job store against a skill's currently
+  ## declared schedules. Idempotent — safe to call on every gateway
+  ## boot regardless of whether the skill changed.
+  ##
+  ## Match by `(sourceSkill, name)` pair: same skill + same job name =
+  ## same job. Existing jobs keep their id/state/lastRun history;
+  ## schedule and payload may be replaced if the declaration drifted.
+  ## Jobs in the store tagged with this skill but missing from
+  ## `declared` are removed. Jobs in `declared` that don't match any
+  ## existing entry are added fresh.
+  ##
+  ## Caller (skill loader) constructs CronJob entries with
+  ## sourceSkill set; this proc handles the diff and persistence.
+  acquire(cs.lock)
+  defer: release(cs.lock)
+  let nowMS = getTime().toUnix * 1000
+  var keep: seq[CronJob] = @[]
+  var declaredByName = initTable[string, CronJob]()
+  for d in declared: declaredByName[d.name] = d
+  var seen = initHashSet[string]()
+  for existing in cs.store.jobs:
+    if existing.sourceSkill != skillName:
+      keep.add(existing); continue   # not ours; preserve untouched
+    if existing.name in declaredByName:
+      let d = declaredByName[existing.name]
+      existing.schedule = d.schedule
+      existing.payload = d.payload
+      existing.enabled = d.enabled
+      existing.updatedAtMs = nowMS
+      existing.state.nextRunAtMs = cs.computeNextRun(d.schedule, nowMS)
+      keep.add(existing)
+      seen.incl(existing.name)
+      result.kept.inc
+    else:
+      result.removed.inc                # drop on the floor
+  for d in declared:
+    if d.name in seen: continue
+    # First-fire-soon for newly-added jobs: a recurring 24h sync
+    # registered today shouldn't have to wait 24h for its first
+    # run — the cache may already be stale, and the user expects
+    # registration to mean "start covering now." 90s gives the
+    # gateway time to fully boot before the first invocation.
+    var firstRun = cs.computeNextRun(d.schedule, nowMS)
+    if d.schedule.kind in ["every", "interval"]:
+      firstRun = some(nowMS + 90_000)        # 90s grace
+    var fresh = CronJob(
+      id: $nowMS & "-" & skillName & "-" & d.name,
+      name: d.name,
+      enabled: d.enabled,
+      schedule: d.schedule,
+      payload: d.payload,
+      state: CronJobState(
+        nextRunAtMs: firstRun
+      ),
+      createdAtMs: nowMS,
+      updatedAtMs: nowMS,
+      deleteAfterRun: false,
+      sourceSkill: skillName
+    )
+    keep.add(fresh)
+    result.added.inc
+  cs.store.jobs = keep
+  cs.saveStoreUnsafe()
 
 proc listJobs*(cs: CronService, includeDisabled: bool): seq[CronJob] =
   acquire(cs.lock)

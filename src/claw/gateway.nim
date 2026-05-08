@@ -9,10 +9,12 @@ import billing/[subscription as sub_mod, welcome as welcome_mod, company as comp
 import context as claw_context, utils, pricing
 import tools/delegate as delegate_tool
 import tools/registry as tools_registry
+import tools/types as tools_types
 import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
 import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator]
+import skills/loader as skills_loader_mod
 import daemon/[socket, status]
 
 proc isProcessAlive(pid: int): bool =
@@ -155,10 +157,93 @@ proc gracefulShutdown() =
 
 proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
   if gCtx == nil: return
-  debugCF("cronHandler", "Triggering job", {"id": job.id}.toTable)
+  debugCF("cronHandler", "Triggering job",
+          {"id": job.id, "kind": job.payload.kind,
+           "source_skill": job.sourceSkill}.toTable)
+
+  # Dispatch by payload kind. Empty / "agent_turn" / "deliver" all
+  # fall through to the legacy LLM-driven path. New payload kinds:
+  #   - "tool_call" — invoke `tool` from the registry directly with
+  #     parsed args, attributed to runAs (default nc:1). Free of LLM
+  #     cost. Used by skill-declared periodic data sync (sungrow
+  #     history, alarm refresh, etc.) — bookkeeping that doesn't
+  #     need the LLM.
+  #   - "agent_tick" — same shape as a heartbeat tick: synthetic
+  #     message under a system:* session_key, processed by the
+  #     named agent's LLM loop, comm tools disabled. Will absorb
+  #     services/heartbeat.nim's responsibility in a follow-up.
+  if job.payload.kind == "tool_call":
+    let runAs = (if job.payload.runAs.len > 0: job.payload.runAs else: "nc:1")
+    let agentLoop = block:
+      var found: AgentLoop
+      for _, al in gCtx.offices.pairs:
+        found = al; break
+      found
+    if agentLoop == nil:
+      warnCF("cronHandler", "tool_call dispatched with no agent loops loaded — skipping",
+             {"job": job.name, "tool": job.payload.tool}.toTable)
+      return
+    var args = initTable[string, JsonNode]()
+    if job.payload.args.len > 0:
+      try:
+        let parsed = parseJson(job.payload.args)
+        if parsed.kind == JObject:
+          for k, v in parsed.fields:
+            args[k] = v
+      except CatchableError as e:
+        warnCF("cronHandler", "tool_call args parse failed",
+               {"job": job.name, "error": e.msg}.toTable)
+    let toolCtx = tools_types.ToolContext(
+      channel: "system",
+      sessionKey: "system:scheduler:" & job.id,
+      senderID: runAs,
+      recipientID: runAs,
+      role: "system",
+      agentName: "scheduler",
+      agentID: runAs,
+      logicalUserID: runAs,
+      graph: agentLoop.contextBuilder.graph
+    )
+    try:
+      let result = await agentLoop.tools.executeWithContext(
+        job.payload.tool, args, toolCtx)
+      let preview =
+        if result.len > 200: result[0 ..< 200] & "…" else: result
+      infoCF("cronHandler", "tool_call completed",
+             {"job": job.name, "tool": job.payload.tool,
+              "run_as": runAs,
+              "source_skill": job.sourceSkill,
+              "preview": preview}.toTable)
+    except Exception as e:
+      errorCF("cronHandler", "tool_call failed",
+              {"job": job.name, "tool": job.payload.tool,
+               "error": e.msg}.toTable)
+    return
 
   let agentName = if job.payload.agentName != "": job.payload.agentName else: "Lexi"
   let officeKey = agentName.toLowerAscii()
+
+  if job.payload.kind == "agent_tick":
+    # System-keyed agent reflection. Same shape as heartbeat: synthetic
+    # user message under a system:* session_key (which gates outbound
+    # comm tools), processed by the named agent's LLM loop.
+    if not gCtx.offices.hasKey(officeKey):
+      gCtx.offices[officeKey] = makeAgentLoop(agentName)
+    let inbound = bus_types.InboundMessage(
+      channel: "system",
+      sender_id: "system:tick",
+      recipient_id: agentName,
+      chat_id: "scheduler",
+      content: (if job.payload.message.len > 0: job.payload.message
+                else: "Scheduled tick from " & job.name),
+      session_key: "system:tick:" & job.id,
+      metadata: initTable[string, string]()
+    )
+    discard await gCtx.offices[officeKey].processMessage(inbound)
+    infoCF("cronHandler", "agent_tick completed",
+           {"job": job.name, "agent": agentName,
+            "source_skill": job.sourceSkill}.toTable)
+    return
 
   if job.payload.deliver:
     var meta = initTable[string, string]()
@@ -2235,6 +2320,62 @@ Options:
       if gCtx == nil: return nil
       if gCtx.offices.hasKey(key): return gCtx.offices[key]
       return nil
+  # Load skill-declared schedules from each skill's SCHEDULES.json
+  # and reconcile with the persistent scheduler store. This runs once
+  # per gateway boot — same way `requires.tools` and `requires.deps`
+  # are resolved at `claw create` time, but at runtime so a freshly
+  # installed skill picks up its schedules without a rebuild.
+  block loadSkillSchedules:
+    let workspace = workspacePath(cfg[])
+    let workstationSkillsDir = workspace / "workstation" / "skills"
+    let scheduleLoader = newSkillsLoader(
+      workspace,
+      workspace / ".nimclaw" / "workspace" / "competencies",
+      getNimClawDir() / "workspace" / "skills",
+      getNimClawDir() / "foundation" / "skills",
+      getEnv("OPENCLAW_EXTENSIONS", getHomeDir() / ".openclaw" / "extensions"),
+      workstationSkillsDir
+    )
+    let allDecls = scheduleLoader.listAllSkillSchedules()
+    if allDecls.len > 0:
+      # Group by source skill so reconcile can prune jobs whose skill
+      # removed the declaration.
+      var bySkill = initTable[string, seq[CronJob]]()
+      for d in allDecls:
+        var args = ""
+        if d.args != nil and d.args.kind == JObject:
+          args = $d.args
+        let payload = CronPayload(
+          kind: d.kind,
+          tool: d.tool,
+          args: args,
+          runAs: d.runAs,
+          agentName: d.agent,
+          message: d.message,
+        )
+        let schedule =
+          if d.everySeconds > 0:
+            CronSchedule(kind: "every", everyMs: some(int64(d.everySeconds) * 1000))
+          else:
+            CronSchedule(kind: "once",
+              atMs: some(parseTime(d.atIso, "yyyy-MM-dd'T'HH:mm:sszzz", utc()).toUnix * 1000))
+        let job = CronJob(
+          id: "",                              # filled by reconcile
+          name: d.name,
+          enabled: d.enabled,
+          schedule: schedule,
+          payload: payload,
+          sourceSkill: d.skillName,
+        )
+        bySkill.mgetOrPut(d.skillName, @[]).add(job)
+      for skill, jobs in bySkill.pairs:
+        let r = cronServiceInstance.reconcileSkillJobs(skill, jobs)
+        infoCF("scheduler", "Reconciled skill schedules",
+               {"skill": skill,
+                "added": $r.added,
+                "kept": $r.kept,
+                "removed": $r.removed}.toTable)
+
   let heartbeats = startHeartbeats(cfg, officeFor)
 
   # IPC setup — stdio (Zen mode) or socket (headless daemon)

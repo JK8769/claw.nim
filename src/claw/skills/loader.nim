@@ -1,5 +1,7 @@
-import std/[os, strutils, sequtils]
+import std/[os, strutils, sequtils, json, options]
 import openclaw_compat, skill_types
+import ../logger
+import std/tables
 
 
 
@@ -157,6 +159,93 @@ proc loadSkill*(sl: SkillsLoader, name: string): (string, bool) =
     if s.name == name or lastPathPart(s.path) == name:
       return (readFile(s.path).stripFrontmatter(), true)
   return ("", false)
+
+type
+  SkillScheduleDecl* = object
+    ## A single scheduled-task declaration loaded from a skill's
+    ## `SCHEDULES.json`. Translation to a CronJob happens in gateway.nim
+    ## (which holds the scheduler instance) so this module stays free
+    ## of scheduler-specific types.
+    skillName*: string         ## resolved owning skill (sanitised)
+    name*: string              ## stable id within the skill
+    description*: string
+    everySeconds*: int         ## 0 if not periodic
+    atIso*: string             ## empty if not one-shot
+    enabled*: bool
+    kind*: string              ## "tool_call" | "agent_tick"
+    # tool_call fields
+    tool*: string
+    args*: JsonNode            ## JObject; nil ok
+    runAs*: string             ## empty → caller defaults to nc:1
+    # agent_tick fields
+    agent*: string
+    message*: string
+
+proc parseSchedulesFile(path, skillName: string): seq[SkillScheduleDecl] =
+  ## Parse a skill's SCHEDULES.json into typed declarations. Tolerates
+  ## missing fields with sane defaults; logs and skips malformed
+  ## entries rather than failing the whole skill load.
+  if not fileExists(path): return
+  var raw: JsonNode
+  try:
+    raw = parseFile(path)
+  except CatchableError as e:
+    warnCF("skills_loader", "Failed to parse SCHEDULES.json — ignoring",
+           {"path": path, "error": e.msg}.toTable)
+    return
+  if raw.kind != JArray:
+    warnCF("skills_loader", "SCHEDULES.json must be a JSON array — ignoring",
+           {"path": path, "kind": $raw.kind}.toTable)
+    return
+  for entry in raw:
+    if entry.kind != JObject: continue
+    var d = SkillScheduleDecl(
+      skillName: skillName,
+      name: entry{"name"}.getStr(""),
+      description: entry{"description"}.getStr(""),
+      everySeconds: entry{"every_seconds"}.getInt(0),
+      atIso: entry{"at_iso"}.getStr(""),
+      enabled: entry{"enabled"}.getBool(true),
+      kind: entry{"kind"}.getStr("tool_call"),
+      tool: entry{"tool"}.getStr(""),
+      runAs: entry{"run_as"}.getStr(""),
+      agent: entry{"agent"}.getStr(""),
+      message: entry{"message"}.getStr(""),
+    )
+    if entry.hasKey("args") and entry["args"].kind == JObject:
+      d.args = entry["args"]
+    if d.name.len == 0:
+      warnCF("skills_loader", "Skipping unnamed schedule entry",
+             {"skill": skillName, "path": path}.toTable)
+      continue
+    if d.kind == "tool_call" and d.tool.len == 0:
+      warnCF("skills_loader", "Skipping tool_call schedule with no tool",
+             {"skill": skillName, "schedule": d.name}.toTable)
+      continue
+    if d.kind == "agent_tick" and d.agent.len == 0:
+      warnCF("skills_loader", "Skipping agent_tick schedule with no agent",
+             {"skill": skillName, "schedule": d.name}.toTable)
+      continue
+    if d.everySeconds <= 0 and d.atIso.len == 0:
+      warnCF("skills_loader", "Skipping schedule with no every_seconds or at_iso",
+             {"skill": skillName, "schedule": d.name}.toTable)
+      continue
+    result.add(d)
+
+proc listAllSkillSchedules*(sl: SkillsLoader): seq[SkillScheduleDecl] =
+  ## Walk all known skills, read each SCHEDULES.json if present, and
+  ## return the union of declarations. Caller (gateway boot) groups
+  ## by `skillName` and feeds each group to scheduler.reconcileSkillJobs
+  ## so removal of a skill cleanly drops its scheduled jobs.
+  let skills = sl.listSkills()
+  for s in skills:
+    let path = s.location / "SCHEDULES.json"
+    if not fileExists(path): continue
+    let decls = parseSchedulesFile(path, s.name)
+    if decls.len > 0:
+      infoCF("skills_loader", "Loaded skill schedules",
+             {"skill": s.name, "count": $decls.len}.toTable)
+      result.add(decls)
 
 proc loadSkillsForContext*(sl: SkillsLoader, skillNames: seq[string]): string =
   if skillNames.len == 0: return ""
