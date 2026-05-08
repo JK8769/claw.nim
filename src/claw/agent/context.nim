@@ -296,7 +296,7 @@ proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq
   return "# Handbooks\n\nHow the work is done in this company. Apply these rules to every task that touches the named competency.\n\n" &
          blocks.join("\n\n")
 
-const PolicyRulesVersion* = 5
+const PolicyRulesVersion* = 6
   ## Bumped when the Important Rules section in `buildBaseContext` (or
   ## any other always-on, non-handbook prompt fragment) changes in a
   ## way that should invalidate prior session stylistic precedent. Mixed
@@ -323,6 +323,14 @@ const PolicyRulesVersion* = 5
   ##       to lark sheets, lines >300 → route to lark docs) with a
   ##       max-retry safety valve. Discipline becomes deterministic,
   ##       independent of model size or attention budget.
+  ##   6 — Pattern 5 visibility goes framework-owned: when the agent
+  ##       practices technical-communication AND is on a code-block-
+  ##       rendering channel (Feishu), the dispatch loop synthesizes
+  ##       a `reply_progress` message after each non-comm tool call
+  ##       (write_file/edit/spawn/shell) with the file path + code
+  ##       snippet / bash command + output excerpt. Operator can
+  ##       toggle per session via `/session technical [on|off|reset]`
+  ##       (override stored in SessionMeta).
 
 proc policyHashInputs*(cb: ContextBuilder, agentName: string,
                        practices: seq[string]): string =

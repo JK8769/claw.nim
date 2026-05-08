@@ -94,6 +94,15 @@ type
                                       ## value, so old meta files load
                                       ## fine and naturally trigger one
                                       ## marker injection then settle.
+    techCommOverride*: string         ## Operator override for this
+                                      ## session's technical-communication
+                                      ## mode. "" = no override (use
+                                      ## agent's competency-derived
+                                      ## default), "on" = force-enable
+                                      ## auto-emit visibility, "off" =
+                                      ## suppress. Set via the
+                                      ## `/session technical [on|off|
+                                      ## reset]` slash command.
 
   Session* = ref object
     key*: string
@@ -181,6 +190,30 @@ proc writeMeta(sm: SessionManager, session: Session) =
   try:
     writeFile(sm.metaPath(session.key), session.meta.toJson())
   except CatchableError: discard
+
+proc setTechCommOverride*(sm: SessionManager, key: string,
+                          value: string) =
+  ## Operator command path for `/session technical [on|off|reset]`.
+  ## Sets (or clears) the per-session technical-communication override
+  ## that gates framework auto-emit visibility messages. Acceptable
+  ## values: "on", "off", or "" (reset to no-override → use agent's
+  ## competency-derived default). Persists to meta.json so the
+  ## override survives gateway restarts.
+  acquire(sm.lock)
+  defer: release(sm.lock)
+  if not sm.sessions.hasKey(key):
+    let now = getTime().toUnixFloat()
+    sm.sessions[key] = Session(
+      key: key,
+      meta: SessionMeta(
+        key: key, kind: skDM, participants: @[],
+        created: now, updated: now
+      ),
+      messages: @[]
+    )
+  let s = sm.sessions[key]
+  s.meta.techCommOverride = value
+  sm.writeMeta(s)
 
 proc migrateLegacyJson(sm: SessionManager, key: string): bool =
   ## Read a pre-v2 `<key>.json` blob (if present) and split it into the

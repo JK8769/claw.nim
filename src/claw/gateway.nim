@@ -1490,6 +1490,15 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "    non-human sessions like `system_heartbeat` or\n" &
              "    `cli:user` that don't have an `nc:id`.\n" &
              "    Example: `/session clear lexi system_heartbeat`\n\n" &
+             "  `/session technical [on|off|reset|status]`\n" &
+             "    Toggle technical-communication mode (framework\n" &
+             "    auto-emits Pattern 5 visibility messages — file\n" &
+             "    paths + code snippets, bash commands + output\n" &
+             "    excerpts) for YOUR session in the current chat.\n" &
+             "    `on`/`off` = override the agent's competency-derived\n" &
+             "    default; `reset` = clear the override (back to default);\n" &
+             "    `status` (or no arg) = show the effective state.\n" &
+             "    Example: `/session technical on`\n\n" &
              "Note: clears the conversation, NOT the agent's `memory_store`\n" &
              "entries (those persist by design — that's their purpose)."
     let sub = parts[1]
@@ -1649,6 +1658,59 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
       return "Session reset for **" & al.agentName & "** (`" & sessionKey &
              "`). Next message starts a fresh thread — no prior history, " &
              "no carried-over summary. `memory_store` entries are untouched."
+    elif sub == "technical":
+      # Toggle the per-session technical-communication mode override
+      # (gates framework auto-emit of Pattern 5 visibility messages on
+      # tool calls). Defaults are derived at office construction from
+      # the agent's `practices "technical-communication"`. This
+      # subcommand lets the operator flip the mode on a specific
+      # session at runtime — for instance, mute auto-emit for a
+      # quick read-only diagnostic, or force-enable on an agent that
+      # doesn't normally practice technical-communication.
+      let callerNc = resolveCallerNc(cfg, msg)
+      if callerNc == "":
+        return "Couldn't resolve your `nc:id` from this channel."
+      let sessionKey = callerNc.replace(":", "_")
+      let arg =
+        if parts.len >= 3: parts[2].toLowerAscii
+        else: "status"
+      if arg notin ["on", "off", "reset", "status"]:
+        return "Error: argument must be one of `on`, `off`, `reset`, " &
+               "`status`. Got `" & arg & "`."
+      if arg == "status":
+        let s = al.sessions.getOrCreate(sessionKey)
+        let ovr = s.meta.techCommOverride
+        let eff = al.effectiveTechComm(sessionKey)
+        var report = "**`/session technical` status for `" & sessionKey &
+                  "` with `" & al.agentName & "`:**\n\n"
+        report.add("- Agent default (from `practices`): `" &
+                (if al.techCommDefault: "on" else: "off") & "`\n")
+        report.add("- Session override: `" &
+                (if ovr.len == 0: "(none)" else: ovr) & "`\n")
+        report.add("- **Effective**: `" &
+                (if eff: "on" else: "off") & "`\n\n")
+        report.add("When `on` and the channel renders code blocks " &
+                "(currently Feishu), the framework auto-emits a " &
+                "`reply_progress`-style message after each non-comm " &
+                "tool call, with file paths + code snippets, bash " &
+                "commands, and output excerpts. The agent's own " &
+                "`reply_progress` for findings is then optional " &
+                "(structural visibility is owned by the framework).")
+        return report
+      let val = if arg == "reset": "" else: arg
+      al.sessions.setTechCommOverride(sessionKey, val)
+      let eff = al.effectiveTechComm(sessionKey)
+      let label =
+        case arg
+        of "on":    "**enabled** for this session"
+        of "off":   "**disabled** for this session"
+        of "reset": "**reset** (override cleared, using agent default)"
+        else:       arg
+      return "Technical-communication mode " & label & ".\n\n" &
+             "Effective state now: `" & (if eff: "on" else: "off") &
+             "`. Auto-emit visibility messages on tool calls will " &
+             (if eff: "fire" else: "be suppressed") & " until you " &
+             "change it again."
     elif sub == "list":
       # Enumerate caller's sessions across every declared agent.
       # For each agent: message count, summary length (rough proxy

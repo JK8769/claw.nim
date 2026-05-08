@@ -161,6 +161,20 @@ type
                                 ## the source of truth rather than the static
                                 ## tool list SKILL.md / BASE.json shadow-copies
                                 ## (which goes stale on skill refactors).
+    techCommDefault*: bool      ## Build-time default for technical-
+                                ## communication mode (auto-emit
+                                ## visibility messages on tool calls).
+                                ## True when this agent's `practices`
+                                ## list contains "technical-communication".
+                                ## Resolved per-session by also
+                                ## consulting `SessionMeta.techCommOverride`
+                                ## via `effectiveTechComm` below.
+    sendCallback*: tools_base.SendCallback
+                                ## Outbound message callback, exposed
+                                ## here so the framework auto-emit path
+                                ## in `runAgentLoop` can send synthetic
+                                ## visibility messages on the agent's
+                                ## behalf without going through a tool.
     # Live state — observable via `/agent <name>` from chat. One entry per
     # in-flight task so concurrent turns (e.g. Jerry + 杰瑞 both on Atlas)
     # each get their own snapshot. Keyed by session_key — same-session
@@ -172,6 +186,149 @@ type
     liveTokensTotal*: int                    ## cumulative tokens since gateway start
     liveTokensInTotal*: int                  ## cumulative prompt_tokens
     liveTokensOutTotal*: int                 ## cumulative completion_tokens
+
+proc effectiveTechComm*(al: AgentLoop, sessionKey: string): bool =
+  ## Resolve the effective technical-communication mode for a session.
+  ##
+  ## Resolution order (first non-empty wins):
+  ##   1. SessionMeta.techCommOverride — set by `/session technical
+  ##      [on|off]` per session at runtime.
+  ##   2. AgentLoop.techCommDefault — derived from the agent's
+  ##      `practices "technical-communication"` declaration in
+  ##      BASE.nims at office construction.
+  ##
+  ## When true on a code-block-rendering channel (currently `feishu`),
+  ## the dispatch loop auto-emits Pattern 5 visibility messages
+  ## (file path + code snippet, bash command + output excerpt) after
+  ## non-comm tool calls, on the agent's behalf.
+  if al.sessions != nil:
+    let s = al.sessions.getOrCreate(sessionKey)
+    let ovr = s.meta.techCommOverride.toLowerAscii
+    if ovr == "on": return true
+    if ovr == "off": return false
+  al.techCommDefault
+
+proc inferLangFromPath(path: string): string =
+  ## Map a file extension to a markdown code-block language tag.
+  ## Empty string for unknown extensions; callers render an unlabeled
+  ## ``` block when this is empty (Feishu still highlights generic
+  ## blocks reasonably; tagged is just better).
+  let ext = path.toLowerAscii.splitFile.ext
+  case ext
+  of ".py": "python"
+  of ".nim", ".nims": "nim"
+  of ".sh", ".bash": "bash"
+  of ".js", ".mjs", ".cjs": "javascript"
+  of ".ts", ".tsx": "typescript"
+  of ".json": "json"
+  of ".yaml", ".yml": "yaml"
+  of ".toml": "toml"
+  of ".md", ".markdown": "markdown"
+  of ".html", ".htm": "html"
+  of ".css": "css"
+  of ".sql": "sql"
+  of ".go": "go"
+  of ".rs": "rust"
+  of ".c", ".h": "c"
+  of ".cpp", ".cc", ".hpp", ".hh": "cpp"
+  of ".java": "java"
+  of ".rb": "ruby"
+  of ".php": "php"
+  of ".lua": "lua"
+  of ".r": "r"
+  else: ""
+
+proc firstNLines(s: string, n: int): string =
+  ## Return the first `n` lines of `s` (newline-delimited). Used for
+  ## visibility-message snippets — keeps chat orientation-only, not
+  ## full delivery.
+  if n <= 0 or s.len == 0: return ""
+  var count = 0
+  var i = 0
+  while i < s.len:
+    if s[i] == '\n':
+      count.inc
+      if count >= n:
+        return s[0 ..< i]
+    i.inc
+  return s
+
+proc formatVisibilityMessage*(toolName: string,
+                                args: Table[string, JsonNode],
+                                toolResult: string): string =
+  ## Synthesize a Pattern 5 visibility message from a tool call's
+  ## args and result. Returns an empty string for tools without a
+  ## meaningful visibility shape (read_file, mcp_*, jq, etc) — those
+  ## don't emit. Length-bounded: 15-line file snippets, 25-line
+  ## output excerpts. Operators see what changed; the LLM still
+  ## consumes the full tool result via the normal path.
+  case toolName
+  of "write_file":
+    if not args.hasKey("path") or not args.hasKey("content"): return ""
+    let path = args["path"].getStr()
+    let content = args["content"].getStr()
+    if path.len == 0 or content.len == 0: return ""
+    let lang = inferLangFromPath(path)
+    let snippet = firstNLines(content, 15)
+    var sb = "📝 Wrote `" & path & "`\n\n"
+    if lang.len > 0:
+      sb.add("```" & lang & "\n" & snippet & "\n```")
+    else:
+      sb.add("```\n" & snippet & "\n```")
+    return sb
+  of "edit":
+    if not args.hasKey("file_path"): return ""
+    let path = args["file_path"].getStr()
+    if path.len == 0: return ""
+    var sb = "✏️ Edited `" & path & "`"
+    if args.hasKey("new_string"):
+      let newStr = args["new_string"].getStr()
+      if newStr.len > 0:
+        let lang = inferLangFromPath(path)
+        let snippet = firstNLines(newStr, 10)
+        sb.add("\n\n")
+        if lang.len > 0:
+          sb.add("```" & lang & "\n" & snippet & "\n```")
+        else:
+          sb.add("```\n" & snippet & "\n```")
+    return sb
+  of "spawn":
+    if not args.hasKey("task"): return ""
+    let task = args["task"].getStr()
+    if task.len == 0: return ""
+    var cmd = ""
+    let execIdx = task.find("Execute: ")
+    if execIdx >= 0:
+      let after = task[execIdx + 9 ..< task.len]
+      let lineEnd = after.find('\n')
+      cmd = if lineEnd < 0: after.strip() else: after[0 ..< lineEnd].strip()
+    var sb = "⚙️ "
+    if cmd.len > 0:
+      sb.add("Ran:\n```bash\n" & cmd & "\n```")
+    else:
+      let label = if args.hasKey("label"): args["label"].getStr() else: ""
+      let preview = if task.len > 80: task[0 ..< 80] & "..." else: task
+      if label.len > 0:
+        sb.add("Subagent task `" & label & "`: " & preview)
+      else:
+        sb.add("Subagent task: " & preview)
+    if toolResult.len > 0:
+      let resultSnippet = firstNLines(toolResult.strip(), 25)
+      if resultSnippet.len > 0:
+        sb.add("\n\n```\n" & resultSnippet & "\n```")
+    return sb
+  of "shell":
+    if not args.hasKey("command"): return ""
+    let cmd = args["command"].getStr()
+    if cmd.len == 0: return ""
+    var sb = "⚙️ Ran:\n```bash\n" & cmd & "\n```"
+    if toolResult.len > 0:
+      let resultSnippet = firstNLines(toolResult.strip(), 25)
+      if resultSnippet.len > 0:
+        sb.add("\n\n```\n" & resultSnippet & "\n```")
+    return sb
+  else:
+    return ""
 
 proc stop*(al: AgentLoop) =
   al.running = false
@@ -1357,12 +1514,57 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         currentMessages.add(toolResultMsg)
         al.sessions.addFullMessage(opts.sessionKey, toolResultMsg)
 
-        # TC-2 streak tracking. Reset on a checkpoint-class tool;
-        # increment otherwise. The injection check happens AFTER the
-        # whole iteration's tool dispatch finishes (below the for
-        # loop) so a single iteration with one non-comm + one comm
-        # tool is a wash, not a violation.
-        if tc.name in CommTools:
+        # Framework auto-emit (Pattern 5 visibility): when this agent
+        # is in technical-communication mode AND the channel renders
+        # code blocks, synthesize a `reply_progress`-shape message
+        # from the tool's args+result and send it on the agent's
+        # behalf. Eliminates the failure mode where the agent
+        # checkpoints with findings but skips file-paths/commands/
+        # output, which `reply_progress` discipline alone empirically
+        # could not enforce. Counts as a comm act for TC-2 streak
+        # tracking — the user just received a message.
+        var autoEmittedVisibility = false
+        if tc.name notin CommTools and opts.channel == "feishu" and
+           al.effectiveTechComm(opts.sessionKey):
+          let viz = formatVisibilityMessage(tc.name, tc.arguments, result)
+          if viz.len > 0 and al.sendCallback != nil:
+            var meta = initTable[string, string]()
+            meta["progress"] = "true"
+            meta["format"] = "markdown"
+            meta["framework_emit"] = "true"   # log-routing tag
+            try:
+              await al.sendCallback(opts.channel, opts.chatID, viz,
+                                     al.agentName, opts.replyToMessageID,
+                                     opts.appID, meta)
+              # Persist as a synthetic assistant message so the LLM's
+              # next turn knows what was already shown — avoids the
+              # model re-emitting the same file/command/output in its
+              # own reply_progress later. Speaker tagged so JSONL
+              # operators can filter framework-emitted from
+              # agent-emitted.
+              let vizMsg = providers_types.Message(
+                role: providers_types.RoleAssistant,
+                content: viz)
+              currentMessages.add(vizMsg)
+              al.sessions.addWithSpeaker(opts.sessionKey,
+                "assistant", viz, "framework:auto-emit")
+              autoEmittedVisibility = true
+              infoCF("agent", "Auto-emit visibility message", {
+                "tool": tc.name,
+                "session": opts.sessionKey,
+                "chars": $viz.len,
+                "iteration": $iteration}.toTable)
+            except Exception as e:
+              warnCF("agent", "Auto-emit failed",
+                {"error": e.msg, "tool": tc.name}.toTable)
+
+        # TC-2 streak tracking. Reset on a checkpoint-class tool OR
+        # an auto-emit (framework just spoke for the agent); increment
+        # otherwise. The injection check happens AFTER the whole
+        # iteration's tool dispatch finishes (below the for loop) so
+        # a single iteration with one non-comm + one comm tool is a
+        # wash, not a violation.
+        if tc.name in CommTools or autoEmittedVisibility:
           consecutiveNonCommTools = 0
           nudgeInjectedForStreak = false
         else:
@@ -2261,13 +2463,15 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   contextBuilder.agentName = agentName
   contextBuilder.trust = cfg.trust
   # Populate allowedSkills from this agent's ClawDSL uses, and capture
-  # practices so we can run the policy-update reconciliation below.
+  # practices so we can run the policy-update reconciliation below
+  # plus derive the technical-communication default flag.
   var agentPractices: seq[string]
   for na in cfg.agents.named:
     if na.name.toLowerAscii() == agentName.toLowerAscii():
       contextBuilder.allowedSkills = na.skills
       agentPractices = na.practices
       break
+  let techCommDefault = "technical-communication" in agentPractices
 
   # Policy-version reconciliation: when the agent's communication
   # policy (handbooks + Important Rules version) has changed since a
@@ -2502,7 +2706,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     summarizing: initTable[string, bool](),
     agentId: "",
     curly: toolCurly,
-    memTool: memTool
+    memTool: memTool,
+    techCommDefault: techCommDefault,
+    sendCallback: callback
   )
   debugCF("agentLoop", "Instance created", {"agent": agentName}.toTable)
   initLock(al.summarizingLock)
