@@ -2341,6 +2341,7 @@ Options:
       # Group by source skill so reconcile can prune jobs whose skill
       # removed the declaration.
       var bySkill = initTable[string, seq[CronJob]]()
+      let bootMs = getTime().toUnix * 1000
       for d in allDecls:
         var args = ""
         if d.args != nil and d.args.kind == JObject:
@@ -2359,12 +2360,30 @@ Options:
           else:
             CronSchedule(kind: "once",
               atMs: some(parseTime(d.atIso, "yyyy-MM-dd'T'HH:mm:sszzz", utc()).toUnix * 1000))
+        # Honour at_hour by pinning first fire to the next occurrence
+        # of that local hour. Subsequent fires inherit the same hour
+        # via every_seconds=86400. Used to avoid syncing data that
+        # hasn't settled yet (e.g. sungrow daily aggregates finalise
+        # a few hours after midnight; sync at 09:00, not 02:00).
+        var preFire: Option[int64]
+        if d.atHour >= 0 and d.atHour <= 23:
+          let nowLocal = now()
+          var target = dateTime(nowLocal.year, nowLocal.month, nowLocal.monthday,
+                                d.atHour, 0, 0, zone = local())
+          let targetMs = target.toTime.toUnix * 1000
+          if targetMs > bootMs:
+            preFire = some(targetMs)
+          else:
+            # Today's slot already passed — use tomorrow's.
+            target = target + 1.days
+            preFire = some(target.toTime.toUnix * 1000)
         let job = CronJob(
           id: "",                              # filled by reconcile
           name: d.name,
           enabled: d.enabled,
           schedule: schedule,
           payload: payload,
+          state: CronJobState(nextRunAtMs: preFire),
           sourceSkill: d.skillName,
         )
         bySkill.mgetOrPut(d.skillName, @[]).add(job)

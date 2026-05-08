@@ -171,6 +171,14 @@ type
     description*: string
     everySeconds*: int         ## 0 if not periodic
     atIso*: string             ## empty if not one-shot
+    atHour*: int               ## 0–23 = pin first fire to that local hour
+                               ## (interval continues at the same time
+                               ## thereafter). -1 = unset, falls back to
+                               ## "first fire shortly after registration."
+                               ## Use this for jobs whose underlying data
+                               ## needs settlement time (e.g. sungrow
+                               ## history finalises a few hours after
+                               ## midnight — sync at 09:00 not 02:00).
     enabled*: bool
     kind*: string              ## "tool_call" | "agent_tick"
     # tool_call fields
@@ -205,6 +213,7 @@ proc parseSchedulesFile(path, skillName: string): seq[SkillScheduleDecl] =
       description: entry{"description"}.getStr(""),
       everySeconds: entry{"every_seconds"}.getInt(0),
       atIso: entry{"at_iso"}.getStr(""),
+      atHour: entry{"at_hour"}.getInt(-1),
       enabled: entry{"enabled"}.getBool(true),
       kind: entry{"kind"}.getStr("tool_call"),
       tool: entry{"tool"}.getStr(""),

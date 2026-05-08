@@ -210,14 +210,22 @@ proc reconcileSkillJobs*(cs: CronService, skillName: string,
       result.removed.inc                # drop on the floor
   for d in declared:
     if d.name in seen: continue
-    # First-fire-soon for newly-added jobs: a recurring 24h sync
-    # registered today shouldn't have to wait 24h for its first
-    # run — the cache may already be stale, and the user expects
-    # registration to mean "start covering now." 90s gives the
-    # gateway time to fully boot before the first invocation.
-    var firstRun = cs.computeNextRun(d.schedule, nowMS)
-    if d.schedule.kind in ["every", "interval"]:
+    # First-fire decision tree:
+    #   1. Caller pre-computed `state.nextRunAtMs` (e.g. gateway pinned
+    #      to a specific local hour for settlement reasons) → use it.
+    #   2. Else for recurring schedules → fire 90s after registration
+    #      so newly-installed sync schedules catch up immediately
+    #      instead of waiting a full interval. 90s gives the gateway
+    #      time to finish booting.
+    #   3. Else → whatever computeNextRun returns from the schedule
+    #      kind alone.
+    var firstRun: Option[int64]
+    if d.state.nextRunAtMs.isSome:
+      firstRun = d.state.nextRunAtMs
+    elif d.schedule.kind in ["every", "interval"]:
       firstRun = some(nowMS + 90_000)        # 90s grace
+    else:
+      firstRun = cs.computeNextRun(d.schedule, nowMS)
     var fresh = CronJob(
       id: $nowMS & "-" & skillName & "-" & d.name,
       name: d.name,
