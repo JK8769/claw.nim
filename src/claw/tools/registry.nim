@@ -32,7 +32,8 @@ const
   HeartbeatAllowedTools* = ["read_file", "list_dir", "forward",
                             "update_contact", "reply", "delegate",
                             "defer_to_todo", "mark_todo_done",
-                            "add_note_todo", "mark_note_done"]
+                            "add_note_todo", "mark_note_done",
+                            "consolidate_knowledge", "exec"]
   # Synthetic sender id the gateway uses when the heartbeat service
   # invokes processDirect — agent/loop matches on this to apply the
   # allowlist above.

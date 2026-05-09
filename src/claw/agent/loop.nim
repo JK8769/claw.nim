@@ -14,7 +14,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers, defer_to_todo, mark_todo_done, add_note_todo, mark_note_done]
+import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers, defer_to_todo, mark_todo_done, add_note_todo, mark_note_done, consolidate_knowledge]
 import ../services/scheduler as cron_service
 import ../lib/curl as curly
 import ../lib/malebolgia
@@ -2836,6 +2836,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newMarkTodoDoneTool(officeDir), ["agent", "core"], "mark a todo queue entry as done after processing it")
   regTagged(newAddNoteTodoTool(officeDir), ["agent", "core"], "schedule a future TODO with a specific due date/time in notes.org")
   regTagged(newMarkNoteDoneTool(officeDir), ["agent", "core"], "mark a notes.org TODO as done")
+  regTagged(newConsolidateKnowledgeTool(officeDir, agentName), ["agent", "core"], "promote a cross-project insight into your knowledge wiki at knowledge/<topic>.md")
 
   # --- Web tools ---
   regTagged(newWebSearchTool(expandEnv(cfg.tools.web.search.api_key), cfg.tools.web.search.max_results, toolCurly, createMaster()), ["web", "search", "data"], "search the internet for information")
