@@ -1570,29 +1570,57 @@ proc scaffoldWorkspace(spec: ClawSpec, workspace: string) =
 
   # ── Competencies ────────────────────────────────────────────────
   # Each competency gets a JSON manifest (skills + metadata) and optionally
-  # a HANDBOOK.md (the inline content or sourced markdown). JSON is always
-  # regenerated; HANDBOOK.md is preserved if it exists.
+  # a HANDBOOK.md (the inline content or sourced markdown). JSON is
+  # MERGED with any existing file's content rather than overwritten,
+  # so operator-authored fields (heartbeat[], custom keys) survive
+  # `claw co update`. DSL-controlled fields (name/description/skills/
+  # summary) always reflect the current DSL; everything else is
+  # preserved. has_handbook is derived fresh from actual file
+  # presence each call.
   var compCount = 0
   for c in spec.competencies:
     let cdir = workspace / "competencies" / c.name
     mkDir cdir
+    let compPath = cdir / "COMPETENCY.json"
 
-    # Competency.json (always refreshed — reflects current DSL)
-    var compJson = %*{
-      "name": c.name,
-      "description": c.description,
-      "skills": c.skills,
-      "summary": c.summary,
-      "has_handbook": (c.content.inline.len > 0 or c.content.source.len > 0)
-    }
-    writeFile(cdir / "COMPETENCY.json", pretty(compJson, 2))
-
-    # HANDBOOK.md (preserve user edits; only write on first scaffold)
+    # HANDBOOK.md (preserve user edits; only write on first scaffold).
+    # Done before composing JSON so has_handbook reflects post-scaffold
+    # truth rather than pre-scaffold absence.
     let handbook = cdir / "HANDBOOK.md"
     if not fileExists(handbook):
       let body = resolveContent(c.content, distRoot)
       if body.len > 0:
         writeFile(handbook, body)
+
+    # Read existing JSON if present so we can preserve operator-
+    # authored fields (heartbeat[], custom extensions). DSL-controlled
+    # fields are always overwritten with current DSL values.
+    # Use readFile+parseJson rather than parseFile because clawdsl
+    # runs in the Nim-script compile-time context where fopen-based
+    # APIs aren't available.
+    var compJson: JsonNode
+    if fileExists(compPath):
+      try:
+        compJson = parseJson(readFile(compPath))
+        if compJson.kind != JObject:
+          compJson = newJObject()
+      except CatchableError:
+        # File exists but isn't valid JSON — start fresh rather than
+        # crash. Operator can recover the old content from git if needed.
+        compJson = newJObject()
+    else:
+      compJson = newJObject()
+
+    # DSL-controlled fields: always reflect current DSL state.
+    compJson["name"] = %c.name
+    compJson["description"] = %c.description
+    compJson["skills"] = %c.skills
+    compJson["summary"] = %c.summary
+    # Derive has_handbook from actual file presence — self-corrects
+    # whether the operator added/removed HANDBOOK.md by hand.
+    compJson["has_handbook"] = %fileExists(handbook)
+
+    writeFile(compPath, pretty(compJson, 2))
     inc compCount
   if compCount > 0:
     echo "  + competencies/ populated with " & $compCount & " competency(ies)"
