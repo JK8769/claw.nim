@@ -24,15 +24,16 @@ proc buildHeartbeatPrompt*(workspace: string): string =
   ## `AgentLoop.processOneShot` when a heartbeat_tick fires.
   ##
   ## Pure read of disk state at call time — `mail/` directory and
-  ## `heart/HEARTBEAT.md`. Re-runs every tick so file edits land
-  ## without a gateway restart.
+  ## `heart/HEART.md` (the user's description of what this agent's
+  ## heart does — see SOUL.md for the parallel naming convention:
+  ## both describe a thing about the agent, not an action).
   ##
   ## NOTE: this proc is the legacy minimal-prompt builder used only
   ## for ad-hoc `processOneShot` callers that don't go through the
   ## three-phase dispatcher. The real heartbeat path is in
   ## gateway.nim's `cronHandlerLogic` which assembles a richer
   ## prompt from competency duties, todo.jsonl, notes.org, and so on.
-  let hbPath = workspace / "heart" / "HEARTBEAT.md"
+  let hbPath = workspace / "heart" / "HEART.md"
   var notes = ""
   if fileExists(hbPath):
     notes = try: readFile(hbPath) except: ""
@@ -70,12 +71,13 @@ proc logHeartbeat*(workspace, kind, msg: string,
   ##     can aggregate without regex
   ##   - Doesn't accumulate prose
   ##
-  ## File lives in `<office>/heart/` alongside HEARTBEAT.md (the
-  ## user's standing instructions for ticks). The `heart/` dir is
-  ## the agent's heartbeat-subsystem state — what they should keep
-  ## doing (HEARTBEAT.md), and what they've actually done at past
-  ## ticks (heartbeat.jsonl). SOUL.md stays at the office root
-  ## because it's always-on character, not heartbeat-specific.
+  ## File lives in `<office>/heart/` alongside HEART.md (which
+  ## describes what this agent's heart does — see SOUL.md for the
+  ## parallel naming: both name a thing about the agent, not an
+  ## action). The `heart/` dir is the agent's heartbeat-subsystem
+  ## state: what the heart does (HEART.md) and what each beat has
+  ## actually been (heartbeat.jsonl). SOUL.md stays at office root
+  ## because it's always-on character, not heart-specific.
   ##
   ## Failures are silent (auditing should never crash a tick).
   let heartDir = workspace / "heart"
