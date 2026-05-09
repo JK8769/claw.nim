@@ -42,6 +42,12 @@ type
     tools*: seq[string]
     deny*: seq[string]
     workstation*: bool
+    external*: bool          ## true = identity exists in cortex graph but
+                             ## gateway runs no loop. Cognition lives in an
+                             ## external runtime (other Claude instance,
+                             ## federated peer, etc.) that puppeteers via
+                             ## `claw agent send --from <name>` and reads
+                             ## the office's mail/ directly.
     heartbeat_seconds*: int  ## 0 = no heartbeat. Positive = cadence in
                              ## seconds for autonomous stateless ticks
                              ## fired by the heartbeat orchestrator.
@@ -196,6 +202,15 @@ type
     model*: string
     promptAddendum*: string
 
+  UpdatesConfig* = object
+    ## Phase 9 — auto-update from upstream claw repo. Default off.
+    enabled*: bool                ## false = no scheduled checks (manual `claw co upgrade` still works)
+    repo*: string                 ## upstream URL (informational)
+    branch*: string               ## default "main"
+    check_interval_hours*: int    ## poll cadence in hours
+    auto_apply*: bool             ## true = pull+build+restart; false = mail operator
+    notify_agent*: string         ## which agent gets the notification
+
   Config* = object
     default_temperature*: float64
     agents*: AgentsConfig
@@ -205,6 +220,7 @@ type
     tools*: ToolsConfig
     trust*: TrustConfig
     focus_modes*: seq[FocusMode]
+    updates*: UpdatesConfig
 
 proc expandHome*(path: string): string =
   if path == "": return path

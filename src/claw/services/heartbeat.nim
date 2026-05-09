@@ -41,7 +41,7 @@ proc buildHeartbeatPrompt*(workspace: string): string =
   var mailList = ""
   let mailFiles = scanMailbox(workspace)
   if mailFiles.len > 0:
-    mailList = "\n**MAILBOX ALERT**: You have new/unread files in your `mail/` directory: " & mailFiles.join(", ") & ". Please review them if they contain important instructions or coordination.\n"
+    mailList = "\n**MAILBOX ALERT**: You have new/unread files in your `mail/` directory: " & mailFiles.join(", ") & ". Review with `read_file`, then call `mail` action=archive with the filename — otherwise this alert fires every heartbeat tick.\n"
 
   let now = now().format("yyyy-MM-dd HH:mm")
 

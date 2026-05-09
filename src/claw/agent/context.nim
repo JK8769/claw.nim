@@ -768,7 +768,7 @@ proc scanMailbox*(workspace: string): seq[string] =
 proc buildMailboxSection(cb: ContextBuilder): string =
   let files = scanMailbox(cb.workspace)
   if files.len > 0:
-    return "\n## MAILBOX ALERT (Local)\nYou have unread files in your local `mail/` directory: $1. These may contain instructions or diagnostics from other agents. Use `read_file` to review them.\n".format(files.join(", "))
+    return "\n## MAILBOX ALERT (Local)\nYou have unread files in your local `mail/` directory: $1. These may contain instructions or diagnostics from other agents. Use `read_file` to review them, then `mail` action=archive with the filename to clear the alert (otherwise it fires every prompt build).\n".format(files.join(", "))
   return ""
 
 proc loadBootstrapFiles(cb: ContextBuilder, customIdentityPrompt: Option[string] = none(string)): string =

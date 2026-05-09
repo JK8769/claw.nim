@@ -1,18 +1,13 @@
-import std/[asyncdispatch, tables, json, locks, times, strutils, sets, algorithm]
+import std/[asyncdispatch, tables, json, locks, times, strutils, sets, algorithm, options]
 import types, ../mcp
 import ../logger
 import ../providers/types as providers_types
 import ../schema
+import registry/manifest as tool_manifest
+export tool_manifest
 
 const
   ExternalUserRoles = ["guest", "customer"]
-  # Hard floor of tools any external caller can invoke. DSL role.grant
-  # still applies — this list is the MINIMUM always-available set,
-  # not the cap. `delegate` is here so customer-tier requests can be
-  # handed off to an internal specialist agent without the caller
-  # needing direct access to that agent's tools.
-  ExternalAllowedTools* = ["reply", "reply_progress", "forward",
-                            "redeem_invite", "update_contact", "delegate"]
   # Heartbeat allowlist: maintenance-shaped tools only. The heartbeat
   # session ("Check if there are any tasks I should be aware of...")
   # has been the dominant token sink because the agent saw all 30+
@@ -29,17 +24,20 @@ const
   #   - delegate               hand urgent work to a peer agent
   # If a faster cadence on a specific tool is needed, schedule a
   # separate cron task — that cost is visible as cron, not heartbeat.
-  HeartbeatAllowedTools* = ["read_file", "list_dir", "forward",
-                            "update_contact", "reply", "delegate",
-                            "defer_to_todo", "mark_todo_done",
-                            "add_note_todo", "mark_note_done",
-                            "consolidate_knowledge", "exec"]
   # Synthetic sender id the gateway uses when the heartbeat service
   # invokes processDirect — agent/loop matches on this to apply the
-  # allowlist above.
+  # allowlist below.
   SystemHeartbeatSender* = "system:heartbeat"
   MaxToolNameLen* = 64
   MaxResultSize* = 30_000
+
+# SSOT: tool name lists derive from the framework manifest.
+# Every list with `XxxSafe = true` / `externalAllowed = true` /
+# `category = "..."` in `registry/manifest.nim`. Initialized at
+# module load. Edit the manifest to change the list — never edit a
+# hand-maintained const here.
+let HeartbeatAllowedTools* = tool_manifest.heartbeatSafeToolNames()
+let ExternalAllowedTools* = tool_manifest.externalAllowedToolNames()
 
 const
   TaxonomyExcludedTags = ["core"]  ## Tags that are not shown as discoverable groups
@@ -282,12 +280,20 @@ proc listByPrefix*(r: ToolRegistry, prefix: string): seq[string] =
   for k in r.tools.keys:
     if k.toLowerAscii.startsWith(lower): result.add(k)
 
+proc kwOverlap(needle, haystack: string): bool {.inline.} =
+  ## Substring/equality match used by every searchTools scoring branch.
+  ## Both strings must already be lowercased by the caller.
+  needle == haystack or needle in haystack or haystack in needle
+
 proc searchTools*(r: ToolRegistry, keywords: seq[string]): seq[tuple[name, description: string]] =
-  ## Search tools by keywords. Scoring priorities:
-  ## name (7) > primary tag (5, decays to 2) > searchHint (3) > description (1).
-  ## Name match is highest because it signals direct intent (LLM already knows the tool).
-  ## Tags and hints help when the LLM doesn't know the exact name.
-  ## Results sorted by score descending.
+  ## Search tools by keywords. Scoring tiers (gap reflects signal strength):
+  ##   name        7  — direct intent; LLM already knows the tool
+  ##   primary tag 5  — decays by position to a floor of 2 (later tags less canonical)
+  ##   searchKeys  4  — author-curated task vocabulary (e.g. "modify" → edit_file)
+  ##   searchHint  3  — short curated phrase, fallback for unknown names
+  ##   description 1  — tie-breaker only; descriptions are noisy
+  ## Results sorted by score descending. The 7→5→4→3→1 spread is wide enough
+  ## that a name match always outranks any combination of weaker signals.
   acquire(r.lock)
   defer: release(r.lock)
   # Pre-lowercase keywords once
@@ -309,9 +315,19 @@ proc searchTools*(r: ToolRegistry, keywords: seq[string]): seq[tuple[name, descr
         isWrapped = true
         break
     if isWrapped: continue
+    # Pre-normalize per-tool fields once (description, tags, hint, searchKeywords) —
+    # the inner keyword loop runs len(kwLows) times, so any per-keyword normalization
+    # would multiply the work. Manifest lookup is also hoisted here: O(1) via the
+    # cached name table in registry/manifest.nim.
     let tdesc = tool.description().toLowerAscii()
-    let ttags = tool.tags()
+    var tagsLow: seq[string] = @[]
+    for tag in tool.tags(): tagsLow.add(tag.toLowerAscii())
     let thint = tool.searchHint.toLowerAscii()
+    var keywordsLow: seq[string] = @[]
+    let manifestEntry = tool_manifest.toolByName(sname)
+    if manifestEntry.isSome:
+      for kw in manifestEntry.get.searchKeywords:
+        keywordsLow.add(kw.toLowerAscii())
     var score = 0
     for kwLow in kwLows:
       # Name match — 7pts (direct intent, LLM knows what it wants)
@@ -324,13 +340,20 @@ proc searchTools*(r: ToolRegistry, keywords: seq[string]): seq[tuple[name, descr
             score += 7
             break
       # Tag match — positional: primary tag 5pts, decays to 2pts minimum
-      for i, tag in ttags:
-        if kwLow == tag.toLowerAscii() or kwLow in tag.toLowerAscii():
+      for i, tagLow in tagsLow:
+        if kwOverlap(kwLow, tagLow):
           score += max(5 - i, 2)
           break
       # searchHint match — 3pts (vocabulary bridge for unknown tools)
       if thint.len > 0 and kwLow in thint:
         score += 3
+      # searchKeywords match — 4pts (deliberate task-vocabulary added by
+      # tool author for discovery; e.g. "modify"/"change" matches edit_file
+      # even though those words aren't in name or description)
+      for kwSpec in keywordsLow:
+        if kwOverlap(kwLow, kwSpec):
+          score += 4
+          break
       # Description match — 1pt (tie-breaker)
       if kwLow in tdesc: score += 1
     if score > 0:

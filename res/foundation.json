@@ -3,11 +3,11 @@
   "description": "Foundation-tier skills shipped with the claw distribution. Every company gets these auto-mirrored into its foundation/skills/ dir on `claw co create` / `claw co update`. Content lives under res/foundation/<name>/.",
 
   "skills": {
-    "forge-tool": {
-      "path": "res/foundation/forge-tool",
-      "description": "Forge a new MCP tool (compiled Nim binary) when no existing tool fits. Required by any agent with workstation:true.",
+    "tools": {
+      "path": "res/foundation/tools",
+      "description": "Manage your capability surface: discover hidden tools by intent, delegate to peers, forge new MCP tools when nothing fits, capture reusable workflows as skills. Universal — granted to every agent.",
       "requires": {
-        "tools": ["mcp", "write_file", "read_file", "shell"],
+        "tools": ["find_tools", "mcp", "delegate", "skill", "write_file", "shell"],
         "deps": [{"package": "nim", "manager": "system"}],
         "env": []
       }

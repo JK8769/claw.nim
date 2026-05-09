@@ -8,6 +8,8 @@ import claw/agent/context as agent_context
 import claw/cli/client
 import claw/cli_admin
 import claw/cli_providers
+import claw/cli_tools
+import claw/cli_upgrade
 import claw/gateway
 import claw/skills/skill_id
 import claw/providers/[registry as prov_registry, auth as prov_auth, models_catalog]
@@ -21,6 +23,7 @@ Usage:
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>]
   claw (company|co) update [--restart] [--no-pull]
+  claw upgrade [--check] [--rollback] [--branch=<b>] [--no-restart]
   claw (company|co) push [<url>] [--message=<m>] [--force]
   claw (company|co) pull
   claw (company|co) diverge [--remove-origin] [--rename=<name>]
@@ -52,6 +55,11 @@ Usage:
   claw agent edit <name> <field> <value>
   claw agent prompt <name> [--as=<userID>]
   claw agent send <name> <message> [--from=<id>] [--channel=<ch>]
+  claw tools list [--domain=<d>] [--default] [--heartbeat-safe] [--format=<fmt>]
+  claw tools show <name> [--format=<fmt>]
+  claw tools grant <name> --agent=<a>
+  claw tools revoke <name> --agent=<a>
+  claw tools validate
   claw skill list [--sort=<key>] [--reverse] [--format=<fmt>]
   claw skill new <name>
   claw skill remove <name>
@@ -1787,6 +1795,48 @@ when isMainModule:
     })
     if resp.kind == JString: echo resp.getStr()
     else: echo resp.pretty(2)
+
+  # `claw tools` — manifest-driven framework tool surface (Phase 8g)
+  elif args.isCommand("tools", "list"):
+    var listArgs: seq[string] = @[]
+    if $args["--domain"] != "nil": listArgs.add("--domain=" & $args["--domain"])
+    if args["--default"]: listArgs.add("--default")
+    if args["--heartbeat-safe"]: listArgs.add("--heartbeat-safe")
+    if $args["--format"] != "nil": listArgs.add("--format=" & $args["--format"])
+    echo runToolsList(listArgs)
+
+  elif args.isCommand("tools", "show"):
+    let fmt = if $args["--format"] != "nil": $args["--format"] else: "text"
+    echo runToolsShow($args["<name>"], fmt)
+
+  elif args.isCommand("tools", "grant"):
+    let serviceDir = getNimClawDir()
+    let by = if existsEnv("USER"): getEnv("USER") else: "cli"
+    echo runToolsGrant(serviceDir, $args["<name>"], $args["--agent"], by)
+
+  elif args.isCommand("tools", "revoke"):
+    let serviceDir = getNimClawDir()
+    let by = if existsEnv("USER"): getEnv("USER") else: "cli"
+    echo runToolsRevoke(serviceDir, $args["<name>"], $args["--agent"], by)
+
+  elif args.isCommand("tools", "validate"):
+    let (ok, output) = runToolsValidate()
+    echo output
+    if not ok: quit(1)
+
+  # `claw upgrade` — pull latest claw framework from upstream, rebuild,
+  # restart with rollback safety. System-wide (the claw binary itself),
+  # NOT a per-company action — the binary is shared across all
+  # companies on this machine. (Phase 9.)
+  elif args["upgrade"]:
+    let branch = if $args["--branch"] != "nil": $args["--branch"] else: "main"
+    if bool(args["--check"]):
+      echo runUpgradeCheck(branch)
+    elif bool(args["--rollback"]):
+      echo runUpgradeRollback()
+    else:
+      let noRestart = bool(args["--no-restart"])
+      echo runUpgradeApply(branch, noRestart = noRestart)
 
   # Skills listing — docker-image-style catalog across all 3 tiers.
   elif args.isCommand("skill", "list"):

@@ -14,7 +14,20 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/[filesystem, edit, shell, spawn, subagent, web, message, reply, reply_progress, forward, remember, memory_unified, http_request, git, pushover, screenshot, image_info, image_analyze, browser_open, hardware_unified, delegate, cron, find, mcp_unified, invite, query_graph, skill_install, config_tools, tasks_unified, update_contact, jq, clock, lark, playwright, learn_skill, provider_auth, model_list, feishu_add_app, create_customer_invite, my_customers, defer_to_todo, mark_todo_done, add_note_todo, mark_note_done, consolidate_knowledge]
+import ../tools/file/[read_file, write_file, list_dir, edit_file, append_file]
+import ../tools/system/[shell, clock, jq]
+import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
+import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, pushover]
+import ../tools/web/[web_unified, browser_unified, playwright]
+import ../tools/dev/git
+import ../tools/sched/cron
+import ../tools/admin/[provider_auth, model_list, config_tools, query_graph, update_contact, feishu_add_app]
+import ../tools/customer/[invite, create_customer_invite, my_customers]
+import ../tools/visual/[screenshot, image_info, image_analyze]
+import ../tools/hardware/hardware_unified
+import ../tools/mcp/mcp_unified
+import ../tools/skill/skill_unified
+import ../tools/task/tasks_unified
 import ../services/scheduler as cron_service
 import ../lib/curl as curly
 import ../lib/malebolgia
@@ -176,7 +189,7 @@ type
                                 ## in `runAgentLoop` can send synthetic
                                 ## visibility messages on the agent's
                                 ## behalf without going through a tool.
-    replyProgressTool*: ReplyProgressTool
+    replyTool*: ReplyTool
                                 ## Plan-state lives on reply_progress
                                 ## (was a separate task_list tool, then
                                 ## consolidated). Held here so the
@@ -1225,7 +1238,12 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
   # diluted by 100K+ tokens of prompt-rules. See comms-discipline
   # design notes: rule-only enforcement was empirically unreliable
   # at large prompt sizes; this counter makes TC-2 deterministic.
-  const CommTools = ["reply", "reply_progress", "message", "forward"]
+  # SSoT: comm tools derive from the framework manifest (every tool
+  # with `category = "comm"` in `registry/manifest.nim`). The TC-2
+  # nudge counter resets when any of these fire. Adding a new comm
+  # tool = drop it in the manifest with category="comm" and it
+  # automatically counts here.
+  let CommTools = tool_manifest.commToolNames()
   const ConsecutiveNonCommThreshold = 2
   var consecutiveNonCommTools = 0
   var nudgeInjectedForStreak = false
@@ -1279,13 +1297,13 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let usedPct = (iteration * 100) div max(maxIter, 1)
     if usedPct >= IterationSoftThresholdPct and
        maxIter < IterationHardCap and
-       al.replyProgressTool != nil:
-      let list = al.replyProgressTool.items.getOrDefault(opts.sessionKey, @[])
+       al.replyTool != nil:
+      let list = al.replyTool.items.getOrDefault(opts.sessionKey, @[])
       var completedCount = 0
       var unfinishedCount = 0
       for item in list:
         case item.status
-        of tisCompleted: completedCount.inc
+        of tisClaimedDone, tisVerifiedDone: completedCount.inc
         of tisInProgress, tisPending: unfinishedCount.inc
       let loopQuiet = loopDetector.streak < 3
       let productive = unfinishedCount > 0 and completedCount > 0 and loopQuiet
@@ -1945,14 +1963,14 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         # Monotonic — only grows. Folded into reply_progress (was a
         # separate task_list tool); the agent provides plan state on
         # the same tool that already announces progress.
-        if tc.name == "reply_progress" and al.replyProgressTool != nil:
-          let list = al.replyProgressTool.items.getOrDefault(opts.sessionKey, @[])
+        if tc.name == "reply" and al.replyTool != nil:
+          let list = al.replyTool.items.getOrDefault(opts.sessionKey, @[])
           if list.len > 0:
             let scaled = min(list.len * 8, IterationHardCap)
             if scaled > maxIter:
               let oldMax = maxIter
               maxIter = scaled
-              infoCF("agent", "Iteration budget scaled from reply_progress.items", {
+              infoCF("agent", "Iteration budget scaled from reply.items", {
                 "session": opts.sessionKey,
                 "items": $list.len,
                 "old_max": $oldMax,
@@ -2832,16 +2850,13 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # pass officeDir not workspace, otherwise the tool writes to the
   # company root and the heartbeat dispatcher (which reads from the
   # office) can't see the tombstone.
-  regTagged(newDeferToTodoTool(officeDir), ["agent", "core"], "defer an item to your own todo queue, processed at next heartbeat")
-  regTagged(newMarkTodoDoneTool(officeDir), ["agent", "core"], "mark a todo queue entry as done after processing it")
-  regTagged(newAddNoteTodoTool(officeDir), ["agent", "core"], "schedule a future TODO with a specific due date/time in notes.org")
-  regTagged(newMarkNoteDoneTool(officeDir), ["agent", "core"], "mark a notes.org TODO as done")
+  regTagged(newTodoTool(officeDir), ["agent", "core"], "manage your todo queue (defer/done) and time-scheduled TODOs (schedule/done_note)")
   regTagged(newConsolidateKnowledgeTool(officeDir, agentName), ["agent", "core"], "promote a cross-project insight into your knowledge wiki at knowledge/<topic>.md")
+  regTagged(newMailTool(workspace, officeDir), ["agent", "core", "messaging"], "inter-agent mail (send to peers, archive your own processed inbox)")
+  regTagged(newWorkstationTool(officeDir), ["agent", "core", "workstation"], "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds")
 
   # --- Web tools ---
-  regTagged(newWebSearchTool(expandEnv(cfg.tools.web.search.api_key), cfg.tools.web.search.max_results, toolCurly, createMaster()), ["web", "search", "data"], "search the internet for information")
-  regTagged(newWebFetchTool(50000, toolCurly, createMaster()), ["web", "http", "data"], "fetch webpage or URL content")
-  regTagged(newHttpRequestTool(), ["web", "http", "api"], "make HTTP API requests with headers")
+  regTagged(newWebTool(expandEnv(cfg.tools.web.search.api_key), cfg.tools.web.search.max_results, 50000, toolCurly, createMaster(), createMaster()), ["web", "search", "http", "data"], "HTTP-ish data fetching: search engines, page extraction, raw HTTP requests (action=search|fetch|request)")
 
   # --- Dev tools ---
   regTagged(newGitTool(workspace, cfg.agents.security.allowed_paths, officeDir), ["git", "devops", "vcs"], "git version control operations")
@@ -2857,7 +2872,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       let t = d.strip()
       if t.len > 0: allowedBrowserDomains.add(t)
 
-  regTagged(newBrowserOpenTool(allowedBrowserDomains), ["browser", "web"], "open URLs in web browser")
+  # Browser tool registered later (after the conditional playwright availability check)
 
   let callback: SendCallback = proc(channel, chatID, content, senderAgent, replyToMessageID, appID: string, metadata: Table[string, string] = initTable[string, string]()): Future[void] {.async.} =
     msgBus.publishOutbound(newOutbound(channel, senderAgent, chatID, content, replyToMessageID, appID, metadata))
@@ -2879,7 +2894,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newRedeemInviteTool(), ["admin", "core"])
 
   # --- Tasks & orchestration (unified) ---
-  regTagged(newNimclawTool(workspace), ["orchestration", "automation", "messaging"], "assign claim submit tasks send mail to agents")
+  regTagged(newNimclawTool(workspace), ["orchestration", "automation"], "assign claim submit tasks on the platform task board")
   # update_contact moved to after contextBuilder creation — it needs
   # the ContextBuilder for Guest-ledger writes.
 
@@ -2891,7 +2906,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newUnifiedMcpTool(toolsRegistry, officeDir), ["admin", "mcp", "skills"], "forge persist purge MCP tool servers skills")
   # learn_skill: author a workstation SKILL.md from structured inputs (enforces invariants).
   # Only exposed to agents with workstation:true — see the auto-add below near the ClawDSL scope block.
-  regTagged(newLearnSkillTool(officeDir, toolsRegistry), ["skills", "workstation"], "capture author workstation skill from repeated workflow")
+  # Skill management — install registry/GitHub skills + author workstation Tier-3 skills (skill_unified)
   regTagged(newSetApiKeyTool(getConfigPath()), ["admin", "config"], "configure API keys and secrets")
   # provider_auth: read-only verify of the company's stored API keys. Never
   # exposes the key value to the LLM; never writes .env (that's CLI-only).
@@ -2914,7 +2929,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
 
   let installer = newSkillInstaller(officeDir)
-  regTagged(newSkillInstallTool(installer), ["admin", "skills"], "install skill plugins from URL or path")
+  regTagged(newSkillTool(installer, officeDir, toolsRegistry), ["admin", "skills", "workstation"], "skill management: install plugins (action=install) or author workstation skills (action=learn)")
 
   # TTS/STT is provided externally by the tts.nim nimble package.
   # Install via `claw skill install tts` — scaffolds workspace/skills/tts/
@@ -2964,32 +2979,16 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
   regTagged(newUpdateContactTool(officeDir, contextBuilder), ["admin", "contacts", "core"], "update contact information in graph or guest ledger")
 
-  # --- Messaging (core) ---
-  let msgTool = newMessageTool()
-  msgTool.setSendCallback(callback)
-  let injectCb: InjectSessionCallback = proc(sessionKey, role, content: string): Future[void] {.async.} =
-    sessionsManager.addMessage(sessionKey, role, content)
-    sessionsManager.save(sessionsManager.getOrCreate(sessionKey))
-  msgTool.setInjectCallback(injectCb)
-  msgTool.setTags(@["messaging", "core"])
-  msgTool.setSearchHint("send message to a specific person")
-  toolsRegistry.register(msgTool)
-
   let rTool = newReplyTool()
   rTool.setSendCallback(callback)
   rTool.setTags(@["messaging", "core"])
   rTool.setSearchHint("reply to current conversation")
   toolsRegistry.register(rTool)
 
-  # Companion to `reply` for long-task checkpoint updates. Same
-  # delivery primitive, semantically distinct (status during a task
-  # vs final answer). Used by analytical agents per the
-  # `technical-communication` competency module.
-  let rpTool = newReplyProgressTool()
-  rpTool.setSendCallback(callback)
-  rpTool.setTags(@["messaging", "core"])
-  rpTool.setSearchHint("send progress checkpoint update plan items")
-  toolsRegistry.register(rpTool)
+  # `reply` is the unified output tool — both `action=final` (terminal
+  # answer with Feishu format guards + CardKit promotion) and
+  # `action=progress` (interim status with plan-state items[] for the
+  # framework's iteration budget scaling). Single tool, dual surface.
 
   let larkTool = newLarkCliTool()
   if larkTool.larkCliBin.len > 0:
@@ -3115,11 +3114,11 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
             warnCF("agent", "Failed to register forged MCP tool",
               {"name": toolName, "error": e.msg}.toTable)
   
-  # Phase 402: Register Playwright CLI tool (browser automation)
-  # Uses @playwright/cli — a token-efficient CLI designed for AI agents.
-  # Single tool with command parameter, replaces 21 individual MCP tools.
+  # Browser unified tool — wraps system-browser launch (always available)
+  # plus Playwright CLI automation (only if npx is installed).
   # Browser profile state (cookies, cache, sessions) lives in support/playwright/
   # — not content, not logs, just state the external tool needs between calls.
+  var pwTool: PlaywrightTool = nil
   let npxPath = findExe("npx")
   if npxPath.len > 0:
     var pwDir = getNimClawDir() / "support" / "playwright"
@@ -3133,8 +3132,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       except: discard
     try: createDir(pwDir)
     except: discard
-    let pwTool = newPlaywrightTool(pwDir)
-    regTagged(pwTool, ["browser", "web", "ui", "automation"], "browser navigate click type screenshot playwright web automation")
+    pwTool = newPlaywrightTool(pwDir)
+  regTagged(newBrowserTool(allowedBrowserDomains, pwTool), ["browser", "web", "ui", "automation"], "browser interaction: open URL (action=open) or playwright automation (action=automate)")
 
   # --- Memory (unified, trust-gated) ---
   # Shares the same MemoryStore the ContextBuilder uses for system-prompt
@@ -3143,6 +3142,30 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # The loop updates the tool's requester context before each LLM turn.
   let memTool = newUnifiedMemoryTool(contextBuilder.memory)
   regTagged(memTool, ["memory", "data", "core"], "store recall list forget memory facts preferences trust-gated")
+
+  # Phase 8f — boot-time validation guard. After all framework tools
+  # are registered above, compare the live registry to the manifest
+  # SSOT. Any mismatch is logged so drift surfaces immediately.
+  # Runs once per AgentLoop creation (which happens at first per-agent
+  # message dispatch); cheap one-time cost, catches the entire drift
+  # class we previously hit by hand-maintaining 5 separate lists.
+  block validateManifest:
+    let registered = toolsRegistry.list()
+    var missingFromRegistry: seq[string] = @[]
+    var missingFromManifest: seq[string] = @[]
+    for s in tool_manifest.AllTools:
+      if s.name notin registered:
+        missingFromRegistry.add(s.name)
+    for name in registered:
+      if name.startsWith("mcp_"): continue   # MCP tools register dynamically
+      if tool_manifest.toolByName(name).isNone:
+        missingFromManifest.add(name)
+    if missingFromRegistry.len > 0:
+      warnCF("agent", "Manifest declares tools that are not registered",
+        {"agent": agentName, "missing": missingFromRegistry.join(",")}.toTable)
+    if missingFromManifest.len > 0:
+      warnCF("agent", "Tools registered with no manifest entry (drift)",
+        {"agent": agentName, "extra": missingFromManifest.join(",")}.toTable)
 
   var al = AgentLoop(
     bus: msgBus,
@@ -3173,7 +3196,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     memTool: memTool,
     techCommDefault: techCommDefault,
     sendCallback: callback,
-    replyProgressTool: rpTool,
+    replyTool: rTool,
     larkTool: larkTool,
     cancelRequested: initTable[string, bool]()
   )
@@ -3235,9 +3258,11 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     if added > 0:
       infoCF("agent", "Auto-exposed workstation-forged tools",
         {"agent": agentName, "count": $added, "tools": workstationTools.join(",")}.toTable)
-    # learn_skill is the workstation-authoring tool — always available when workstation is on
-    if "learn_skill" notin al.allowedTools:
-      al.allowedTools.add("learn_skill")
+    # `skill` (action=learn) is the workstation-authoring path; was
+    # `learn_skill` standalone pre-Phase-3b. Always available when
+    # `workstation true` is set on the agent.
+    if "skill" notin al.allowedTools:
+      al.allowedTools.add("skill")
 
   return al
 

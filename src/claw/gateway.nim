@@ -11,14 +11,15 @@ import config, logger, bus, bus_types, session, agent/loop,
        cli_admin, system_commands
 import billing/[subscription as sub_mod, welcome as welcome_mod, company as company_mod, gate as gate_mod, gate_messages as gate_msgs, usage as usage_mod, plants as plants_mod]
 import context as claw_context, utils, pricing
-import tools/delegate as delegate_tool
+import tools/comm/delegate as delegate_tool
 import tools/registry as tools_registry
 import tools/types as tools_types
 import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
 import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
 import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator,
-                  heartbeat_decl, notes_watcher]
+                  heartbeat_decl, notes_watcher, auto_update]
+import cli_upgrade
 import skills/loader as skills_loader_mod
 import daemon/[socket, status]
 
@@ -69,11 +70,51 @@ proc buildProviderChainForAgent(graph: WorldGraph,
                                  models: seq[string],
                                  healthRegistry: ProviderHealthRegistry = nil): LLMProvider
 
+# Helper: is this agent marked `external true` in BASE.nims? External
+# agents have an identity (cortex node, office, mailbox) but no
+# gateway-driven LLM loop. Inbound messages get parked in their
+# todo queue / mail directory for an external runtime to pick up;
+# they never trigger autonomous response.
+proc isExternalAgent(agentName: string): bool =
+  if gCtx == nil: return false
+  let key = agentName.toLowerAscii
+  for a in gCtx.cfg.agents.named:
+    if a.name.toLowerAscii == key:
+      return a.external
+  return false
+
 # Shared askPeer implementation — gets or creates the target peer's
 # AgentLoop, runs her full processDirect (her own tools, trust gate,
 # sessions), returns her reply text. Wired into every AgentLoop's
 # delegate tool so "agent-to-agent" is a real capability transfer.
+#
+# External-agent gate: if the target is `external true`, we don't
+# spawn a loop. The prompt is queued into the peer's todo store
+# (same store as `delegate deferred=true` uses) and a clear ack
+# returns. The external runtime polls its office on its own cadence.
 proc askPeerImpl(agentName, prompt, senderAlias, callerSessionKey: string): Future[string] {.async.} =
+  if isExternalAgent(agentName):
+    let peerOffice = gCtx.cfg.workspacePath() / "offices" / agentName.toLowerAscii
+    try:
+      let store = agent_todo.newTodoStore(peerOffice)
+      let preview = if prompt.len > 80: prompt[0 ..< 80] & "…" else: prompt
+      let id = store.append(
+        source = "delegated_external",
+        sourceID = senderAlias,
+        summary = preview,
+        body = prompt,
+        priority = "normal")
+      if id.len == 0:
+        return "Error: failed to queue delegation to external agent '" &
+               agentName & "' (todo store write returned empty id)"
+      return "Queued to " & agentName & "'s todo (id=" & id & "). " &
+             agentName & " is external — no autonomous response. " &
+             "Their external runtime polls the office and will respond " &
+             "on its own cadence. For explicit notification, use " &
+             "`mail action=send recipient=" & agentName.toLowerAscii & "`."
+    except CatchableError as e:
+      return "Error: failed to queue delegation to external agent '" &
+             agentName & "': " & e.msg
   let peer = ensureOffice(agentName)
   if peer == nil:
     return "Error: peer agent '" & agentName & "' not configured."
@@ -248,6 +289,55 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     infoCF("cronHandler", "agent_tick completed",
            {"job": job.name, "agent": agentName,
             "source_skill": job.sourceSkill}.toTable)
+    return
+
+  if job.payload.kind == "auto_update_tick":
+    # Phase 9 — scheduled poll for upstream claw updates. The
+    # auto_update orchestrator stashed config in payload fields:
+    #   agentName  → branch (e.g. "main")
+    #   message    → "<mode>|<notify_agent>" where mode = "auto" | "notify"
+    let branch = if job.payload.agentName.len > 0: job.payload.agentName else: "main"
+    let parts = job.payload.message.split("|", 1)
+    let mode = if parts.len > 0: parts[0] else: "notify"
+    let notifyAgent = if parts.len > 1: parts[1] else: ""
+    let checkOutput = runUpgradeCheck(branch)
+    let isUpToDate = "up to date" in checkOutput
+    if isUpToDate:
+      infoCF("auto_update", "scheduled check — up to date",
+             {"branch": branch}.toTable)
+      return
+    if mode == "auto":
+      let applyOutput = runUpgradeApply(branch, noRestart = false)
+      infoCF("auto_update", "scheduled check — auto-applied",
+             {"branch": branch,
+              "summary": applyOutput.split("\n")[0]}.toTable)
+    else:
+      # Notify-only: drop a mail to the notify agent.
+      if notifyAgent.len > 0:
+        let mailDir = gCtx.cfg.workspacePath() / "offices" /
+                      notifyAgent.toLowerAscii / "mail"
+        try:
+          createDir(mailDir)
+          let ts = now().format("yyyyMMdd'_'HHmmss")
+          let mailFile = mailDir / "mail_" & ts & "_auto_update.json"
+          let mailData = %*{
+            "sender": "auto_update",
+            "recipient": notifyAgent,
+            "subject": "Upstream claw update available on branch " & branch,
+            "body": checkOutput & "\n\nRun `claw upgrade` to apply " &
+                    "(gateway will need a restart). Or set `auto_apply " &
+                    "true` in BASE.nims's `updates:` block for hands-free.",
+            "timestamp": $now()
+          }
+          writeFile(mailFile, mailData.pretty())
+          infoCF("auto_update", "notify mail sent",
+            {"to": notifyAgent, "branch": branch}.toTable)
+        except CatchableError as e:
+          warnCF("auto_update", "notify mail failed",
+            {"to": notifyAgent, "error": e.msg}.toTable)
+      else:
+        infoCF("auto_update", "update available, no notify_agent configured",
+          {"branch": branch}.toTable)
     return
 
   if job.payload.kind == "heartbeat_tick":
@@ -2655,6 +2745,12 @@ Options:
   # automation/jobs.json.
   registerHeartbeats(cfg, cronServiceInstance)
 
+  # Phase 9 — auto-update from upstream. Default: not registered (the
+  # `updates:` block in BASE.nims is opt-in; default `enabled false`).
+  # When enabled, registers a single recurring job that polls origin
+  # at `check_interval_hours` and either notifies or auto-applies.
+  registerAutoUpdate(cfg, cronServiceInstance)
+
   # Notes-watcher: scans each agent's notes.org every 5 min,
   # registers future-dated TODOs as one-off agent_tick scheduler
   # entries. Initial scan at boot picks up any notes left from
@@ -3321,7 +3417,34 @@ Options:
                      chan & "."
               break bindCheck
           if resp == "":
-            resp = await gCtx.offices[officeKey].processDirect(message, cliSender, cliSender, chan)
+            if isExternalAgent(officeKey):
+              # External — no LLM loop. Drop the message into the office's
+              # mail/ inbox so the external runtime sees it on next poll.
+              try:
+                let mailDir = cfg[].workspacePath() / "offices" /
+                              officeKey & "/mail"
+                createDir(mailDir)
+                let timestamp = now().format("yyyyMMdd'_'HHmmss")
+                let mailFile = mailDir / "mail_" & timestamp & "_" &
+                               cliSender.toLowerAscii & "_cli.json"
+                let mailData = %*{
+                  "sender": cliSender,
+                  "recipient": officeKey,
+                  "subject": "CLI message",
+                  "body": message,
+                  "timestamp": $now(),
+                  "channel": chan
+                }
+                writeFile(mailFile, mailData.pretty())
+                resp = officeKey.capitalizeAscii() &
+                       " is external — no autonomous response. " &
+                       "Message stored at " & mailFile &
+                       "; external runtime will see it on next mail poll."
+              except CatchableError as e:
+                resp = "Error: failed to store CLI message for external " &
+                       "agent " & officeKey & ": " & e.msg
+            else:
+              resp = await gCtx.offices[officeKey].processDirect(message, cliSender, cliSender, chan)
           respChan[].send(resp)
         except Exception as e:
           respChan[].send("Error: " & e.msg)

@@ -8,7 +8,7 @@ import std/tables
 type
   SkillsLoader* = ref object
     ## 3-tier skill discovery:
-    ##   Tier 1 Foundation  — universal skills from the claw distribution (forge-tool)
+    ##   Tier 1 Foundation  — universal skills from the claw distribution (e.g. `tools`)
     ##   Tier 2 Company     — opt-in skills curated per company (declared via ClawDSL)
     ##   Tier 3 Workstation — agent-authored at runtime
     ## Discovery order: workstation → lab → foundation → openclaw (later layers

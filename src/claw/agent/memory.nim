@@ -34,7 +34,7 @@
 ##   recallSelf       → self.jsonl filtered by visibility × trust
 ##   getMemoryContext → merges both for system-prompt injection
 
-import std/[os, json, times, strutils, algorithm]
+import std/[os, json, times, strutils, algorithm, tables]
 
 type
   MemoryVisibility* = enum
@@ -302,3 +302,240 @@ proc getMemoryContext*(ms: MemoryStore, senderNcId: string,
 
   if parts.len == 0: return ""
   "# Memory\n\n" & parts.join("\n\n---\n\n")
+
+# ── Cross-source recall: sessions, heart, knowledge ────────────────
+##
+## Phase 6 of the verify-triangle. The base recall procs above only
+## see <office>/memory/. The agent's substantive history actually
+## lives in three other stores under the same office root:
+##
+##   sessions/<partner>.jsonl   — raw conversation turns
+##   heart/heartbeat.jsonl       — heartbeat tick log
+##   knowledge/<topic>.md        — semantic memory wiki
+##
+## The procs below let `memory recall scope=...` reach into those
+## stores. All return a uniform MemoryHit envelope so cross-source
+## results merge cleanly. Time-windowed via fromTs/toTs (epoch
+## seconds; 0.0 means "no bound").
+##
+## `verify` action layers on top: tokenizes a claim, runs recallAll
+## per keyword, returns evidence with provenance. The cognitive
+## analog of `workstation verify_project` — tool produces evidence,
+## agent draws conclusions.
+
+type
+  MemoryHit* = object
+    source*: string    ## "sessions:<key>" | "memory:self" | "memory:<nc>" | "heart" | "knowledge:<topic>"
+    role*: string      ## "user" | "assistant" | "tool" | "system" | "" (n/a for non-session sources)
+                       ## Critical for verify: a hit from `role=user`
+                       ## means someone *asked* about the keywords —
+                       ## not evidence the agent *did* anything.
+                       ## `role=assistant` = the agent's own past output.
+    ts*: float         ## epoch seconds — for time filtering & ordering
+    excerpt*: string   ## ≤300 chars, the matched content
+    path*: string      ## absolute path for cite-back
+
+proc officeRoot*(ms: MemoryStore): string =
+  ## Office root = parent of memoryDir (`<office>/memory/` → `<office>`).
+  parentDir(ms.memoryDir)
+
+proc clipExcerpt(s: string, maxLen = 300): string =
+  if s.len <= maxLen: return s
+  result = s[0 ..< maxLen] & "…"
+
+proc tsInWindow(ts, fromTs, toTs: float): bool {.inline.} =
+  if fromTs > 0.0 and ts < fromTs: return false
+  if toTs > 0.0 and ts > toTs: return false
+  true
+
+proc matches(content, queryLower: string): bool {.inline.} =
+  if queryLower.len == 0: return true
+  queryLower in content.toLowerAscii
+
+proc recallSessions*(ms: MemoryStore, query: string,
+                     fromTs, toTs: float, limit: int): seq[MemoryHit] =
+  ## Sweep <office>/sessions/*.jsonl. Each line is a turn JSON; we
+  ## look at `ts` and `content` fields. Anything else (role, speaker,
+  ## tool_calls) is ignored for the match.
+  result = @[]
+  let dir = ms.officeRoot() / "sessions"
+  if not dirExists(dir): return
+  let qLow = query.toLowerAscii
+  for kind, path in walkDir(dir):
+    if kind != pcFile: continue
+    if not path.endsWith(".jsonl"): continue
+    let key = path.extractFilename.changeFileExt("")
+    var f: File
+    if not f.open(path, fmRead): continue
+    defer: f.close()
+    var line: string
+    while f.readLine(line):
+      if line.len == 0: continue
+      var parsed: JsonNode
+      try: parsed = parseJson(line)
+      except CatchableError: continue
+      if parsed.kind != JObject: continue
+      let ts = parsed.getOrDefault("ts").getFloat(0.0)
+      if not tsInWindow(ts, fromTs, toTs): continue
+      let content = parsed.getOrDefault("content").getStr("")
+      if content.len == 0: continue
+      if not matches(content, qLow): continue
+      let role = parsed.getOrDefault("role").getStr("")
+      result.add(MemoryHit(
+        source: "sessions:" & key,
+        role: role,
+        ts: ts,
+        excerpt: clipExcerpt(content),
+        path: path
+      ))
+      if result.len >= limit: return
+
+proc recallHeart*(ms: MemoryStore, query: string,
+                  fromTs, toTs: float, limit: int): seq[MemoryHit] =
+  ## Sweep <office>/heart/heartbeat.jsonl. Each line is a tick event.
+  result = @[]
+  let path = ms.officeRoot() / "heart" / "heartbeat.jsonl"
+  if not fileExists(path): return
+  let qLow = query.toLowerAscii
+  var f: File
+  if not f.open(path, fmRead): return
+  defer: f.close()
+  var line: string
+  while f.readLine(line):
+    if line.len == 0: continue
+    var parsed: JsonNode
+    try: parsed = parseJson(line)
+    except CatchableError: continue
+    if parsed.kind != JObject: continue
+    let ts = parsed.getOrDefault("ts").getFloat(0.0)
+    if not tsInWindow(ts, fromTs, toTs): continue
+    let kind = parsed.getOrDefault("kind").getStr("")
+    let msg = parsed.getOrDefault("msg").getStr("")
+    let composed = (kind & " | " & msg & " | " & line).strip()
+    if not matches(composed, qLow): continue
+    result.add(MemoryHit(
+      source: "heart",
+      ts: ts,
+      excerpt: clipExcerpt(composed),
+      path: path
+    ))
+    if result.len >= limit: return
+
+proc recallKnowledge*(ms: MemoryStore, query: string,
+                      limit: int): seq[MemoryHit] =
+  ## Grep <office>/knowledge/*.md. Knowledge files are append-mode
+  ## markdown — no per-entry timestamp, so we use the file mtime
+  ## as a coarse proxy. Returns matched files (one hit per file)
+  ## with the first matching line as excerpt.
+  result = @[]
+  let dir = ms.officeRoot() / "knowledge"
+  if not dirExists(dir): return
+  let qLow = query.toLowerAscii
+  for kind, path in walkDir(dir):
+    if kind != pcFile: continue
+    if not path.endsWith(".md"): continue
+    var content: string
+    try: content = readFile(path)
+    except CatchableError: continue
+    if not matches(content, qLow): continue
+    let topic = path.extractFilename.changeFileExt("")
+    var excerpt = ""
+    for ln in content.splitLines():
+      if matches(ln, qLow):
+        excerpt = ln.strip()
+        break
+    let ts = try: getFileInfo(path).lastWriteTime.toUnixFloat
+             except CatchableError: 0.0
+    result.add(MemoryHit(
+      source: "knowledge:" & topic,
+      ts: ts,
+      excerpt: clipExcerpt(if excerpt.len > 0: excerpt else: content),
+      path: path
+    ))
+    if result.len >= limit: return
+
+proc recallSelfHits*(ms: MemoryStore, trustLevel: int, query: string,
+                     fromTs, toTs: float, limit: int): seq[MemoryHit] =
+  result = @[]
+  for e in ms.recallSelf(trustLevel, query, limit * 4):
+    if not tsInWindow(e.timestamp, fromTs, toTs): continue
+    result.add(MemoryHit(
+      source: "memory:self",
+      ts: e.timestamp,
+      excerpt: clipExcerpt(e.key & ": " & e.content),
+      path: ms.selfPath
+    ))
+    if result.len >= limit: return
+
+proc recallSenderHits*(ms: MemoryStore, ncId: string, query: string,
+                       fromTs, toTs: float, limit: int): seq[MemoryHit] =
+  result = @[]
+  if not ncId.startsWith("nc:"): return
+  for e in ms.recallSender(ncId, query, limit * 4):
+    if not tsInWindow(e.timestamp, fromTs, toTs): continue
+    result.add(MemoryHit(
+      source: "memory:" & ncId,
+      ts: e.timestamp,
+      excerpt: clipExcerpt(e.key & ": " & e.content),
+      path: ms.senderFile(ncId)
+    ))
+    if result.len >= limit: return
+
+proc recallAll*(ms: MemoryStore, ncId: string, trustLevel: int,
+                query: string, fromTs, toTs: float,
+                limit: int): seq[MemoryHit] =
+  ## Cross-source: sessions + heart + knowledge + memory(self+sender).
+  ## Per-store cap is `limit` so a noisy single store can't crowd out
+  ## the others; final list is sorted ts-desc and capped at `limit`.
+  result = @[]
+  result.add(ms.recallSessions(query, fromTs, toTs, limit))
+  result.add(ms.recallHeart(query, fromTs, toTs, limit))
+  result.add(ms.recallKnowledge(query, limit))
+  result.add(ms.recallSelfHits(trustLevel, query, fromTs, toTs, limit))
+  if ncId.startsWith("nc:"):
+    result.add(ms.recallSenderHits(ncId, query, fromTs, toTs, limit))
+  result.sort(proc(a, b: MemoryHit): int =
+    if a.ts > b.ts: -1 elif a.ts < b.ts: 1 else: 0)
+  if result.len > limit:
+    result.setLen(limit)
+
+# ── Time-arg parsing + claim tokenization (for memory verify) ──────
+
+const Stopwords = ["the", "a", "an", "of", "to", "in", "on", "for",
+                   "with", "and", "or", "but", "is", "are", "was",
+                   "were", "be", "been", "being", "have", "has", "had",
+                   "do", "does", "did", "i", "me", "my", "you", "your",
+                   "we", "us", "our", "it", "its", "this", "that",
+                   "these", "those", "at", "by", "from", "as"]
+
+proc parseTimeArg*(s: string): float =
+  ## Accept "yyyy-MM-dd" (start of day, local) or full ISO 8601.
+  ## Returns 0.0 on parse failure (caller treats as "no bound").
+  let trimmed = s.strip()
+  if trimmed.len == 0: return 0.0
+  try:
+    if trimmed.len == 10 and trimmed[4] == '-' and trimmed[7] == '-':
+      return parse(trimmed, "yyyy-MM-dd", local()).toTime.toUnixFloat
+    return parseTime(trimmed, "yyyy-MM-dd'T'HH:mm:sszzz", utc()).toUnixFloat
+  except CatchableError:
+    try:
+      return parseTime(trimmed, "yyyy-MM-dd HH:mm", local()).toUnixFloat
+    except CatchableError:
+      return 0.0
+
+proc tokenizeClaim*(claim: string): seq[string] =
+  ## Lowercase, strip punctuation, drop stopwords + tokens <3 chars.
+  result = @[]
+  var seen = initTable[string, bool]()
+  var word = ""
+  template emit() =
+    if word.len >= 3 and word notin Stopwords and not seen.hasKey(word):
+      result.add(word)
+      seen[word] = true
+    word.setLen(0)
+  for c in claim.toLowerAscii:
+    if c in {'a'..'z', '0'..'9', '_', '-'}:
+      word.add(c)
+    else:
+      emit()
+  emit()

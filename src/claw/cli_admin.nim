@@ -1,6 +1,7 @@
 import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode, sequtils]
 import config, agent/invites, agent/cortex, agent/binding, libnkn/nkn_bridge, QRgen, utils
 import skill_grant
+import tools/registry/manifest as tool_manifest
 import billing/[subscription as sub_mod, usage as usage_mod, welcome as welcome_mod, company as company_mod, plants as plants_mod]
 import skills/[loader as skills_loader, installer as skills_installer]
 import channels/feishu as feishu_channel
@@ -154,20 +155,22 @@ proc runCapabilitiesCommand*(cfg: Config, asJson: bool): string =
   # Post-Phase-4: providers are per-agent now. This command is just a
   # static feature manifest; the provider line was misleading anyway
   # (showed only the company default, not what each agent uses).
+  # SSoT: tool list derives from the framework manifest, sorted
+  # alphabetically. Auto-syncs with renames and unifications. No
+  # hand-maintained list to drift.
+  let toolNames = tool_manifest.AllTools.mapIt(it.name).sorted()
+
   var caps: seq[string] = @[]
   caps.add("memory: markdown")
   caps.add("channels: telegram, discord, whatsapp, dingtalk, maixcam, feishu, qq")
-  caps.add("tools: shell, filesystem, edit, web, git, screenshot, image_info, browser_open, http_request, memory_*, hardware_*, i2c, spi, cron, pushover, composio, delegate, spawn")
+  caps.add("tools: " & toolNames.join(", "))
   caps.add("skills: loader, installer")
 
   if asJson:
     var j = newJObject()
     j["memory"] = %"markdown"
     j["channels"] = %*["telegram", "discord", "whatsapp", "dingtalk", "maixcam", "feishu", "qq"]
-    j["tools"] = %*["shell", "filesystem", "edit", "web", "git", "screenshot", "image_info",
-      "browser_open", "http_request", "memory_store", "memory_list", "memory_recall",
-      "memory_forget", "hardware_info", "hardware_memory", "i2c", "spi", "cron",
-      "pushover", "composio", "delegate", "spawn"]
+    j["tools"] = %toolNames
     return $j
   else:
     return "nimclaw Capabilities\n  " & caps.join("\n  ")
@@ -3534,12 +3537,15 @@ proc runAgentsCommand*(cfg: var Config, args: seq[string], asJson: bool = false)
       for a in cfg.agents.named:
         let officeDir = cfg.workspacePath() / "offices" / a.name.toLowerAscii()
         let state = readAgentState(officeDir).capitalizeAscii()
-        res.add("  - name: {a.name} [{state}]\n    model: {a.model}\n".fmt)
+        let extMark = if a.external: " [external]" else: ""
+        res.add("  - name: {a.name} [{state}]{extMark}\n    model: {a.model}\n".fmt)
         res.add("    entity: {a.entity}\n    identity: {a.identity}\n".fmt)
         if a.role.isSome:
           res.add("    role: {a.role.get()}\n".fmt)
         if a.provider.len > 0:
           res.add("    provider: {a.provider}\n".fmt)
+        if a.external:
+          res.add("    runtime: external — gateway runs no LLM loop; cognition lives elsewhere (puppeteered via `claw agent send --from {a.name.toLowerAscii()}`)\n".fmt)
         if a.system_prompt.isSome:
           res.add("    prompt: {a.system_prompt.get()}\n".fmt)
 

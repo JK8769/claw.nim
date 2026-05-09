@@ -2,7 +2,8 @@
 ## Import this in a .nims file and run with `nim e MyCompany.nims`.
 ## Generates ~/.nimclaw-<OrgName>/ with BASE.json, workspace, skills, etc.
 
-import std/[json, os, strutils, tables, options, sets]
+import std/[json, os, strutils, tables, options, sets, sequtils]
+import tools/registry/manifest
 
 # ── Spec Types ────────────────────────────────────────────────────
 
@@ -59,6 +60,16 @@ type
     practices*: seq[string] ## Competency names — pulls in their skills + handbooks
     deny*: seq[string]     ## Tool names to deny (overrides skill-granted tools)
     workstation*: bool     ## Allow workstation experimentation (author skills & forge tools)
+    external*: bool        ## true = identity exists in graph but the gateway
+                           ## doesn't run the LLM loop. Cognition is provided
+                           ## by an external runtime (another Claude Code
+                           ## instance, Cursor, Aider, federated peer agent,
+                           ## etc.) which puppeteers via `claw agent send
+                           ## --from <name>` and reads the office's mail/
+                           ## directly. Identity, mailbox, memory, and
+                           ## relationships persist whether the flag is on
+                           ## or off — flip back to internal when ready
+                           ## for autonomous reasoning to resume.
     # Resolved at build time from skills' SKILL.md frontmatter
     resolvedTools*: seq[string]
     resolvedDeps*: seq[string]
@@ -212,6 +223,15 @@ type
     news*: bool
     calendar*: bool
 
+  ClawUpdates* = object
+    ## Phase 9 — auto-update from upstream claw repo. Default off (opt-in).
+    enabled*: bool                ## false = no scheduled checks; manual `claw co upgrade` still works
+    repo*: string                 ## upstream URL (informational; actual remote = git origin)
+    branch*: string               ## "main" / "stable" / "release-1.x"; default "main"
+    checkIntervalHours*: int      ## poll cadence; default 4 (i.e. check 6× per day)
+    autoApply*: bool              ## true = pull+build+restart automatically; false = mail operator
+    notifyAgent*: string          ## which agent gets notified (default first internal agent)
+
   ClawSpec* = object
     org*: ClawOrg
     persons*: seq[ClawPerson]
@@ -230,6 +250,7 @@ type
     gateway*: ClawGateway
     tools*: ClawTools
     trust*: ClawTrust
+    updates*: ClawUpdates           ## Phase 9 — auto-update config (opt-in; default: enabled=false)
 
 # ── Global State ──────────────────────────────────────────────────
 
@@ -237,6 +258,12 @@ var spec* {.global.} = ClawSpec(
   defaults: ClawDefaults(maxTokens: 4096, temperature: 0.7, maxToolIterations: 20),
   gateway: ClawGateway(host: "0.0.0.0", port: 18790),
   tools: ClawTools(webSearchMaxResults: 5, webSearchProvider: "auto"),
+  updates: ClawUpdates(
+    enabled: false,            # opt-in; default off
+    branch: "main",
+    checkIntervalHours: 4,
+    autoApply: false,          # safer default: notify-only until operator opts in
+  ),
 )
 
 # ── DSL: Organization ─────────────────────────────────────────────
@@ -369,6 +396,11 @@ template agent*(agentName: string, body: untyped) =
       for t in toolNames: a.deny.add(t)
     template workstation(enabled: bool) {.used.} =
       a.workstation = enabled
+    template external(enabled: bool) {.used.} =
+      ## true = no LLM loop in the gateway; identity remains in
+      ## the cortex graph for messaging/memory/peer-relationships.
+      ## See ClawAgent.external docs.
+      a.external = enabled
     template heartbeat(seconds: int) {.used.} =
       ## Opt this agent into autonomous heartbeat ticks at the given
       ## cadence. The runtime fires a stateless one-shot turn (no
@@ -516,6 +548,41 @@ template gateway*(body: untyped) =
       spec.gateway.host = h
     template port(p: int) {.used.} =
       spec.gateway.port = p
+    body
+
+# ── DSL: Updates (Phase 9 auto-update) ────────────────────────────
+
+template updates*(body: untyped) =
+  ## Opt-in auto-update from upstream claw repo. When `enabled true`,
+  ## the gateway registers a scheduled job that polls origin/<branch>
+  ## every `check_interval_hours` and either:
+  ##   - mails the notify_agent (auto_apply false; default)
+  ##   - pulls + builds + restarts (auto_apply true)
+  ##
+  ## Example:
+  ##
+  ##   updates:
+  ##     enabled true
+  ##     branch "main"
+  ##     check_interval_hours 4
+  ##     auto_apply false
+  ##     notify_agent "Lexi"
+  ##
+  ## Manual `claw co upgrade` works regardless of this block — the
+  ## block only controls the scheduled poll.
+  block:
+    template enabled(b: bool) {.used.} =
+      spec.updates.enabled = b
+    template repo(url: string) {.used.} =
+      spec.updates.repo = url
+    template branch(b: string) {.used.} =
+      spec.updates.branch = b
+    template check_interval_hours(h: int) {.used.} =
+      spec.updates.checkIntervalHours = h
+    template auto_apply(b: bool) {.used.} =
+      spec.updates.autoApply = b
+    template notify_agent(name: string) {.used.} =
+      spec.updates.notifyAgent = name
     body
 
 # ── DSL: Tools ────────────────────────────────────────────────────
@@ -1118,6 +1185,8 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
       entry["deny"] = %a.deny
     if a.workstation:
       entry["workstation"] = %true
+    if a.external:
+      entry["external"] = %true
     if a.thinking.isSome:
       entry["thinking"] = %a.thinking.get
     if a.temperature != 0.0:
@@ -1161,7 +1230,10 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     effectiveRoles.add(ClawTrustRole(
       name: "Guest", tier: "external",
       trustMin: 0, trustMax: 40,
-      grant: @["reply", "forward", "update_contact", "redeem_invite"],
+      # SSoT: derive the floor from manifest. Every tool with
+      # `externalAllowed = true` in registry/manifest.nim becomes
+      # part of the Guest grant. Edit the manifest, not this list.
+      grant: manifest.externalAllowedToolNames(),
       prompt: "⚠️ GUEST — public info only. Route anything sensitive via forward."
     ))
   var trustRoles = newJArray()
@@ -1196,6 +1268,14 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     "channels": buildChannelConfig(spec),
     "peripherals": {"boards": [], "datasheet_dir": ""},
     "gateway": {"host": spec.gateway.host, "port": spec.gateway.port},
+    "updates": {
+      "enabled": spec.updates.enabled,
+      "repo": spec.updates.repo,
+      "branch": spec.updates.branch,
+      "check_interval_hours": spec.updates.checkIntervalHours,
+      "auto_apply": spec.updates.autoApply,
+      "notify_agent": spec.updates.notifyAgent,
+    },
     "trust": {"roles": trustRoles},
     "tools": {
       "web": {
@@ -1376,7 +1456,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
   # Resolve the bundled skill path if we haven't already set it via claw:.
   # Bare names map to res/foundation/<name>/ (the only bundled location now).
   # Non-foundation bare names no longer have a bundled source — users must
-  # use `github:`/`claw:` schemes for anything beyond forge-tool.
+  # use `github:`/`claw:` schemes for anything beyond the foundation set.
   if bundledLocal.len == 0:
     bundledLocal = getCurrentDir() / "res" / "foundation" / leafName
     if not dirExists(bundledLocal):
@@ -1855,7 +1935,43 @@ proc writeLockfile(s: ClawSpec, serviceDir: string) =
   }
   writeFile(serviceDir / "claw.lock", pretty(lock, 2))
 
-proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
+type
+  ToolGrant* = object
+    agent*: string
+    tool*: string
+
+proc loadToolGrants(serviceDir: string): tuple[grants, revokes: seq[ToolGrant]] =
+  ## Read `<serviceDir>/tool_grants.json` if present. Per-agent grant/revoke
+  ## overlay applied after per-skill tool resolution but before dedup. Lets
+  ## operators add/remove specific tools per agent without editing BASE.nims.
+  ## Format:
+  ##   {"grants":  [{"agent": "Lexi", "tool": "exec",  "ts": ..., "by": "..."}],
+  ##    "revokes": [{"agent": "Lexi", "tool": "shell", "ts": ..., "by": "..."}]}
+  ## See `cli_tools.nim::runToolsGrant/runToolsRevoke` for the writers.
+  let path = serviceDir / "tool_grants.json"
+  if not fileExists(path): return
+  try:
+    let j = parseJson(readFile(path))
+    if j.kind != JObject: return
+    if j.hasKey("grants") and j["grants"].kind == JArray:
+      for g in j["grants"]:
+        if g.kind != JObject: continue
+        let agent = g.getOrDefault("agent").getStr()
+        let tool = g.getOrDefault("tool").getStr()
+        if agent.len > 0 and tool.len > 0:
+          result.grants.add(ToolGrant(agent: agent, tool: tool))
+    if j.hasKey("revokes") and j["revokes"].kind == JArray:
+      for r in j["revokes"]:
+        if r.kind != JObject: continue
+        let agent = r.getOrDefault("agent").getStr()
+        let tool = r.getOrDefault("tool").getStr()
+        if agent.len > 0 and tool.len > 0:
+          result.revokes.add(ToolGrant(agent: agent, tool: tool))
+  except CatchableError:
+    discard
+
+proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
+                                serviceDir: string = "") =
   ## Resolve each agent's full capability set from their `uses` skills.
   ## Searches skillsDirs in order — first match wins (lab overrides base).
   ## Reads SKILL.md frontmatter to aggregate tools, deps, envs.
@@ -1875,9 +1991,13 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
   # in scope, and improvises (paste the URL, ask the customer to retry).
   # Operators who want to bar a specific agent from scheduling can still
   # `deny "cron"` on that agent.
-  const defaultTools = ["read_file", "write_file", "list_dir", "reply",
-                        "reply_progress",
-                        "clock", "provider_auth", "model_list", "cron"]
+  # SSOT: the default tool set is derived from the framework's tool
+  # manifest (`src/claw/tools/registry/manifest.nim`). Every tool with
+  # `default = true` in its manifest entry lands here. Edit the
+  # manifest to add/remove a default — never edit a hand-maintained
+  # list in this file. Phase 8 ships this; the manual list this
+  # replaced was drift-prone (we hit it 3+ times in one day).
+  let defaultTools = manifest.defaultToolNames()
 
   # Auto-granted when the company declares ≥1 focus_mode. Without `spawn`
   # the focus_modes are unreachable — there's no path from an LLM tool
@@ -1950,14 +2070,18 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
             if s3 notin effectiveSkills: effectiveSkills.add(s3)
 
     # Built-in tool names commonly confused with skills. If a user writes
-    # `uses "jq"` or declares `jq` in a competency's `skills`, it's really
-    # a tool request — silently grant the tool and skip the unknown warning.
-    const builtinTools = ["jq", "git", "web", "shell", "cron", "find", "edit",
-      "screenshot", "http_request", "image_info", "image_analyze", "browser_open",
-      "playwright", "pushover", "lark", "delegate", "spawn", "subagent",
-      "learn_skill", "persist", "clock", "provider_auth", "model_list",
-      "forge", "remember", "invite", "update_contact", "query_graph",
-      "read_file", "write_file", "list_dir", "reply", "reply_progress"]
+    # `uses "memory"` or declares `web` in a competency's `skills`, it's
+    # really a tool request — silently grant the tool and skip the
+    # unknown-skill warning.
+    #
+    # SSoT: derived from the framework manifest (auto-syncs with renames
+    # and unifications). The previous hand-maintained const had stale
+    # names from before the unifications (`http_request`, `browser_open`,
+    # `playwright`, `learn_skill`, `reply_progress`, `cron`, `shell`,
+    # `forge`, `persist`, `remember`, `subagent`) — granting any of them
+    # silently produced dead references because the runtime registry
+    # only has the post-unification names.
+    let builtinTools = manifest.AllTools.mapIt(it.name)
 
     for skillName in effectiveSkills:
       # Resolve from the first skillsDir that has it — later dirs override earlier.
@@ -1978,6 +2102,21 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string]) =
           tools.add(skillName)
         else:
           unknown.add(skillName)
+
+    # Apply per-agent grant/revoke overlay from <serviceDir>/tool_grants.json.
+    # Grants are additive; revokes are subtractive (final word — they come
+    # after all sources, so they reliably remove a tool the agent would
+    # otherwise have via defaults or a skill).
+    if serviceDir.len > 0:
+      let overlay = loadToolGrants(serviceDir)
+      for g in overlay.grants:
+        if g.agent.toLowerAscii == a.name.toLowerAscii: tools.add(g.tool)
+      for r in overlay.revokes:
+        if r.agent.toLowerAscii == a.name.toLowerAscii:
+          var filtered: seq[string]
+          for t in tools:
+            if t != r.tool: filtered.add(t)
+          tools = filtered
 
     # Dedup, subtract denies
     var uniq: seq[string]
@@ -2102,7 +2241,7 @@ proc build*(s: var ClawSpec) =
   resolveAgentCapabilities(s, @[
     workspace / "skills",
     serviceDir / "foundation" / "skills"
-  ])
+  ], serviceDir = serviceDir)
 
   # 5. Generate BASE.json
   let baseJson = buildBaseJson(s, workspace)
