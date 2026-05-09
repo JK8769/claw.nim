@@ -2929,7 +2929,6 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
 
   let installer = newSkillInstaller(officeDir)
-  regTagged(newSkillTool(installer, officeDir, toolsRegistry), ["admin", "skills", "workstation"], "skill management: install plugins (action=install) or author workstation skills (action=learn)")
 
   # TTS/STT is provided externally by the tts.nim nimble package.
   # Install via `claw skill install tts` — scaffolds workspace/skills/tts/
@@ -2938,6 +2937,17 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
   let sessionsManager = newSessionManager(officeDir / "sessions")
   let contextBuilder = newContextBuilder(officeDir, workspace, cfg.agents.named)
+  # SkillTool registers AFTER contextBuilder is constructed so it can share
+  # the SkillsLoader (whose `loadedLazySkills` set is read by the prompt
+  # builder). The allowedSkills closure resolves at call-time so a tool
+  # invocation always sees the current resolved scope (set just below).
+  regTagged(
+    newSkillTool(
+      installer, officeDir, toolsRegistry,
+      contextBuilder.skillsLoader,
+      proc (): seq[string] = contextBuilder.allowedSkills),
+    ["admin", "skills", "workstation"],
+    "skill management: list/load/unload session skills, install plugins, author workstation skills")
   contextBuilder.tools = toolsRegistry # Manually bridge for now
   contextBuilder.agentName = agentName
   contextBuilder.trust = cfg.trust

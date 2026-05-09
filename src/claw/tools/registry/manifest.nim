@@ -239,8 +239,12 @@ const AllTools*: seq[ToolSpec] = @[
 
   # Skill management (heavy — install mutates system; learn requires workstation)
   spec(name = "skill",
-       description = "skill management: action=install plugins or action=learn workstation skills",
-       tags = @["admin", "skills", "workstation"], domain = "skill",
+       description = "skill management (action=list|load|unload session skills, install plugins, learn workstation skills)",
+       tags = @["admin", "skills", "workstation"],
+       searchKeywords = @["load skill", "unload skill", "list skills",
+                           "playbook", "procedure", "consult skill",
+                           "install plugin", "learn workflow"],
+       domain = "skill",
        default = false, heartbeatSafe = false, category = "skills"),
 
   # Task board

@@ -925,6 +925,12 @@ $1""".format(skillsSummary))
   if channelRecipes != "":
     parts.add(channelRecipes)
 
+  # Lazy skills the agent has explicitly loaded this session
+  # (via `skill action=load`). Stays inlined until unloaded.
+  let lazyBodies = cb.skillsLoader.buildLoadedLazySkillBodies(cb.allowedSkills)
+  if lazyBodies != "":
+    parts.add(lazyBodies)
+
   # Handbooks — per-competency HOW-TO rules, pulled via practices +
   # team-inherited competencies. Applies only when the agent actually
   # practices one of the declared competencies.

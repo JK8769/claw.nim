@@ -1,4 +1,4 @@
-import std/[os, strutils, sequtils, json, options]
+import std/[os, strutils, sequtils, json, options, sets]
 import openclaw_compat, skill_types
 import ../logger
 import std/tables
@@ -20,6 +20,13 @@ type
     foundationSkills*: string      ## Tier 1: <co>/foundation/skills/ (snapshot of claw distribution)
     openClawExtensions*: string    ## third-party OpenClaw plugins
     workstationSkills*: string     ## Tier 3: <officeDir>/workstation/skills/
+    loadedLazySkills*: HashSet[string]
+      ## Session-scoped: names of `loading: lazy` skills the agent has called
+      ## `skill action=load` on. The prompt builder inlines their bodies on
+      ## subsequent turns until `skill action=unload` removes them. Per
+      ## SkillsLoader (which is per-agent), so different agents have
+      ## independent activation sets. Sticky: not auto-evicted — the agent
+      ## owns lifecycle to avoid mid-procedure context loss.
 
 proc newSkillsLoader*(workspace, projectCompetencies, companySkills, foundationSkills, openClawExtensions: string, workstationSkills: string = ""): SkillsLoader =
   SkillsLoader(
@@ -28,7 +35,8 @@ proc newSkillsLoader*(workspace, projectCompetencies, companySkills, foundationS
     companySkills: companySkills,
     foundationSkills: foundationSkills,
     openClawExtensions: openClawExtensions,
-    workstationSkills: workstationSkills
+    workstationSkills: workstationSkills,
+    loadedLazySkills: initHashSet[string]()
   )
 
 proc parseListValue(val: string): seq[string] =
@@ -63,6 +71,11 @@ proc parseFrontmatter(content: string): SkillMetadata =
             result.requires_tools = parseListValue(val)
           elif key == "channels":
             result.channels = parseListValue(val)
+          elif key == "loading":
+            # Strip optional surrounding quotes; lower-case for tolerant matching
+            var v = val
+            if v.len >= 2 and v[0] == '"' and v[^1] == '"': v = v[1 .. ^2]
+            result.loading = v.toLowerAscii()
 
 proc getSkillMetadata(sl: SkillsLoader, dir: string): SkillMetadata =
   ## Extract metadata from SKILL.md or openclaw.plugin.json.
@@ -111,7 +124,8 @@ proc listSkills*(sl: SkillsLoader): seq[SkillInfo] =
         description: meta.description,
         location: absolutePath(dir),
         requires_tools: meta.requires_tools,
-        channels: meta.channels
+        channels: meta.channels,
+        loading: meta.loading
       ))
       # If we found a skill/plugin, we don't necessarily stop, 
       # but usually subdirs won't contain more skills unless it's a "skills" folder
@@ -309,6 +323,14 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
       lines.add("    <channels>" & s.channels.join(", ") & "</channels>")
     if activeForChannel:
       lines.add("    <active_for_channel>true</active_for_channel>")
+    if s.loading == "lazy":
+      let active = s.name in sl.loadedLazySkills or
+                   s.name.replace("_", "-") in sl.loadedLazySkills
+      lines.add("    <loading>lazy</loading>")
+      lines.add("    <loaded>" & (if active: "true" else: "false") & "</loaded>")
+      if not active:
+        lines.add("    <hint>call `skill action=load name=" & s.name &
+                  "` to inline this skill's body for this session</hint>")
     if s.requires_tools.len > 0:
       lines.add("    <requires_tools>" & s.requires_tools.join(", ") & "</requires_tools>")
     lines.add("  </skill>")
@@ -341,6 +363,43 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
       s.emitOne(lines, activeForChannel = false)
   lines.add("</skills>")
   return lines.join("\n")
+
+proc buildLoadedLazySkillBodies*(sl: SkillsLoader,
+                                  allowedNames: seq[string]): string =
+  ## Inline the FULL body of any `loading: lazy` skill the agent has
+  ## activated this session via `skill action=load name=<n>`. Mirrors
+  ## `buildChannelActiveSkillRecipes` but the trigger is per-session
+  ## activation rather than channel matching. Sticky: stays inlined
+  ## until `skill action=unload`.
+  ##
+  ## Why: lazy skills appear as stubs in the catalog by default. When
+  ## the agent decides one is relevant to the task at hand, loading
+  ## inlines the body so subsequent turns don't need a `read_file`
+  ## round-trip per consultation.
+  if sl.loadedLazySkills.len == 0: return ""
+  let skills = sl.listSkills()
+  if skills.len == 0: return ""
+  var blocks: seq[string]
+  for s in skills:
+    if s.loading != "lazy": continue
+    # Match by either the sanitized name or the hyphenated original
+    let nameHyphen = s.name.replace("_", "-")
+    if s.name notin sl.loadedLazySkills and
+       nameHyphen notin sl.loadedLazySkills: continue
+    # Allowedness gate matches the catalog's logic
+    if allowedNames.len > 0 and s.source != "workstation":
+      if s.name notin allowedNames and nameHyphen notin allowedNames:
+        continue
+    if not fileExists(s.path): continue
+    let content = stripFrontmatter(readFile(s.path)).strip()
+    if content.len == 0: continue
+    blocks.add("## " & s.name & " (loaded for this session)\n\n" & content)
+  if blocks.len == 0: return ""
+  return "# Loaded Skill Bodies\n\nThe following skill content is " &
+         "INLINED below because you called `skill action=load` on it. " &
+         "Apply the patterns directly — no `read_file` round-trip needed. " &
+         "Call `skill action=unload name=<n>` when the task is done to free " &
+         "context.\n\n" & blocks.join("\n\n---\n\n")
 
 proc buildChannelActiveSkillRecipes*(sl: SkillsLoader,
                                       allowedNames: seq[string],
