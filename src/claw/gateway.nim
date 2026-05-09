@@ -476,7 +476,8 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
       infoCF("cronHandler", "heartbeat_tick skipped — nothing to do",
              {"job": job.name, "agent": agentName,
               "duty_count": $duties.len}.toTable)
-      logHeartbeat(agentWorkspace, "Skipped — nothing to do")
+      logHeartbeat(agentWorkspace, "skipped", "nothing to do",
+                   [("agent", agentName), ("duty_count", $duties.len)])
       return
 
     let nowStr = now().format("yyyy-MM-dd HH:mm")
@@ -494,8 +495,14 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
               "duty_count": $duties.len,
               "section_count": $sections.len,
               "auto_actions": $autoActions.len}.toTable)
+      logHeartbeat(agentWorkspace, "completed", "",
+                   [("agent", agentName),
+                    ("duty_count", $duties.len),
+                    ("section_count", $sections.len),
+                    ("auto_actions", $autoActions.len)])
     except CatchableError as e:
-      logHeartbeat(agentWorkspace, "Heartbeat error: " & e.msg)
+      logHeartbeat(agentWorkspace, "error", e.msg,
+                   [("agent", agentName)])
       warnCF("cronHandler", "heartbeat_tick raised — continuing",
              {"job": job.name, "agent": agentName,
               "error": e.msg}.toTable)

@@ -16,7 +16,7 @@
 ## same logs as other scheduled work, and reconciled at boot via the
 ## same path as skill-declared schedules.
 
-import std/[os, times, strutils]
+import std/[os, times, strutils, json]
 import ../agent/context
 
 proc buildHeartbeatPrompt*(workspace: string): string =
@@ -51,17 +51,35 @@ Be proactive in identifying potential issues or improvements.
 $3
 """.format(now, mailList, notes)
 
-proc logHeartbeat*(workspace, message: string) =
-  ## Append a timestamped line to `<workspace>/memory/heartbeat.log`.
-  ## Used by the dispatcher for "skipped — busy", "skipped — empty",
-  ## and "tick errored" notes that don't belong in the gateway's
-  ## global log. Failures are silent (auditing should never crash a
-  ## tick).
-  let logFile = workspace / "memory" / "heartbeat.log"
-  let timestamp = now().format("yyyy-MM-dd HH:mm:ss")
+proc logHeartbeat*(workspace, kind, msg: string,
+                    extra: openArray[(string, string)] = []) =
+  ## Append a JSONL entry to `<workspace>/heartbeat.jsonl`. Used by
+  ## the dispatcher for skipped / completed / errored ticks. Each
+  ## entry is one line: `{"ts": <epoch>, "kind": "...", "msg": "...",
+  ## ...extra}`. JSONL beats the prior plain-text log because:
+  ##   - Atomic single-line append
+  ##   - jq / grep / parse work
+  ##   - Future telemetry commands (`claw heartbeat stats <agent>`)
+  ##     can aggregate without regex
+  ##   - Doesn't accumulate prose
+  ##
+  ## File lives at the office ROOT (sibling to SOUL.md, HEARTBEAT.md),
+  ## NOT in memory/ — heartbeat.jsonl is framework-owned audit, not
+  ## agent-curated content. Operator can `tail -f` it to watch a
+  ## live agent's tick history.
+  ##
+  ## Failures are silent (auditing should never crash a tick).
+  let logFile = workspace / "heartbeat.jsonl"
+  var entry = newJObject()
+  entry["ts"] = %epochTime()
+  entry["kind"] = %kind
+  if msg.len > 0:
+    entry["msg"] = %msg
+  for (k, v) in extra:
+    entry[k] = %v
   try:
     let f = open(logFile, fmAppend)
-    f.writeLine("[$1] $2".format(timestamp, message))
+    f.writeLine($entry)
     f.close()
   except:
     discard
