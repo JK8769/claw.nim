@@ -403,14 +403,15 @@ proc cronHandlerLogic(job: cron_service.CronJob) {.async.} =
     # Phase 3 — Prompt. Assemble structured sections.
     var sections: seq[string] = @[]
 
-    # HEARTBEAT.md → user's standing instructions, verbatim
-    for path in [agentWorkspace / "HEARTBEAT.md",
-                 agentWorkspace / "memory" / "HEARTBEAT.md"]:  # legacy fallback
-      if fileExists(path):
-        let body = try: readFile(path).strip except: ""
-        if body.len > 0:
-          sections.add("## Standing instructions from your user\n\n" & body)
-        break
+    # HEARTBEAT.md → user's standing instructions, verbatim. Lives
+    # in the agent's heart/ subdirectory (sibling of heartbeat.jsonl).
+    # Single canonical path, no legacy fallbacks — the file was a
+    # recent introduction; cleaner to keep one source of truth.
+    let hbPath = agentWorkspace / "heart" / "HEARTBEAT.md"
+    if fileExists(hbPath):
+      let body = try: readFile(hbPath).strip except: ""
+      if body.len > 0:
+        sections.add("## Standing instructions from your user\n\n" & body)
 
     # Mailbox alert
     let mailFiles = scanMailbox(agentWorkspace)

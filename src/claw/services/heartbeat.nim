@@ -24,12 +24,18 @@ proc buildHeartbeatPrompt*(workspace: string): string =
   ## `AgentLoop.processOneShot` when a heartbeat_tick fires.
   ##
   ## Pure read of disk state at call time — `mail/` directory and
-  ## `memory/HEARTBEAT.md`. Re-runs every tick so file edits land
+  ## `heart/HEARTBEAT.md`. Re-runs every tick so file edits land
   ## without a gateway restart.
-  let notesFile = workspace / "memory" / "HEARTBEAT.md"
+  ##
+  ## NOTE: this proc is the legacy minimal-prompt builder used only
+  ## for ad-hoc `processOneShot` callers that don't go through the
+  ## three-phase dispatcher. The real heartbeat path is in
+  ## gateway.nim's `cronHandlerLogic` which assembles a richer
+  ## prompt from competency duties, todo.jsonl, notes.org, and so on.
+  let hbPath = workspace / "heart" / "HEARTBEAT.md"
   var notes = ""
-  if fileExists(notesFile):
-    notes = readFile(notesFile)
+  if fileExists(hbPath):
+    notes = try: readFile(hbPath) except: ""
 
   var mailList = ""
   let mailFiles = scanMailbox(workspace)
@@ -53,23 +59,30 @@ $3
 
 proc logHeartbeat*(workspace, kind, msg: string,
                     extra: openArray[(string, string)] = []) =
-  ## Append a JSONL entry to `<workspace>/heartbeat.jsonl`. Used by
-  ## the dispatcher for skipped / completed / errored ticks. Each
-  ## entry is one line: `{"ts": <epoch>, "kind": "...", "msg": "...",
-  ## ...extra}`. JSONL beats the prior plain-text log because:
+  ## Append a JSONL entry to `<workspace>/heart/heartbeat.jsonl`.
+  ## Used by the dispatcher for skipped / completed / errored ticks.
+  ## Each entry is one line: `{"ts": <epoch>, "kind": "...",
+  ## "msg": "...", ...extra}`. JSONL beats the prior plain-text log
+  ## because:
   ##   - Atomic single-line append
   ##   - jq / grep / parse work
   ##   - Future telemetry commands (`claw heartbeat stats <agent>`)
   ##     can aggregate without regex
   ##   - Doesn't accumulate prose
   ##
-  ## File lives at the office ROOT (sibling to SOUL.md, HEARTBEAT.md),
-  ## NOT in memory/ — heartbeat.jsonl is framework-owned audit, not
-  ## agent-curated content. Operator can `tail -f` it to watch a
-  ## live agent's tick history.
+  ## File lives in `<office>/heart/` alongside HEARTBEAT.md (the
+  ## user's standing instructions for ticks). The `heart/` dir is
+  ## the agent's heartbeat-subsystem state — what they should keep
+  ## doing (HEARTBEAT.md), and what they've actually done at past
+  ## ticks (heartbeat.jsonl). SOUL.md stays at the office root
+  ## because it's always-on character, not heartbeat-specific.
   ##
   ## Failures are silent (auditing should never crash a tick).
-  let logFile = workspace / "heartbeat.jsonl"
+  let heartDir = workspace / "heart"
+  if not dirExists(heartDir):
+    try: createDir(heartDir)
+    except: discard
+  let logFile = heartDir / "heartbeat.jsonl"
   var entry = newJObject()
   entry["ts"] = %epochTime()
   entry["kind"] = %kind
