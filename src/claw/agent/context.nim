@@ -1,4 +1,4 @@
-import std/[os, times, strutils, sequtils, tables, json, options]
+import std/[os, times, strutils, sequtils, tables, json, options, sets]
 import nimcrypto/[sha2, hash]
 import ../providers/types as providers_types
 
@@ -282,11 +282,52 @@ proc buildTeamsSection(cb: ContextBuilder, agentName: string): string =
   return sb.strip
 
 proc buildHandbooksSection(cb: ContextBuilder, agentName: string, practices: seq[string]): string =
-  ## Inject HANDBOOK.md for each competency in practices ∪ team-inherited.
+  ## Inject HANDBOOK.md for each competency in practices ∪ team-inherited,
+  ## plus any competency the agent explicitly loaded via `skill action=load`.
+  ##
+  ## Lazy gating (per COMPETENCY.json `loading: lazy`):
+  ##   - always (default): full body inlines (current behaviour)
+  ##   - lazy + not loaded: stub line only — saves the handbook's bytes
+  ##     until the agent decides it's relevant
+  ##   - lazy + loaded:     full body inlines (sticky for the session)
+  ##   - loaded but NOT in effective practices: full body inlines anyway
+  ##     (explicit load is the strongest signal — the agent wanted this
+  ##     procedural knowledge for the current task even if it's not
+  ##     part of their declared role)
   let comps = cb.effectiveCompetencies(agentName, practices)
-  if comps.len == 0: return ""
-  var blocks: seq[string]
+  let loaded = cb.skillsLoader.loadedLazyHandbooks
+  # Union of effective + loaded — preserves practices order, then appends
+  # explicitly-loaded competencies the agent doesn't normally practice.
+  var unionSet: seq[string] = @[]
   for c in comps:
+    if c notin unionSet: unionSet.add(c)
+  for c in loaded:
+    let hyph = c.replace("_", "-")
+    if c notin unionSet and hyph notin unionSet: unionSet.add(hyph)
+  if unionSet.len == 0: return ""
+  # Walk competencies once; lookup table for the inner loop. Without this
+  # we'd re-walk + re-parse every COMPETENCY.json once per practiced
+  # competency on every system-prompt build (hot path, every turn).
+  var infoByName = initTable[string, CompetencyInfo]()
+  for ci in cb.skillsLoader.listCompetencies():
+    infoByName[ci.name] = ci
+    infoByName[ci.name.replace("-", "_")] = ci
+  var blocks: seq[string]
+  for c in unionSet:
+    let info = if infoByName.hasKey(c): some(infoByName[c])
+               else: none(CompetencyInfo)
+    let isLazy = info.isSome and info.get.loading == "lazy"
+    let isLoaded = c in loaded or c.replace("-", "_") in loaded
+    if isLazy and not isLoaded:
+      # Stub only — tell the agent the handbook exists and how to load it
+      let descr = if info.isSome: info.get.description else: ""
+      var stub = "## " & c & " *(lazy — handbook body not loaded)*\n\n"
+      if descr.len > 0:
+        stub.add(descr & "\n\n")
+      stub.add("Call `skill action=load name=" & c &
+               "` to inline the full HANDBOOK.md for this session.")
+      blocks.add(stub)
+      continue
     let hb = cb.projectWorkspace / "competencies" / c / "HANDBOOK.md"
     if not fileExists(hb): continue
     let body = try: readFile(hb).strip except: ""

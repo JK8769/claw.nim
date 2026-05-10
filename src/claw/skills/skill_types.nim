@@ -33,3 +33,18 @@ type
     requires_tools*: seq[string]
     channels*: seq[string]   ## See SkillMetadata.channels.
     loading*: string         ## See SkillMetadata.loading.
+
+  CompetencyInfo* = object
+    ## Parallel to SkillInfo for the handbook (Tier-2 procedural-discipline)
+    ## surface. Populated by SkillsLoader.listCompetencies, consumed by the
+    ## `skill` tool (list/load/unload) and the prompt builder
+    ## (buildHandbooksSection — gates handbook body inlining when lazy).
+    name*: string            ## kebab-case identifier matching the dir name
+    description*: string
+    loading*: string         ## "lazy" | "always" (default — empty also treated
+                             ## as always for back-compat). Lazy handbooks
+                             ## stay as a stub line in the prompt unless the
+                             ## agent calls `skill action=load name=<name>`.
+    hasHandbook*: bool       ## false → competency has no HANDBOOK.md, just
+                             ## skills + competency-level metadata
+    handbookPath*: string    ## absolute path to HANDBOOK.md when hasHandbook

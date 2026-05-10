@@ -1,5 +1,6 @@
 import std/[os, strutils, sequtils, json, options, sets]
 import openclaw_compat, skill_types
+export skill_types
 import ../logger
 import std/tables
 
@@ -27,6 +28,14 @@ type
       ## SkillsLoader (which is per-agent), so different agents have
       ## independent activation sets. Sticky: not auto-evicted — the agent
       ## owns lifecycle to avoid mid-procedure context loss.
+    loadedLazyHandbooks*: HashSet[string]
+      ## Session-scoped: names of `loading: lazy` competency handbooks the
+      ## agent has explicitly loaded. Same mechanism as loadedLazySkills,
+      ## but for the Tier-2 procedural-discipline surface (HANDBOOK.md
+      ## bodies inlined by `buildHandbooksSection`). A competency in the
+      ## agent's `practices` list with loading=lazy stays as a stub until
+      ## loaded; loading a competency NOT in practices still inlines its
+      ## body (explicit load is the strongest signal).
 
 proc newSkillsLoader*(workspace, projectCompetencies, companySkills, foundationSkills, openClawExtensions: string, workstationSkills: string = ""): SkillsLoader =
   SkillsLoader(
@@ -36,7 +45,8 @@ proc newSkillsLoader*(workspace, projectCompetencies, companySkills, foundationS
     foundationSkills: foundationSkills,
     openClawExtensions: openClawExtensions,
     workstationSkills: workstationSkills,
-    loadedLazySkills: initHashSet[string]()
+    loadedLazySkills: initHashSet[string](),
+    loadedLazyHandbooks: initHashSet[string]()
   )
 
 proc parseListValue(val: string): seq[string] =
@@ -173,6 +183,53 @@ proc loadSkill*(sl: SkillsLoader, name: string): (string, bool) =
     if s.name == name or lastPathPart(s.path) == name:
       return (readFile(s.path).stripFrontmatter(), true)
   return ("", false)
+
+proc readCompetencyJson(path: string): JsonNode =
+  ## Tolerant COMPETENCY.json reader — returns nil on parse failure
+  ## rather than crashing the prompt build.
+  if not fileExists(path): return nil
+  try: parseJson(readFile(path))
+  except CatchableError: nil
+
+proc listCompetencies*(sl: SkillsLoader): seq[CompetencyInfo] =
+  ## Walk projectCompetencies/ enumerating each subdir's COMPETENCY.json +
+  ## HANDBOOK.md presence. Used by the `skill` tool's list action and by
+  ## the prompt builder when deciding whether to inline a handbook body.
+  let root = sl.projectCompetencies
+  if root.len == 0 or not dirExists(root): return
+  for kind, entry in walkDir(root):
+    if kind != pcDir: continue
+    let name = lastPathPart(entry)
+    if name.startsWith("."): continue
+    let compFile = entry / "COMPETENCY.json"
+    let hb = entry / "HANDBOOK.md"
+    var info = CompetencyInfo(
+      name: name,
+      hasHandbook: fileExists(hb),
+      handbookPath: hb,
+      loading: "always"
+    )
+    let j = readCompetencyJson(compFile)
+    if j != nil and j.kind == JObject:
+      if j.hasKey("description") and j["description"].kind == JString:
+        info.description = j["description"].getStr()
+      if j.hasKey("loading") and j["loading"].kind == JString:
+        let v = j["loading"].getStr().toLowerAscii()
+        if v == "lazy": info.loading = "lazy"
+    result.add(info)
+
+proc competencyByName*(sl: SkillsLoader, name: string): Option[CompetencyInfo] =
+  ## Resolve a competency by exact name OR hyphen/underscore variant —
+  ## same tolerance as the skill resolver so agents don't have to know
+  ## the canonical form.
+  let target = name.toLowerAscii()
+  let underscore = target.replace("-", "_")
+  let hyphen = target.replace("_", "-")
+  for c in sl.listCompetencies():
+    let nl = c.name.toLowerAscii()
+    if nl == target or nl == underscore or nl == hyphen:
+      return some(c)
+  none(CompetencyInfo)
 
 type
   SkillScheduleDecl* = object

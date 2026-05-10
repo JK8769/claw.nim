@@ -78,11 +78,12 @@ proc newSkillTool*(installer: SkillInstaller, officeDir: string,
 method name*(t: SkillTool): string = "skill"
 
 method description*(t: SkillTool): string =
-  "Skill management.\n\n" &
+  "Skill management. Operates on BOTH SKILL.md skills and competency " &
+  "HANDBOOK.md procedural content — they share the load/unload surface.\n\n" &
   "Actions:\n" &
-  "  list     — enumerate available skills (optional query, scope=active|available|all)\n" &
-  "  load     — activate a `loading: lazy` skill body for this session (sticky)\n" &
-  "  unload   — drop a previously-loaded lazy skill body from the session prompt\n" &
+  "  list     — enumerate available skills + handbooks (optional query, scope=active|available|all)\n" &
+  "  load     — activate a `loading: lazy` skill or handbook body for this session (sticky)\n" &
+  "  unload   — drop a previously-loaded body from the session prompt\n" &
   "  install  — install a skill plugin (requires name; supports " &
   "registry name, GitHub URL, or owner/repo shorthand)\n" &
   "  learn    — author a workstation skill from a repeated workflow " &
@@ -310,30 +311,49 @@ proc isLoaded(t: SkillTool, s: SkillInfo): bool =
   s.name in t.skillsLoader.loadedLazySkills or
     s.name.replace("_", "-") in t.skillsLoader.loadedLazySkills
 
+proc isHandbookLoaded(t: SkillTool, c: CompetencyInfo): bool =
+  if t.skillsLoader.isNil: return false
+  c.name in t.skillsLoader.loadedLazyHandbooks or
+    c.name.replace("-", "_") in t.skillsLoader.loadedLazyHandbooks
+
 proc doList(t: SkillTool, args: Table[string, JsonNode]): string =
   if t.skillsLoader.isNil:
     return "Error: skill listing unavailable — tool not bound to a SkillsLoader."
   let scope = if args.hasKey("scope"): args["scope"].getStr().toLowerAscii() else: "all"
   let query = if args.hasKey("query"): args["query"].getStr().toLowerAscii() else: ""
   var rows = newJArray()
+  # Skills first (the existing surface)
   for s in t.skillsLoader.listSkills():
     if not t.isSkillAllowed(s): continue
     let loaded = t.isLoaded(s)
-    let isLazy = s.loading == "lazy"
-    case scope
-    of "active":
-      if not loaded: continue
-    of "available":
-      discard
-    else: discard
+    if scope == "active" and not loaded: continue
     if query.len > 0:
       let hay = (s.name & " " & s.description).toLowerAscii()
       if query notin hay: continue
     var entry = newJObject()
+    entry["kind"] = %"skill"
     entry["name"] = %s.name
     entry["description"] = %s.description
     entry["source"] = %s.source
-    entry["loading"] = %(if isLazy: "lazy" else: "always")
+    entry["loading"] = %(if s.loading == "lazy": "lazy" else: "always")
+    entry["loaded"] = %loaded
+    rows.add(entry)
+  # Then competency handbooks — same shape, kind="handbook". No allowedness
+  # gate: every handbook is listed so the agent sees what's loadable beyond
+  # their declared practices. (Loading is the gate, not visibility.)
+  for c in t.skillsLoader.listCompetencies():
+    if not c.hasHandbook: continue
+    let loaded = t.isHandbookLoaded(c)
+    if scope == "active" and not loaded: continue
+    if query.len > 0:
+      let hay = (c.name & " " & c.description).toLowerAscii()
+      if query notin hay: continue
+    var entry = newJObject()
+    entry["kind"] = %"handbook"
+    entry["name"] = %c.name
+    entry["description"] = %c.description
+    entry["source"] = %"competency"
+    entry["loading"] = %c.loading
     entry["loaded"] = %loaded
     rows.add(entry)
   result = $rows
@@ -358,21 +378,40 @@ proc doLoad(t: SkillTool, args: Table[string, JsonNode]): string =
   if t.skillsLoader.isNil:
     return "Error: skill loading unavailable — tool not bound to a SkillsLoader."
   let name = args["name"].getStr().strip()
-  let resolved = t.resolveSkillName(name)
-  if resolved.isNone:
-    return "Error: skill '" & name & "' not found. Call `skill action=list` to see what's available."
-  let s = resolved.get
-  if not t.isSkillAllowed(s):
-    return "Error: skill '" & s.name & "' is not in your scope."
-  if s.loading != "lazy":
-    return "Note: skill '" & s.name & "' has loading=always — its catalog stub is " &
-           "already in your prompt and (when channel-tagged) the body inlines automatically. " &
-           "Read it with `read_file` at " & s.location & "/SKILL.md if you need the body now."
-  t.skillsLoader.loadedLazySkills.incl(s.name)
-  infoCF("tool", "Lazy skill loaded for session",
-         {"skill": s.name, "path": s.path}.toTable)
-  return "Loaded skill '" & s.name & "' — its body will appear in your system " &
-         "prompt starting next turn. Stays loaded until `skill action=unload`."
+  # Try skill first
+  let skillHit = t.resolveSkillName(name)
+  if skillHit.isSome:
+    let s = skillHit.get
+    if not t.isSkillAllowed(s):
+      return "Error: skill '" & s.name & "' is not in your scope."
+    if s.loading != "lazy":
+      return "Note: skill '" & s.name & "' has loading=always — its catalog stub is " &
+             "already in your prompt and (when channel-tagged) the body inlines automatically. " &
+             "Read it with `read_file` at " & s.location & "/SKILL.md if you need the body now."
+    t.skillsLoader.loadedLazySkills.incl(s.name)
+    infoCF("tool", "Lazy skill loaded for session",
+           {"skill": s.name, "path": s.path}.toTable)
+    return "Loaded skill '" & s.name & "' — its body will appear in your system " &
+           "prompt starting next turn. Stays loaded until `skill action=unload`."
+  # Then handbook (competency)
+  let hbHit = t.skillsLoader.competencyByName(name)
+  if hbHit.isSome:
+    let c = hbHit.get
+    if not c.hasHandbook:
+      return "Note: competency '" & c.name & "' has no HANDBOOK.md to load."
+    if c.loading != "lazy":
+      return "Note: handbook '" & c.name & "' has loading=always — its body is " &
+             "already inlined in your prompt under # Handbooks (when you practice " &
+             "this competency). Mark `loading: lazy` in COMPETENCY.json to opt into " &
+             "the load/unload mechanism."
+    t.skillsLoader.loadedLazyHandbooks.incl(c.name)
+    infoCF("tool", "Lazy handbook loaded for session",
+           {"competency": c.name, "path": c.handbookPath}.toTable)
+    return "Loaded handbook '" & c.name & "' — its body will appear in your system " &
+           "prompt under # Handbooks starting next turn. Stays loaded until " &
+           "`skill action=unload`."
+  return "Error: '" & name & "' not found as a skill or competency handbook. " &
+         "Call `skill action=list` to see what's available."
 
 proc doUnload(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name") or args["name"].getStr().strip().len == 0:
@@ -380,17 +419,22 @@ proc doUnload(t: SkillTool, args: Table[string, JsonNode]): string =
   if t.skillsLoader.isNil:
     return "Error: skill unloading unavailable — tool not bound to a SkillsLoader."
   let name = args["name"].getStr().strip()
-  # Try multiple forms when removing — tolerant to whatever shape was loaded.
   var dropped = false
+  var dropKind = ""
   for variant in [name, name.replace("-", "_"), name.replace("_", "-")]:
     if variant in t.skillsLoader.loadedLazySkills:
       t.skillsLoader.loadedLazySkills.excl(variant)
       dropped = true
+      dropKind = "skill"
+    if variant in t.skillsLoader.loadedLazyHandbooks:
+      t.skillsLoader.loadedLazyHandbooks.excl(variant)
+      dropped = true
+      dropKind = if dropKind.len > 0: "skill+handbook" else: "handbook"
   if not dropped:
-    return "Note: skill '" & name & "' was not loaded — nothing to unload."
-  infoCF("tool", "Lazy skill unloaded from session",
-         {"skill": name}.toTable)
-  return "Unloaded skill '" & name & "'. Catalog stub remains visible; " &
+    return "Note: '" & name & "' was not loaded as a skill or handbook — nothing to unload."
+  infoCF("tool", "Lazy " & dropKind & " unloaded from session",
+         {"name": name}.toTable)
+  return "Unloaded " & dropKind & " '" & name & "'. Catalog stub remains visible; " &
          "load again with `skill action=load name=" & name & "`."
 
 method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.async.} =
