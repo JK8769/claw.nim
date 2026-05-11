@@ -2951,6 +2951,63 @@ when isMainModule:
       echo "Error: unrecognized source scheme '" & source & "' for '" & nameArg & "'"
       quit(1)
 
+    # Auto-compile if the installed skill has a Nim source and no
+    # pre-built binary. The framework's `skill install` proper only
+    # copies the source; production-ready skills with MCP servers need
+    # `bin/<dirname>` for the gateway loader to pick them up. This
+    # bridges the gap so `claw skill add <name>` is genuinely
+    # turnkey when the source is a Nim file (vs github-shipped
+    # pre-built binaries, which would already be present).
+    block autoCompile:
+      if installPath.len == 0: break autoCompile
+      if not dirExists(installPath): break autoCompile
+      let srcDir = installPath / "src"
+      if not dirExists(srcDir): break autoCompile
+      # Find a .nim source file (typically named after the skill)
+      var srcFile = ""
+      for kind, path in walkDir(srcDir):
+        if kind == pcFile and path.endsWith(".nim"):
+          srcFile = path
+          break
+      if srcFile.len == 0: break autoCompile
+      let dirName = installPath.lastPathPart
+      let binDir = installPath / "bin"
+      let binPath = binDir / dirName
+      # Honor pre-built binaries — if bin/<dirname> already exists,
+      # skip auto-compile (e.g., github-shipped releases bundle a
+      # compiled binary; respect that).
+      if fileExists(binPath):
+        echo "  ✓ bin/" & dirName & " already present; skipping auto-compile."
+        break autoCompile
+      createDir(binDir)
+      # Resolve framework src paths for the `--path:` args. The MCP
+      # macros (mcpServer, mcpTool) and helpers live in
+      # <framework>/src/claw/mcp.nim and friends; the source needs
+      # those paths to compile.
+      var fwSrc = ""
+      for c in [
+        getCurrentDir() / "src",
+        getAppDir() / "src",
+        getAppDir().parentDir() / "src",
+      ]:
+        if dirExists(c / "claw"): fwSrc = c; break
+      if fwSrc.len == 0:
+        echo "  ! Auto-compile skipped — no src/claw/ found alongside binary."
+        echo "    Compile manually: nim c -o:" & binPath & " " & srcFile
+        break autoCompile
+      echo "  → Auto-compiling " & srcFile.lastPathPart & " → bin/" & dirName
+      let cmd = "nim c --hints:off --threads:on --mm:orc -d:release -d:ssl " &
+                "--path:" & quoteShell(fwSrc / "claw") & " " &
+                "--path:" & quoteShell(fwSrc) & " " &
+                "-o:" & quoteShell(binPath) & " " & quoteShell(srcFile)
+      let rc = execShellCmd(cmd)
+      if rc != 0:
+        echo "  ! Auto-compile failed (exit " & $rc & ")."
+        echo "    Source: " & srcFile
+        echo "    Retry manually: " & cmd
+      else:
+        echo "  ✓ Compiled bin/" & dirName
+
     # Report env requirements after install
     if envReq != nil and envReq.kind == JArray and envReq.len > 0:
       echo ""
