@@ -1,0 +1,59 @@
+{
+  "$schema_version": 1,
+  "vendor_contract_version": 1,
+  "description": "Registry of known inverter-vendor implementations for the solar-power-station template. The framework's `--vendor=<name>` flag on `claw co create` reads this file to resolve where the named vendor's MCP server source comes from.",
+
+  "_status_values": {
+    "reference": "The template maintainer endorses this implementation as the canonical reference",
+    "community": "Third-party implementation; conforms to the contract but maintained independently",
+    "stub":      "Mock data only — useful for tests; not for production"
+  },
+
+  "_source_schemes": {
+    "bundled": "Implementation ships inside the template at the given bundled_path. After `claw co create`, the source is already in <service>/<bundled_path>/.",
+    "github":  "Implementation lives in an external GitHub repo. Format: github:<owner>/<repo>[/<subpath>]. The framework will git-clone the repo and copy <subpath> (or the repo root if no subpath) into <service>/workspace/skills/vendor-<name>/."
+  },
+
+  "implementations": {
+    "sungrow": {
+      "description": "SunGrow iSolarCloud — string and central inverters, regional endpoints (cn/us/eu). Mature production source available in existing SunGrow deployments at ~170KB / ~22 tools (5 contract + 17 vendor-specific). The bundled stub here returns 3 mock plants for tests.",
+      "source": "bundled",
+      "bundled_path": "workspace/skills/vendor-sungrow",
+      "status": "stub",
+      "contract_version": 1,
+      "env_required": [
+        "SUNGROW_APPKEY",
+        "SUNGROW_ACCESS_KEY",
+        "SUNGROW_USER_ACCOUNT",
+        "SUNGROW_USER_PASSWORD",
+        "SUNGROW_REGION"
+      ],
+      "notes": "For production, either (a) replace workspace/skills/vendor-sungrow/src/sungrow.nim with your existing 170KB implementation, or (b) once a `claw-solar-vendors` monorepo is published, change `source` to `github:<your-org>/claw-solar-vendors/vendor-sungrow` and `claw co update` will fetch + install."
+    }
+  },
+
+  "_examples_external": {
+    "_comment": "Reference examples of github-sourced entries — copy into `implementations` and populate with real URLs once the vendor monorepo exists.",
+    "huawei": {
+      "description": "Huawei FusionSolar — string inverters for residential + C&I, smart string monitoring.",
+      "source": "github:<your-org>/claw-solar-vendors/vendor-huawei",
+      "status": "community",
+      "contract_version": 1,
+      "env_required": ["HUAWEI_USERNAME", "HUAWEI_PASSWORD"]
+    },
+    "goodwe": {
+      "description": "GoodWe SEMS Portal — string and hybrid inverters.",
+      "source": "github:<your-org>/claw-solar-vendors/vendor-goodwe",
+      "status": "community",
+      "contract_version": 1,
+      "env_required": ["GOODWE_APIKEY", "GOODWE_REGION"]
+    },
+    "solis": {
+      "description": "Solis Cloud — Ginlong string inverters.",
+      "source": "github:<your-org>/claw-solar-vendors/vendor-solis",
+      "status": "community",
+      "contract_version": 1,
+      "env_required": ["SOLIS_APIKEY", "SOLIS_API_SECRET"]
+    }
+  }
+}

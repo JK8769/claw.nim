@@ -643,25 +643,113 @@ when isMainModule:
       # The placeholder org name in the template's BASE.nims gets rewritten
       # by the --as= path below. Treat the copied BASE.nims as the script.
       scriptPath = targetDir / "BASE.nims"
+
+      # ── --vendor: registry-driven vendor install ──
+      # Read the template's vendor/registry.json to resolve where the
+      # named vendor's MCP server source lives. Three source schemes:
+      #   - "bundled" → already at <service>/<bundled_path>/, no-op
+      #   - "github:<owner>/<repo>[/<subpath>]" → git clone + copy
+      #   - missing entry → error with list of known vendors
       if vendorName.len > 0:
-        # Confirm the vendor directory exists in the freshly-copied template.
-        let vendorDir = targetDir / "vendor" / vendorName
-        if not dirExists(vendorDir):
-          echo "Warning: vendor '" & vendorName & "' not found at " & vendorDir
-          echo "         The template's BASE.nims won't auto-enable it."
-          echo "         Available vendors: " &
-            (block:
-              var names: seq[string]
-              for kind, path in walkDir(targetDir / "vendor"):
-                if kind == pcDir:
-                  let n = lastPathPart(path)
-                  if n != "schemas" and n != "examples" and not n.startsWith("_") and not n.startsWith("."):
-                    names.add(n)
-              names).join(", ")
+        let registryPath = targetDir / "vendor" / "registry.json"
+        if not fileExists(registryPath):
+          echo "Note: --vendor=" & vendorName & " specified but template has no " &
+               "vendor/registry.json. Skipping vendor install — edit BASE.nims " &
+               "manually to declare the vendor skill."
         else:
-          echo "  + Vendor '" & vendorName & "' present at " & vendorDir
-          echo "    Note: edit BASE.nims to add `skill \"vendor/" & vendorName &
-               "\"` if it isn't already declared."
+          var registry: JsonNode
+          try: registry = parseFile(registryPath)
+          except CatchableError as e:
+            echo "Error: failed to parse " & registryPath & ": " & e.msg
+            quit(1)
+          let impls = registry.getOrDefault("implementations")
+          if impls.isNil or impls.kind != JObject or not impls.hasKey(vendorName):
+            # Build available-vendors list excluding underscore-prefixed
+            # documentation keys (_examples_external etc.).
+            var available: seq[string]
+            if impls != nil and impls.kind == JObject:
+              for k, _ in impls.pairs:
+                if not k.startsWith("_"): available.add(k)
+            echo "Error: vendor '" & vendorName & "' not in registry."
+            if available.len > 0:
+              echo "       Known vendors: " & available.join(", ")
+            else:
+              echo "       Registry has no implementations declared."
+            quit(1)
+          let entry = impls[vendorName]
+          let source = entry.getOrDefault("source").getStr()
+          case source
+          of "bundled":
+            let bundledPath = entry.getOrDefault("bundled_path").getStr()
+            if bundledPath.len == 0:
+              echo "Error: registry entry for '" & vendorName &
+                   "' is `source: bundled` but missing `bundled_path`."
+              quit(1)
+            let bundledDest = targetDir / bundledPath
+            if not dirExists(bundledDest):
+              echo "Error: bundled vendor source not found at " & bundledDest
+              echo "       (registry says it should be there — template may be malformed)"
+              quit(1)
+            let status = entry.getOrDefault("status").getStr("(unspecified)")
+            echo "  + Vendor '" & vendorName & "' installed from bundled source " &
+                 "(status: " & status & ")"
+            echo "    Source: " & bundledPath
+          else:
+            # GitHub or other URL — clone and copy
+            if not source.startsWith("github:") and
+               not source.startsWith("https://") and
+               not source.startsWith("git@") and
+               not source.startsWith("http://"):
+              echo "Error: unrecognized source scheme '" & source &
+                   "' for vendor '" & vendorName & "'."
+              echo "       Supported: bundled, github:owner/repo[/subpath], https://..."
+              quit(1)
+            # Parse github: scheme — optional /subpath after the repo name
+            var cloneUrl = source
+            var subPath = ""
+            if cloneUrl.startsWith("github:"):
+              let rest = cloneUrl["github:".len .. ^1]
+              # Split into owner/repo[/subpath]: first two slash-segments are
+              # owner/repo, anything after is subpath inside the repo.
+              let parts = rest.split('/')
+              if parts.len < 2:
+                echo "Error: github source must be github:<owner>/<repo>[/<subpath>], got: " & source
+                quit(1)
+              cloneUrl = "https://github.com/" & parts[0] & "/" & parts[1] & ".git"
+              if parts.len > 2:
+                subPath = parts[2..^1].join("/")
+            # Clone to a temp dir, then copy the relevant subpath into the
+            # service's workspace/skills/vendor-<name>/. Replaces any bundled
+            # stub at that path.
+            let tempClone = getTempDir() / ("claw-vendor-" & vendorName & "-" & $epochTime().int)
+            echo "  → Cloning vendor source: " & cloneUrl
+            let cmd = "git clone --depth 1 " & quoteShell(cloneUrl) & " " & quoteShell(tempClone)
+            if execCmd(cmd) != 0:
+              echo "Error: git clone failed for " & cloneUrl
+              quit(1)
+            let cloneSubdir = if subPath.len > 0: tempClone / subPath else: tempClone
+            if not dirExists(cloneSubdir):
+              echo "Error: cloned repo doesn't contain expected subpath '" & subPath &
+                   "' (looked at " & cloneSubdir & ")"
+              removeDir(tempClone)
+              quit(1)
+            let installDest = targetDir / "workspace" / "skills" / ("vendor-" & vendorName)
+            if dirExists(installDest):
+              removeDir(installDest)
+            try:
+              copyDir(cloneSubdir, installDest)
+              removeDir(tempClone)
+              echo "  + Vendor '" & vendorName & "' installed from " & source
+              echo "    Destination: workspace/skills/vendor-" & vendorName & "/"
+            except CatchableError as e:
+              echo "Error: failed to copy cloned vendor source: " & e.msg
+              quit(1)
+          # Reminder to declare the skill (registry doesn't auto-edit BASE.nims).
+          let skillName = "vendor-" & vendorName
+          let baseContent = try: readFile(scriptPath) except: ""
+          if "\"" & skillName & "\"" notin baseContent:
+            echo "    Note: add `skill \"" & skillName & "\"` to BASE.nims to enable " &
+                 "the fleet adapter routing for this vendor."
 
     # Detect a git URL as the `<file>` arg — clone first, then treat the
     # cloned BASE.nims as the script. Supports github:owner/repo shortcuts.
