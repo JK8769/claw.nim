@@ -8,13 +8,24 @@
 ## SunGrow implementation. See ../README.md for guidance.
 
 import std/[json, times, strutils, options]
+import mcp  # mcpServer + mcpTool macros from claw's framework MCP helpers
+            # Compile with `--path:<framework>/src/claw --path:<framework>/src`
+            # so this module resolves at the framework's mcp.nim.
 
 const VendorName = "sungrow"
 const PlantIdPrefix = "SG-"
 
+type PlantSpec = tuple
+  id, psId, name: string
+  capacityKwp: float
+  installDate: string
+  lat, lng: float
+  tz, region: string
+  mlpe: bool
+
 # Mock fleet — three plants spanning the typical operational shape
 # of a small fleet operator (mid-size station + 2 smaller stations).
-const mockPlants = [
+const mockPlants: array[3, PlantSpec] = [
   (id: "SG-12345", psId: "12345", name: "无锡中亚",
    capacityKwp: 815.35, installDate: "2023-06-15",
    lat: 31.491, lng: 120.312, tz: "Asia/Shanghai",
@@ -29,12 +40,12 @@ const mockPlants = [
    region: "cn", mlpe: false),
 ]
 
-proc findPlant(plantId: string): Option[tuple] =
+proc findPlant(plantId: string): Option[PlantSpec] =
   for p in mockPlants:
     if p.id == plantId: return some(p)
-  none(tuple)
+  none(PlantSpec)
 
-proc plantJson(p: auto): JsonNode =
+proc plantJson(p: PlantSpec): JsonNode =
   ## Plant per schemas/plant.json + vendor extensions.
   %*{
     "id": p.id,
@@ -75,7 +86,7 @@ proc mockYield(capacityKwp: float, dateStr: string): float =
 
 # ── MCP server ────────────────────────────────────────────────────
 
-mcpServer(VendorName):
+let server = mcpServer(VendorName, "0.1.0"):
 
   # ── Contract tool 1: plant_list ─────────────────────────────────
   mcpTool:
@@ -192,3 +203,7 @@ mcpServer(VendorName):
       let plant = findPlant(plant_id)
       if plant.isNone: return %*[]
       result = %*[]
+
+when isMainModule:
+  let transport = newStdioTransport()
+  transport.serve(server)
