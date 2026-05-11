@@ -57,6 +57,20 @@ competency "technical-communication":
 competency "knowledge-keeper":
   description "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Heartbeat duties auto-snapshot the wiki and surface promotion candidates."
 
+# ── Workflow skills (L1, ship with this template) ───────────
+# Four vendor-neutral workflows over the fleet_* tools. All are
+# `loading: lazy` — they stub in the agents' catalog by default
+# and inline only when explicitly loaded via `skill action=load`.
+#
+# These reference fleet_plant_list, fleet_plant_history,
+# fleet_inverter_alarms — provided by the fleet-adapter skill
+# (which ships in a follow-up commit). Until the fleet adapter
+# lands, these workflows are catalog-visible but won't function.
+skill "daily-yield-sync"
+skill "monthly-report"
+skill "customer-onboarding"
+skill "alarm-response"
+
 # ── Distribution skills (L2 opt-in) ──────────────────────────
 # Optional skills shipped with claw distribution. Uncomment to install:
 #   skill "anygen"          # AI-powered content generation (slides, docs, diagrams)
