@@ -16,10 +16,9 @@
 
   "implementations": {
     "sungrow": {
-      "description": "SunGrow iSolarCloud — string and central inverters, regional endpoints (cn/us/eu). Mature production source available in existing SunGrow deployments at ~170KB / ~22 tools (5 contract + 17 vendor-specific). The bundled stub here returns 3 mock plants for tests.",
-      "source": "bundled",
-      "bundled_path": "workspace/skills/vendor-sungrow",
-      "status": "stub",
+      "description": "SunGrow iSolarCloud — string and central inverters, regional endpoints (cn/us/eu). Production implementation (~170KB, 22 tools: 5 contract + 17 vendor-specific) maintained at github.com/JK8769/claw-solar-vendors.",
+      "source": "github:JK8769/claw-solar-vendors/vendor-sungrow",
+      "status": "reference",
       "contract_version": 1,
       "env_required": [
         "SUNGROW_APPKEY",
@@ -28,7 +27,7 @@
         "SUNGROW_USER_PASSWORD",
         "SUNGROW_REGION"
       ],
-      "notes": "For production, either (a) replace workspace/skills/vendor-sungrow/src/sungrow.nim with your existing 170KB implementation, or (b) once a `claw-solar-vendors` monorepo is published, change `source` to `github:<your-org>/claw-solar-vendors/vendor-sungrow` and `claw co update` will fetch + install."
+      "notes": "`claw skill add vendor-sungrow` clones the repo, copies vendor-sungrow/ into workspace/skills/vendor-sungrow/, and auto-compiles to bin/vendor-sungrow. For local dev (without internet) the bundled stub at workspace/skills/vendor-sungrow/ from `claw co create` still works as a fallback; replace it manually if needed."
     }
   },
 

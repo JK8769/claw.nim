@@ -2929,6 +2929,20 @@ when isMainModule:
     elif source.startsWith("github:") or source.startsWith("https://") or source.startsWith("git@"):
       # Use the existing `claw skill install` mechanism by shelling out.
       # Simpler than duplicating clone/install logic.
+      #
+      # Preflight: the template may have shipped a BUNDLED STUB at the
+      # destination (e.g. a placeholder vendor-sungrow with mock data).
+      # If the registry resolved to github, the stub is no longer the
+      # source of truth — remove it before install so the upstream
+      # clone replaces it cleanly. `skill install` itself refuses to
+      # overwrite, so we handle that here.
+      if dirExists(installPath):
+        echo "  ↻ Removing placeholder/stub at " & installPath &
+             " — replacing with upstream source"
+        try: removeDir(installPath)
+        except CatchableError as e:
+          echo "Error: couldn't remove stub: " & e.msg
+          quit(1)
       var refForInstall = source
       var asFlag = ""
       if resolvedTier == "vendor":
