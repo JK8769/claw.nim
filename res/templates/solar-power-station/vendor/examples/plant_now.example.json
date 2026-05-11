@@ -1,0 +1,12 @@
+{
+  "plant_id": "SG-12345",
+  "vendor": "sungrow",
+  "current_kw": 275.9,
+  "today_kwh": 4794.9,
+  "status": "online",
+  "alarms_count": 0,
+  "timestamp": "2026-05-11T16:30:00+08:00",
+  "capacity_kwp": 815.35,
+  "sungrow_inverter_count": 8,
+  "sungrow_mlpe_optimizers_online": 1632
+}

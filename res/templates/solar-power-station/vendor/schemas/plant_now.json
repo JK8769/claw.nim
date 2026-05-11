@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claw.nim/templates/solar-power-station/vendor/schemas/plant_now.json",
+  "title": "PlantNow",
+  "description": "Real-time state of a single solar power plant. Returned by `plant_now(plant_id)`.",
+  "type": "object",
+  "required": ["plant_id", "vendor", "current_kw", "today_kwh", "status", "timestamp"],
+  "properties": {
+    "plant_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The plant's globally-unique ID. Matches `Plant.id`."
+    },
+    "vendor": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Vendor name. Matches `Plant.vendor`."
+    },
+    "current_kw": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Current AC output in kilowatts. Returns 0 at night. NEVER negative — if the API reports negative values (sensor noise), clamp to 0."
+    },
+    "today_kwh": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Cumulative AC yield today, in kilowatt-hours. Resets at local midnight."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["online", "offline", "fault", "maintenance", "unknown"],
+      "description": "Operational status rollup. `online` = at least one inverter producing or capable of producing (night-time idle counts as online if no fault). `offline` = comms lost. `fault` = active fault preventing production. `maintenance` = operator-set. `unknown` = vendor couldn't determine."
+    },
+    "alarms_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of active alarms on this plant. Detail available via `inverter_alarms(plant_id)`."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp when this reading was sampled by the vendor's API. NOT the wall-clock at the moment of MCP call — use the vendor's own freshness signal."
+    },
+    "capacity_kwp": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Optional. Echoed from `Plant.capacity_kwp` if cheap to include — saves a `plant_list` round-trip when the consumer needs the ratio `current_kw / capacity_kwp`."
+    }
+  },
+  "additionalProperties": true
+}

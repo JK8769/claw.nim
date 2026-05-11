@@ -1,0 +1,29 @@
+[
+  {
+    "plant_id": "SG-12345",
+    "vendor": "sungrow",
+    "date": "2026-05-08",
+    "yield_kwh": 4612.3,
+    "peak_kw": 681.2,
+    "equivalent_hours": 5.66,
+    "data_quality": "final"
+  },
+  {
+    "plant_id": "SG-12345",
+    "vendor": "sungrow",
+    "date": "2026-05-09",
+    "yield_kwh": 4730.1,
+    "peak_kw": 695.5,
+    "equivalent_hours": 5.80,
+    "data_quality": "final"
+  },
+  {
+    "plant_id": "SG-12345",
+    "vendor": "sungrow",
+    "date": "2026-05-10",
+    "yield_kwh": 4794.9,
+    "peak_kw": 712.0,
+    "equivalent_hours": 5.88,
+    "data_quality": "provisional"
+  }
+]

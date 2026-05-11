@@ -1,0 +1,47 @@
+[
+  {
+    "id": "SG-12345",
+    "vendor": "sungrow",
+    "name": "无锡中亚",
+    "capacity_kwp": 815.35,
+    "install_date": "2023-06-15",
+    "location": {
+      "latitude": 31.491,
+      "longitude": 120.312,
+      "address": "无锡市",
+      "timezone": "Asia/Shanghai"
+    },
+    "status": "online",
+    "sungrow_ps_id": "1234567",
+    "sungrow_mlpe_enabled": true
+  },
+  {
+    "id": "SG-12346",
+    "vendor": "sungrow",
+    "name": "荣鑫二期",
+    "capacity_kwp": 400.0,
+    "install_date": "2024-03-22",
+    "location": {
+      "latitude": 31.5,
+      "longitude": 120.4,
+      "timezone": "Asia/Shanghai"
+    },
+    "status": "online",
+    "sungrow_ps_id": "1234568"
+  },
+  {
+    "id": "HW-67890",
+    "vendor": "huawei",
+    "name": "Acme Solar Farm",
+    "capacity_kwp": 1200.0,
+    "install_date": "2022-11-01",
+    "location": {
+      "latitude": 48.137,
+      "longitude": 11.575,
+      "address": "München, DE",
+      "timezone": "Europe/Berlin"
+    },
+    "status": "online",
+    "huawei_station_code": "HWS-XYZ-789"
+  }
+]

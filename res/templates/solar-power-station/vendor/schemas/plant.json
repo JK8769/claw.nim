@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claw.nim/templates/solar-power-station/vendor/schemas/plant.json",
+  "title": "Plant",
+  "description": "A solar power plant in a vendor's fleet. Returned as an element of `plant_list` and as a field reference in other tools.",
+  "type": "object",
+  "required": ["id", "vendor", "name", "capacity_kwp"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Globally unique plant identifier. MUST be prefixed with the vendor name to avoid collision across multi-vendor fleets (e.g. `SG-12345`, `HW-67890`)."
+    },
+    "vendor": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Vendor name (lowercase, kebab-case). MUST match the vendor's MCP server registration name. Used by the fleet adapter for routing."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable plant name. Often Chinese or local-language for region-specific deployments."
+    },
+    "capacity_kwp": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Installed DC capacity in kilowatts-peak. Used for yield-normalization and equivalent-hours calculations."
+    },
+    "install_date": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO-8601 date when the plant came online. Used for performance-degradation baselines."
+    },
+    "location": {
+      "type": "object",
+      "description": "Optional geo-location. Useful for irradiance estimation and time-zone routing.",
+      "properties": {
+        "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+        "longitude": {"type": "number", "minimum": -180, "maximum": 180},
+        "address": {"type": "string"},
+        "timezone": {
+          "type": "string",
+          "description": "IANA timezone identifier, e.g. `Asia/Shanghai`. Required for accurate day-boundary alignment in yield reporting."
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["online", "offline", "fault", "maintenance", "unknown"],
+      "description": "Optional rollup status. If present, mirrors `PlantNow.status`."
+    }
+  },
+  "additionalProperties": true
+}

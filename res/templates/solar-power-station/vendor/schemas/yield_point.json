@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claw.nim/templates/solar-power-station/vendor/schemas/yield_point.json",
+  "title": "YieldPoint",
+  "description": "One date's yield reading for a single plant. Returned as an element of `plant_history(plant_id, from, to)`.",
+  "type": "object",
+  "required": ["plant_id", "vendor", "date", "yield_kwh"],
+  "properties": {
+    "plant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "vendor": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "date": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO-8601 calendar date in the plant's local timezone. Day-boundary aligned to `Plant.location.timezone` if present, else server-local."
+    },
+    "yield_kwh": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total AC yield for that calendar day, in kilowatt-hours."
+    },
+    "peak_kw": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Optional. Peak instantaneous AC power observed during the day. Useful for performance-ratio calculation."
+    },
+    "equivalent_hours": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Optional. yield_kwh / capacity_kwp. Vendors that compute this server-side can supply it; otherwise consumers compute from `plant_list`."
+    },
+    "data_quality": {
+      "type": "string",
+      "enum": ["final", "provisional", "estimated", "missing"],
+      "description": "Optional. `final` = settled (typically >24h old). `provisional` = current-day or recently-settled, may revise. `estimated` = filled from neighbors due to comms gap. `missing` = vendor confirms no data for this date (distinct from zero yield)."
+    }
+  },
+  "additionalProperties": true
+}
