@@ -34,6 +34,29 @@ org "REPLACE_WITH_YOUR_ORG_NAME":
 # These ship with claw.nim and apply to every agent. No declaration needed.
 # Currently: `tools` (capability-surface management).
 
+# ── Competencies ──────────────────────────────────────────────
+# Role disciplines bundling skills + HANDBOOK.md procedural rules.
+# Agents `practices` these to inherit the disciplines.
+#
+# Full HANDBOOK.md content for each lives in
+# workspace/competencies/<name>/HANDBOOK.md — declare here, edit there.
+
+competency "solar-operator":
+  description "Solar plant operations expertise: equipment taxonomy (plant→inverter→string), units & ranges, data-acquisition discipline via the fleet adapter, verification heuristics, domain terminology."
+
+competency "solar-frontdesk":
+  description "Customer-facing routing for solar power station ops: classify depth (simple/analytical/advisory), handle simple lookups via the fleet adapter, delegate analytical/advisory to the Analyst. Anti-fabrication discipline."
+  skills "delegate"
+
+competency "data-analyst":
+  description "Data analysis methodology: hypothesis-driven thinking, train/eval/test discipline, model selection, honest reporting, anti-fabrication. Domain-agnostic — pairs with solar-operator."
+
+competency "technical-communication":
+  description "Communication discipline for long-running technical tasks: Phase 0 intake, progress checkpoints, plan announcements, structured result formatting, async-tool handoff."
+
+competency "knowledge-keeper":
+  description "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Heartbeat duties auto-snapshot the wiki and surface promotion candidates."
+
 # ── Distribution skills (L2 opt-in) ──────────────────────────
 # Optional skills shipped with claw distribution. Uncomment to install:
 #   skill "anygen"          # AI-powered content generation (slides, docs, diagrams)
@@ -69,9 +92,7 @@ agent "Frontdesk":
   """
   maxDepth 8
   # Frontdesk practices customer-facing disciplines.
-  # `solar-frontdesk` (TODO: ship with template) — customer-facing patterns
-  # `technical-communication` — delivery discipline (compose with above)
-  # practices "solar-frontdesk", "technical-communication"
+  practices "solar-frontdesk", "technical-communication"
 
   reportsTo "Operator":
     role "boss"
@@ -89,12 +110,8 @@ agent "Analyst":
   """
   maxDepth 10
   # Analyst practices the analytical disciplines.
-  # `solar-operator` — domain knowledge (equipment, units, ranges)
-  # `data-analyst` — methodology
-  # `technical-communication` — delivery
-  # `knowledge-keeper` — reflection
-  # practices "solar-operator", "data-analyst",
-  #           "technical-communication", "knowledge-keeper"
+  practices "solar-operator", "data-analyst",
+            "technical-communication", "knowledge-keeper"
 
   reportsTo "Operator":
     role "boss"

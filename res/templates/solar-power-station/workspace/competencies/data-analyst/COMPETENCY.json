@@ -1,0 +1,8 @@
+{
+  "name": "data-analyst",
+  "description": "Data analysis methodology: hypothesis-driven thinking, train/eval/test discipline, model selection by question shape, honest performance reporting, anti-fabrication. Domain-agnostic — pair with a domain competency (solar-operator, future market-analyst, etc.) so the agent has both *what data means* and *what to do with it*.",
+  "skills": [],
+  "summary": "",
+  "has_handbook": true,
+  "loading": "lazy"
+}

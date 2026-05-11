@@ -1,0 +1,7 @@
+{
+  "name": "solar-operator",
+  "description": "Solar plant operations expertise: equipment taxonomy (plant → inverter → string), units & ranges, data-acquisition discipline via the fleet adapter, verification heuristics, domain terminology. Knows what the data means and how to fetch it correctly. Composes with data-analyst for end-to-end analysis (this competency owns the domain side; data-analyst owns the methodology side).",
+  "skills": [],
+  "summary": "",
+  "has_handbook": true
+}

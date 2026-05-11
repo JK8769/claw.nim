@@ -1,0 +1,57 @@
+{
+  "name": "knowledge-keeper",
+  "description": "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Distinguishes timeless facts (semantic memory) from project-specific notes, episodic events, and behavioural reflexes. Uses the consolidate_knowledge tool to promote insights from project context into the wiki; heartbeat duties auto-snapshot the wiki to git and surface promotion candidates.",
+  "skills": [],
+  "summary": "",
+  "has_handbook": true,
+  "loading": "lazy",
+  "heartbeat": [
+    {
+      "id": "snapshot_knowledge",
+      "title": "Auto-snapshot knowledge/ wiki if dirty",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "DIR=${OFFICE_DIR}/knowledge; if [ -d $DIR/.git ]; then cd $DIR && git status -s 2>/dev/null | head -1; fi"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "auto": {
+          "tool": "exec",
+          "args": {
+            "command": "cd ${OFFICE_DIR}/knowledge && git add -A && git commit -q -m 'Heartbeat snapshot {datetime}' 2>&1 | tail -1"
+          }
+        }
+      }
+    },
+    {
+      "id": "knowledge_promotion_candidates",
+      "title": "Cross-project knowledge promotion candidates",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "grep -rEh 'TODO|LEARN|NOTE:|FACT:' ${OFFICE_DIR}/workstation/active/*/README.md 2>/dev/null | head -20"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "These markers in project READMEs may point to insights worth promoting to knowledge/. For each, ask: does this apply BEYOND this project? If yes — call `consolidate_knowledge(topic=..., insight=..., source=...)` to add it to your wiki. If no — leave it in the project. Don't promote project-specific data; only cross-project facts (API quirks, methodology notes, vendor gotchas, domain truths)."
+      }
+    },
+    {
+      "id": "extract_from_recent_archives",
+      "title": "Recently-archived projects — extract durable lessons",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "find ${OFFICE_DIR}/workstation/archive -name 'README.md' -mtime -7 2>/dev/null | head -5"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "These projects were archived in the last 7 days. Project graveyards are a goldmine for retrospective insight. For each: scan the README and any retrospective notes. Anything that's a durable lesson (not project-specific) should land in knowledge/ via consolidate_knowledge. The project body itself stays in archive/; only the cross-project insights get promoted."
+      }
+    }
+  ]
+}
