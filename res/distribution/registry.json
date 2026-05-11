@@ -1,0 +1,46 @@
+{
+  "$schema_version": 1,
+  "tier": "distribution",
+  "description": "Registry of cross-template distribution skills — capabilities useful across multiple templates (content generation, document parsing, channel adapters, etc.). Each entry maps a skill name to its install source. `claw skill add <name>` consults this registry alongside the foundation registry and the active template's vendor registry.",
+
+  "_status_values": {
+    "reference":   "Recommended / canonical implementation",
+    "community":   "Third-party, conforms to documented interface but maintained independently",
+    "deprecated":  "Still installable but no longer recommended; see `replaced_by`"
+  },
+
+  "_source_schemes": {
+    "github": "github:<owner>/<repo>[/<subpath>] — git-clone + (optional subpath) copy into <service>/workspace/skills/<name>/",
+    "claw":   "claw:<source-company>/<skill-name> — pulls from a local claw company's workspace (legacy / dev-iteration path)"
+  },
+
+  "implementations": {
+    "anygen": {
+      "description": "AI-powered content creation suite — slides/PPT, documents, diagrams, websites, data visualizations, research reports, storybooks, financial analysis, images. Submitter-driven (returns task_id for async fetch).",
+      "source": "github:AnyGenIO/anygen-suite-skill/anygen-suite",
+      "status": "reference",
+      "env_required": ["ANYGEN_API_KEY"],
+      "useful_for_templates": [
+        "solar-power-station",
+        "research-team",
+        "customer-support",
+        "marketing"
+      ],
+      "notes": "Pairs naturally with technical-communication competency's TC-9 (async-tool handoff rule) — surface the task_id, set the wait expectation, don't substitute hand-rolled output."
+    },
+
+    "doc-parse": {
+      "description": "Document parsing (PDF, Word, Excel, PowerPoint, etc.) via AnyGen's parser endpoints. Use when user needs content extracted from binary documents before reasoning over them.",
+      "source": "github:AnyGenIO/anygen-suite-skill/doc-parse",
+      "status": "reference",
+      "env_required": ["ANYGEN_API_KEY"],
+      "useful_for_templates": [
+        "solar-power-station",
+        "research-team",
+        "customer-support",
+        "legal-review"
+      ],
+      "notes": "Requires the same ANYGEN_API_KEY as anygen. Often paired in deployments that need both content-in and content-out."
+    }
+  }
+}

@@ -69,6 +69,7 @@ Usage:
   claw skill share <name>
   claw skill unshare <name>
   claw skill install <ref> [--as=<alias>]
+  claw skill add [<name>]
   claw doctor [--no-color]
   claw version
   claw --version
@@ -643,6 +644,16 @@ when isMainModule:
       # The placeholder org name in the template's BASE.nims gets rewritten
       # by the --as= path below. Treat the copied BASE.nims as the script.
       scriptPath = targetDir / "BASE.nims"
+
+      # Mark the service with its template lineage. Used by
+      # `claw skill add` to filter vendor registries by template
+      # and reject vendors from other domains. Plain-text file —
+      # easy to grep, cat, edit. Format is just the template name,
+      # one line, no header.
+      try:
+        writeFile(targetDir / ".template", templateName & "\n")
+      except CatchableError as e:
+        echo "  ! Warning: couldn't write .template marker: " & e.msg
 
       # ── --vendor: registry-driven vendor install ──
       # Read the template's vendor/registry.json to resolve where the
@@ -2747,6 +2758,208 @@ when isMainModule:
       echo "  External refs will no longer resolve cleanly."
 
   # Install a skill from a claw: reference, github: ref, URL, or local path.
+  elif args.isCommand("skill", "add"):
+    # Template-aware skill install: consult three registries in order
+    # (foundation, distribution, current template's vendor), respect
+    # template scoping (vendors from a different template are refused
+    # with a clear error), and dispatch by source scheme.
+    #
+    # Differs from `claw skill install <ref>` (which is URL-based, no
+    # registry lookup): `add` knows about known-good implementations
+    # per tier and filters vendor by the company's template.
+    let nameArg = $args["<name>"]
+    let companyDir = getNimClawDir()
+    if not dirExists(companyDir):
+      echo "No company at " & companyDir
+      echo "Run: claw co create --template <name> --as=<your-org-name>"
+      quit(1)
+
+    # Resolve the framework's res/ root (where registries live)
+    proc resolveResDir(): string =
+      for c in [
+        getCurrentDir() / "res",
+        getAppDir() / "res",
+        getAppDir().parentDir() / "res",
+      ]:
+        if dirExists(c): return c
+      return ""
+
+    let resDir = resolveResDir()
+    if resDir.len == 0:
+      echo "Error: no res/ directory found alongside the claw binary."
+      quit(1)
+
+    # Read the active template marker (written by `claw co create --template`)
+    let templateFile = companyDir / ".template"
+    var activeTemplate = ""
+    if fileExists(templateFile):
+      try: activeTemplate = readFile(templateFile).strip()
+      except: discard
+
+    proc loadRegistry(path: string): JsonNode =
+      if not fileExists(path): return nil
+      try: parseFile(path)
+      except CatchableError: nil
+
+    # Walk registries in tier order
+    let distRegistry = loadRegistry(resDir / "distribution" / "registry.json")
+    var vendorRegistry: JsonNode = nil
+    var vendorTemplateName = ""
+    if activeTemplate.len > 0:
+      let vPath = resDir / "templates" / activeTemplate / "vendor" / "registry.json"
+      vendorRegistry = loadRegistry(vPath)
+      vendorTemplateName = activeTemplate
+
+    # Helper — list all entries from a registry, excluding _-prefixed
+    # documentation keys.
+    proc listImpls(reg: JsonNode): seq[tuple[name, status, desc: string]] =
+      if reg.isNil: return
+      let impls = reg.getOrDefault("implementations")
+      if impls.isNil or impls.kind != JObject: return
+      for k, v in impls.pairs:
+        if k.startsWith("_"): continue
+        let status = v.getOrDefault("status").getStr("(unspecified)")
+        let desc = v.getOrDefault("description").getStr("")
+        result.add((name: k, status: status, desc: desc))
+
+    # No-argument form: discover what's available
+    if nameArg == "nil" or nameArg.len == 0:
+      let templateNote =
+        if activeTemplate.len > 0: " (template: " & activeTemplate & ")"
+        else: " (template: not marked)"
+      echo "Available skills for this company" & templateNote & "\n"
+
+      let dist = listImpls(distRegistry)
+      if dist.len > 0:
+        echo "Distribution (cross-template):"
+        var nameWidth = 0
+        for d in dist:
+          if d.name.len > nameWidth: nameWidth = d.name.len
+        for d in dist:
+          let pad = repeat(' ', nameWidth - d.name.len)
+          echo "  " & d.name & pad & "  " & d.desc & "  [" & d.status & "]"
+        echo ""
+
+      let vend = listImpls(vendorRegistry)
+      if vend.len > 0:
+        echo "Vendor for template '" & vendorTemplateName & "':"
+        var nameWidth = 0
+        for v in vend:
+          let qn = "vendor-" & v.name
+          if qn.len > nameWidth: nameWidth = qn.len
+        for v in vend:
+          let qn = "vendor-" & v.name
+          let pad = repeat(' ', nameWidth - qn.len)
+          echo "  " & qn & pad & "  " & v.desc & "  [" & v.status & "]"
+        echo ""
+      elif activeTemplate.len == 0:
+        echo "(no template marked; vendor skills require a template — run " &
+             "`claw co create --template <name> --as=<org>`)\n"
+
+      echo "Usage: claw skill add <name>"
+      quit(0)
+
+    # Resolve the requested name
+    # Vendor names use the form `vendor-<name>` (registry key is just `<name>`).
+    var resolvedTier = ""    # "distribution" | "vendor"
+    var resolvedEntry: JsonNode = nil
+    var resolvedVendorBase = "" # vendor name without "vendor-" prefix
+
+    if distRegistry != nil and distRegistry.hasKey("implementations"):
+      let impls = distRegistry["implementations"]
+      if impls.hasKey(nameArg) and not nameArg.startsWith("_"):
+        resolvedTier = "distribution"
+        resolvedEntry = impls[nameArg]
+
+    if resolvedTier.len == 0 and nameArg.startsWith("vendor-"):
+      let vendorBase = nameArg["vendor-".len .. ^1]
+      if vendorRegistry != nil and vendorRegistry.hasKey("implementations"):
+        let impls = vendorRegistry["implementations"]
+        if impls.hasKey(vendorBase) and not vendorBase.startsWith("_"):
+          resolvedTier = "vendor"
+          resolvedEntry = impls[vendorBase]
+          resolvedVendorBase = vendorBase
+      if resolvedTier.len == 0:
+        # Search OTHER templates to give a useful error
+        let templatesRoot = resDir / "templates"
+        if dirExists(templatesRoot):
+          for kind, path in walkDir(templatesRoot):
+            if kind != pcDir: continue
+            let tname = lastPathPart(path)
+            if tname == activeTemplate: continue
+            let otherReg = loadRegistry(path / "vendor" / "registry.json")
+            if otherReg != nil and otherReg.hasKey("implementations"):
+              let otherImpls = otherReg["implementations"]
+              if otherImpls.hasKey(vendorBase):
+                echo "Error: vendor-" & vendorBase & " is for template '" &
+                     tname & "', not your active template '" & activeTemplate & "'."
+                echo "       Vendor skills are scoped to their template."
+                echo "       If you need this skill standalone, install manually:"
+                let src = otherImpls[vendorBase].getOrDefault("source").getStr()
+                if src.startsWith("github:"):
+                  echo "         claw skill install " & src
+                quit(1)
+
+    if resolvedTier.len == 0:
+      echo "Error: skill '" & nameArg & "' not found in any registry."
+      echo ""
+      echo "Try `claw skill add` (no args) to list what's available."
+      quit(1)
+
+    # Dispatch by source scheme
+    let source = resolvedEntry.getOrDefault("source").getStr()
+    let envReq = resolvedEntry.getOrDefault("env_required")
+    let skillName = if resolvedTier == "vendor": "vendor-" & resolvedVendorBase else: nameArg
+    let installPath = companyDir / "workspace" / "skills" / skillName
+
+    if source == "bundled":
+      let bundledPath = resolvedEntry.getOrDefault("bundled_path").getStr()
+      if bundledPath.len == 0:
+        echo "Error: registry entry for '" & nameArg & "' is bundled but has no bundled_path"
+        quit(1)
+      # For vendor tier: bundled_path is relative to the template;
+      # the source should already be in the service at the same path
+      # (copied during `claw co create`). No-op success.
+      if dirExists(companyDir / bundledPath):
+        echo "  ✓ '" & nameArg & "' is bundled; already installed at " & bundledPath
+      else:
+        echo "Warning: bundled path " & bundledPath & " doesn't exist in this service."
+        echo "         The template may not have shipped this skill. Try `claw co update`."
+        quit(1)
+    elif source.startsWith("github:") or source.startsWith("https://") or source.startsWith("git@"):
+      # Use the existing `claw skill install` mechanism by shelling out.
+      # Simpler than duplicating clone/install logic.
+      var refForInstall = source
+      var asFlag = ""
+      if resolvedTier == "vendor":
+        asFlag = " --as=" & skillName
+      let appPath = getAppFilename()
+      let cmd = quoteShell(appPath) & " skill install " & quoteShell(refForInstall) & asFlag
+      echo "  → Installing from " & source
+      let exitCode = execShellCmd(cmd)
+      if exitCode != 0:
+        echo "Error: skill install failed (exit " & $exitCode & ")"
+        quit(1)
+    elif source.startsWith("claw:"):
+      let appPath = getAppFilename()
+      let cmd = quoteShell(appPath) & " skill install " & quoteShell(source)
+      echo "  → Installing from " & source
+      let exitCode = execShellCmd(cmd)
+      if exitCode != 0:
+        quit(1)
+    else:
+      echo "Error: unrecognized source scheme '" & source & "' for '" & nameArg & "'"
+      quit(1)
+
+    # Report env requirements after install
+    if envReq != nil and envReq.kind == JArray and envReq.len > 0:
+      echo ""
+      echo "Required env vars (set in " & companyDir & "/.env):"
+      for e in envReq:
+        echo "  " & e.getStr()
+
+    quit(0)
+
   elif args.isCommand("skill", "install"):
     let refStr = $args["<ref>"]
     var asAlias = $args["--as"]
