@@ -10,14 +10,16 @@ that don't conform won't be routable by the fleet adapter.
 
 ## How vendors plug in
 
-1. Copy `vendor/_template/` to `vendor/<your-vendor>/`.
-2. Rename references from `_template` to `<your-vendor>` in source
-   + SKILL.md.
+1. Copy `vendor/_template/` as a reference; the actual installable
+   skill lives at `workspace/skills/vendor-<your-vendor>/` so the
+   standard skill resolver picks it up.
+2. Author `workspace/skills/vendor-<your-vendor>/SKILL.md`,
+   `README.md`, and `src/<vendor>.nim`.
 3. Implement the 5 required tools (below) per the JSON schemas in
    `vendor/schemas/`.
 4. Validate output against `vendor/examples/`.
-5. Document env vars in `vendor/<your-vendor>/README.md`.
-6. Add `skill "vendor/<your-vendor>"` to the deployment's BASE.nims.
+5. Document env vars in your vendor skill's README.md.
+6. Add `skill "vendor-<your-vendor>"` to the deployment's BASE.nims.
 
 A coding agent should be able to produce a correct adapter from
 this document + the schemas + the skeleton in one pass.

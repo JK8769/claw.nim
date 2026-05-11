@@ -73,6 +73,15 @@ skill "monthly-report"
 skill "customer-onboarding"
 skill "alarm-response"
 
+# ── Vendor implementations (one or more) ─────────────────────
+# Each vendor is its own skill at workspace/skills/vendor-<name>/.
+# The fleet adapter routes per-plant queries to the right one
+# automatically. Multiple vendors can coexist. The shipped
+# `vendor-sungrow` is a contract-conformant STUB returning mock
+# data — replace its src/sungrow.nim with a real implementation
+# (see workspace/skills/vendor-sungrow/README.md) for production.
+skill "vendor-sungrow"
+
 # ── Distribution skills (L2 opt-in) ──────────────────────────
 # Optional skills shipped with claw distribution. Uncomment to install:
 #   skill "anygen"          # AI-powered content generation (slides, docs, diagrams)

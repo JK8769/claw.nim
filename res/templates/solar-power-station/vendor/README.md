@@ -6,25 +6,36 @@ the solar-power-station template's fleet adapter.
 ## Adding a new vendor
 
 1. Read [CONTRACT.md](./CONTRACT.md) — the formal spec.
-2. Copy `_template/` to `<your-vendor>/`.
-3. Implement the required tools per the schemas in `schemas/`.
-4. Validate output against `examples/*.example.json`.
-5. Add `skill "vendor/<your-vendor>"` to your deployment's BASE.nims.
-6. Set the required env vars (see your vendor's README).
+2. Copy `_template/` to `<your-vendor>/` inside this `vendor/` dir
+   (a reference copy — not installed).
+3. Author the actual implementation as a skill at
+   `workspace/skills/vendor-<your-vendor>/` (with `SKILL.md`,
+   `README.md`, `src/<vendor>.nim`).
+4. Implement the required tools per the schemas in `schemas/`.
+5. Validate output against `examples/*.example.json`.
+6. Add `skill "vendor-<your-vendor>"` to your deployment's
+   BASE.nims so the resolver installs and compiles it.
+7. Set the required env vars (see your vendor's README).
 
 The contract is designed so a coding agent (Claude, Devon, etc.)
 can produce a correct adapter from CONTRACT.md + schemas + the
 skeleton in one pass.
 
+Why the split: this `vendor/` dir at the template top level holds
+the CONTRACT, schemas, examples, and a reference `_template/` for
+discoverability. The actual installable vendor MCP servers live
+under `workspace/skills/vendor-<name>/` so they integrate with the
+standard skill resolver, installer, and binary loader.
+
 ## Currently shipped
 
-| Vendor | Implementation | Status |
-|---|---|---|
-| `_template` | skeleton with mock data | reference |
-| `sungrow` | SunGrow iSolarCloud | *(to be extracted from framework repo)* |
-| `huawei` | Huawei FusionSolar | not yet implemented |
-| `goodwe` | GoodWe SEMS | not yet implemented |
-| `solis` | Solis Cloud | not yet implemented |
+| Vendor | Skill name | Implementation | Status |
+|---|---|---|---|
+| `_template` | — (not installed) | reference skeleton | docs only |
+| `sungrow` | `vendor-sungrow` | SunGrow iSolarCloud | stub with mock data |
+| `huawei` | `vendor-huawei` | Huawei FusionSolar | not yet implemented |
+| `goodwe` | `vendor-goodwe` | GoodWe SEMS | not yet implemented |
+| `solis` | `vendor-solis` | Solis Cloud | not yet implemented |
 
 ## Multi-vendor support
 
