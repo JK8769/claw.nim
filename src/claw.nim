@@ -21,7 +21,8 @@ Usage:
   claw gateway [--stdio] [--pane=PANE] [--debug]
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
-  claw (company|co) create [<file>] [--as=<name>]
+  claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>]
+  claw (company|co) list-templates [--format=<fmt>]
   claw (company|co) update [--restart] [--no-pull]
   claw upgrade [--check] [--rollback] [--branch=<b>] [--no-restart]
   claw (company|co) push [<url>] [--message=<m>] [--force]
@@ -310,12 +311,66 @@ when isMainModule:
   # ── Company commands ─────────────────────────────────────────────
   # `claw company ...` or the short form `claw co ...`
 
+  elif isCompanyCmd(args, "list-templates"):
+    # Enumerate bundled L1 domain templates in res/templates/.
+    let fmtArg = (block:
+      let f = $args["--format"]
+      if f == "nil": "table" else: f)
+    var templatesRoot = ""
+    for candidate in [
+      getCurrentDir() / "res" / "templates",
+      getAppDir() / "res" / "templates",
+      getAppDir().parentDir() / "res" / "templates",
+    ]:
+      if dirExists(candidate):
+        templatesRoot = candidate
+        break
+    if templatesRoot.len == 0:
+      echo "No res/templates/ directory found alongside the claw binary."
+      quit(1)
+    var rows: seq[tuple[name, desc: string]] = @[]
+    for kind, path in walkDir(templatesRoot):
+      if kind != pcDir: continue
+      let name = lastPathPart(path)
+      if name.startsWith("."): continue
+      if not fileExists(path / "BASE.nims"): continue
+      var desc = ""
+      let readme = path / "README.md"
+      if fileExists(readme):
+        # First non-heading line of the README is treated as the description.
+        for line in lines(readme):
+          let s = line.strip()
+          if s.len == 0 or s.startsWith("#"): continue
+          desc = s
+          break
+      rows.add((name: name, desc: desc))
+    if fmtArg == "json":
+      var arr = newJArray()
+      for r in rows:
+        var o = newJObject()
+        o["name"] = %r.name
+        o["description"] = %r.desc
+        arr.add(o)
+      echo arr.pretty
+    else:
+      if rows.len == 0:
+        echo "No templates installed at " & templatesRoot
+      else:
+        echo "Available templates (at " & templatesRoot & "):\n"
+        var nameWidth = 0
+        for r in rows:
+          if r.name.len > nameWidth: nameWidth = r.name.len
+        for r in rows:
+          let pad = repeat(' ', nameWidth - r.name.len)
+          echo "  " & r.name & pad & "  " & r.desc
+        echo "\nUse: claw co create --template <name> --as=<your-org-name>"
+
   elif isCompanyCmd(args, "list"):
     let active = readActiveContext()
     let companies = listCompanies()
     if companies.len == 0:
       echo "No companies found under $HOME/.nimclaw-*/"
-      echo "Run: claw company create <template.nims>"
+      echo "Run: claw co create --template solar-power-station --as=MyCompany"
       quit(0)
 
     # Collect richer info per company. We keep BOTH formatted display strings
@@ -511,7 +566,102 @@ when isMainModule:
     if fileArg == "nil": fileArg = ""
     var renameAs = $args["--as"]
     if renameAs == "nil": renameAs = ""
+    var templateName = $args["--template"]
+    if templateName == "nil": templateName = ""
+    var vendorName = $args["--vendor"]
+    if vendorName == "nil": vendorName = ""
     var scriptPath = ""
+
+    # Resolve framework's res/templates/ directory — checked in order:
+    #   1. cwd/res/templates/ (running from cloned framework repo)
+    #   2. <bin>/res/templates/ (installed claw with res alongside binary)
+    #   3. <bin>/../res/templates/ (installed claw with res one level up)
+    # Returns empty string if no template directory found.
+    proc resolveTemplatesDir(): string =
+      for candidate in [
+        getCurrentDir() / "res" / "templates",
+        getAppDir() / "res" / "templates",
+        getAppDir().parentDir() / "res" / "templates",
+      ]:
+        if dirExists(candidate): return candidate
+      return ""
+
+    proc listAvailableTemplates(root: string): seq[string] =
+      if root.len == 0 or not dirExists(root): return
+      for kind, path in walkDir(root):
+        if kind != pcDir: continue
+        let name = lastPathPart(path)
+        if name.startsWith("."): continue
+        if fileExists(path / "BASE.nims"): result.add(name)
+
+    # ── --template=<name>: directory-template path ──
+    # Treats `<framework>/res/templates/<name>/` as a complete bootstrap
+    # package: copy it to the new service dir, then run the (now-copied)
+    # BASE.nims as the build script. Differs from `claw:<src>` (which
+    # only copies BASE.nims) because L1 domain templates include
+    # competencies/, skills/, vendor/ trees that need to land in the
+    # service alongside the BASE.nims.
+    if templateName.len > 0:
+      if fileArg.len > 0:
+        echo "Error: --template and <file> are mutually exclusive"
+        echo "       (--template uses the framework's bundled template; <file> uses your local .nims)"
+        quit(1)
+      if renameAs.len == 0:
+        echo "Error: --as=<name> is required when creating from a template"
+        echo "       (otherwise the new company would collide with the template's placeholder org name)"
+        quit(1)
+      let templatesRoot = resolveTemplatesDir()
+      if templatesRoot.len == 0:
+        echo "Error: no res/templates/ directory found alongside the claw binary."
+        echo "       This indicates a packaging issue with your claw install."
+        quit(1)
+      let templateDir = templatesRoot / templateName
+      if not dirExists(templateDir):
+        let avail = listAvailableTemplates(templatesRoot)
+        echo "Error: template '" & templateName & "' not found at " & templateDir
+        if avail.len > 0:
+          echo "       Available: " & avail.join(", ")
+        else:
+          echo "       No templates installed."
+        quit(1)
+      let tplBase = templateDir / "BASE.nims"
+      if not fileExists(tplBase):
+        echo "Error: template at " & templateDir & " is missing BASE.nims — not a valid template."
+        quit(1)
+      # Refuse to clobber an existing service dir.
+      let targetDir = getHomeDir() / ".nimclaw-" & renameAs
+      if dirExists(targetDir):
+        echo "Error: " & targetDir & " already exists. Pick a different --as name,"
+        echo "       or remove the existing company first."
+        quit(1)
+      echo "→ Copying template '" & templateName & "' to " & targetDir
+      try:
+        copyDir(templateDir, targetDir)
+      except CatchableError as e:
+        echo "Error: copy failed: " & e.msg
+        quit(1)
+      # The placeholder org name in the template's BASE.nims gets rewritten
+      # by the --as= path below. Treat the copied BASE.nims as the script.
+      scriptPath = targetDir / "BASE.nims"
+      if vendorName.len > 0:
+        # Confirm the vendor directory exists in the freshly-copied template.
+        let vendorDir = targetDir / "vendor" / vendorName
+        if not dirExists(vendorDir):
+          echo "Warning: vendor '" & vendorName & "' not found at " & vendorDir
+          echo "         The template's BASE.nims won't auto-enable it."
+          echo "         Available vendors: " &
+            (block:
+              var names: seq[string]
+              for kind, path in walkDir(targetDir / "vendor"):
+                if kind == pcDir:
+                  let n = lastPathPart(path)
+                  if n != "schemas" and n != "examples" and not n.startsWith("_") and not n.startsWith("."):
+                    names.add(n)
+              names).join(", ")
+        else:
+          echo "  + Vendor '" & vendorName & "' present at " & vendorDir
+          echo "    Note: edit BASE.nims to add `skill \"vendor/" & vendorName &
+               "\"` if it isn't already declared."
 
     # Detect a git URL as the `<file>` arg — clone first, then treat the
     # cloned BASE.nims as the script. Supports github:owner/repo shortcuts.
@@ -623,12 +773,16 @@ when isMainModule:
         echo "Error: file not found: " & fileArg
         quit(1)
       scriptPath = expandFilename(fileArg)
-    else:
+    elif scriptPath.len == 0:
+      # No fileArg, no --template set → fall back to active company's BASE.nims.
       let defaultPath = getNimClawDir() / "BASE.nims"
       if not fileExists(defaultPath):
         echo "Error: no file argument and no default config at " & defaultPath
         echo ""
-        echo "First time? Run with a template path:"
+        echo "First time? Run with a template:"
+        echo "  claw create --template solar-power-station --as=MyCompany"
+        echo ""
+        echo "Or with a local .nims file:"
         echo "  claw create /path/to/MyCompany.nims"
         echo ""
         echo "Claw will copy it to <companyDir>/BASE.nims so you can edit"
