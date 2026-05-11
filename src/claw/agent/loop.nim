@@ -14,6 +14,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
+import ../tools/fleet/fleet_adapter
 import ../tools/file/[read_file, write_file, list_dir, edit_file, append_file]
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
@@ -2927,6 +2928,23 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newModelListTool(), ["diagnostics", "providers", "models"],
             "list available llm models capabilities context pricing")
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
+
+  # Fleet adapter — vendor-agnostic facade for multi-vendor solar deployments.
+  # Registers five fleet_* virtual tools that fan out across whichever
+  # mcp_<vendor>_* tools were registered when the gateway loaded each
+  # vendor MCP server. Default off; the solar-power-station template's
+  # fleet-adapter skill declares them in requires.tools so agents that
+  # opt in receive the grant.
+  regTagged(newFleetPlantListTool(toolsRegistry),
+    ["fleet", "solar", "domain"], "list plants across all installed vendors")
+  regTagged(newFleetPlantNowTool(toolsRegistry),
+    ["fleet", "solar", "domain"], "real-time state for one plant")
+  regTagged(newFleetPlantHistoryTool(toolsRegistry),
+    ["fleet", "solar", "domain"], "daily yield history for one plant")
+  regTagged(newFleetInverterListTool(toolsRegistry),
+    ["fleet", "solar", "domain"], "list inverters under one plant")
+  regTagged(newFleetInverterAlarmsTool(toolsRegistry),
+    ["fleet", "solar", "domain"], "active alarms on one plant")
 
   let installer = newSkillInstaller(officeDir)
 

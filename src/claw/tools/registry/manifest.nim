@@ -237,6 +237,45 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["admin", "mcp", "skills"], domain = "mcp",
        default = false, heartbeatSafe = false, category = "mcp"),
 
+  # Fleet adapter — vendor-agnostic facade for multi-vendor solar deployments.
+  # Implementations in `tools/fleet/fleet_adapter.nim`. Each tool scans the
+  # runtime registry for `mcp_<vendor>_<contract-tool>` matches, fans out
+  # for list operations, and routes per-plant operations via an in-memory
+  # plant→vendor cache. Used by the solar-power-station template's workflow
+  # skills (daily-yield-sync, monthly-report, alarm-response). Default off;
+  # the template's `fleet-adapter` skill declares them in requires.tools so
+  # agents that opt in receive the grant.
+  spec(name = "fleet_plant_list",
+       description = "List all plants across every installed inverter vendor",
+       tags = @["fleet", "solar", "domain"],
+       searchKeywords = @["plant list", "fleet", "all plants"],
+       domain = "fleet",
+       default = false, heartbeatSafe = false, category = "fleet"),
+  spec(name = "fleet_plant_now",
+       description = "Real-time state for one plant (current power, today yield, status)",
+       tags = @["fleet", "solar", "domain"],
+       searchKeywords = @["plant now", "current power", "real-time"],
+       domain = "fleet",
+       default = false, heartbeatSafe = false, category = "fleet"),
+  spec(name = "fleet_plant_history",
+       description = "Daily yield history for one plant over a date range",
+       tags = @["fleet", "solar", "domain"],
+       searchKeywords = @["plant history", "yield history", "kwh history"],
+       domain = "fleet",
+       default = false, heartbeatSafe = false, category = "fleet"),
+  spec(name = "fleet_inverter_list",
+       description = "List inverters under one plant",
+       tags = @["fleet", "solar", "domain"],
+       searchKeywords = @["inverter list", "equipment"],
+       domain = "fleet",
+       default = false, heartbeatSafe = false, category = "fleet"),
+  spec(name = "fleet_inverter_alarms",
+       description = "Active alarms on inverters under one plant",
+       tags = @["fleet", "solar", "domain"],
+       searchKeywords = @["alarm list", "alarms", "active faults"],
+       domain = "fleet",
+       default = false, heartbeatSafe = false, category = "fleet"),
+
   # Skill management (heavy — install mutates system; learn requires workstation)
   spec(name = "skill",
        description = "skill management (action=list|load|unload session skills, install plugins, learn workstation skills)",

@@ -57,15 +57,17 @@ competency "technical-communication":
 competency "knowledge-keeper":
   description "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Heartbeat duties auto-snapshot the wiki and surface promotion candidates."
 
+# ── Fleet adapter (L1 — vendor-neutral facade) ───────────────
+# Exposes five `fleet_*` tools that fan out across installed
+# inverter vendors and route per-plant queries automatically.
+# Agents that practice solar-operator or solar-frontdesk should
+# `uses "fleet-adapter"` to acquire these tools.
+skill "fleet-adapter"
+
 # ── Workflow skills (L1, ship with this template) ───────────
 # Four vendor-neutral workflows over the fleet_* tools. All are
-# `loading: lazy` — they stub in the agents' catalog by default
-# and inline only when explicitly loaded via `skill action=load`.
-#
-# These reference fleet_plant_list, fleet_plant_history,
-# fleet_inverter_alarms — provided by the fleet-adapter skill
-# (which ships in a follow-up commit). Until the fleet adapter
-# lands, these workflows are catalog-visible but won't function.
+# `loading: lazy` — they stub in agents' catalog by default and
+# inline only when explicitly loaded via `skill action=load`.
 skill "daily-yield-sync"
 skill "monthly-report"
 skill "customer-onboarding"
@@ -105,6 +107,7 @@ agent "Frontdesk":
   if a reading isn't in the graph, I ask or defer.
   """
   maxDepth 8
+  uses "fleet-adapter"
   # Frontdesk practices customer-facing disciplines.
   practices "solar-frontdesk", "technical-communication"
 
@@ -123,6 +126,7 @@ agent "Analyst":
   evidence. I prefer the explicit playbook over the implicit guess.
   """
   maxDepth 10
+  uses "fleet-adapter"
   # Analyst practices the analytical disciplines.
   practices "solar-operator", "data-analyst",
             "technical-communication", "knowledge-keeper"
