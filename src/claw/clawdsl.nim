@@ -1174,7 +1174,7 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     if a.role != "":
       entry["role"] = %a.role
     # Effective skills: uses ∪ practices.skills ∪ team.competencies.skills,
-    # with built-in tool names filtered out. Fallback to raw `uses` when
+    # with framework tool names filtered out. Fallback to raw `uses` when
     # the resolver hasn't run yet (older code paths).
     let effSkills = if a.resolvedSkills.len > 0: a.resolvedSkills else: a.uses
     if effSkills.len > 0:
@@ -2098,7 +2098,7 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
           break
       if not found:
         if skillName in builtinTools:
-          # It's a built-in tool referenced as a skill — grant the tool directly.
+          # It's a framework tool referenced as a skill — grant the tool directly.
           tools.add(skillName)
         else:
           unknown.add(skillName)
@@ -2130,7 +2130,7 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
       if e notin uniqEnvs: uniqEnvs.add(e)
 
     # Persist to spec — effective skill list is the union AFTER filtering out
-    # built-in tool names (which get granted as tools, not listed as skills).
+    # framework tool names (which get granted as tools, not listed as skills).
     var resolvedSkills: seq[string]
     for sk in effectiveSkills:
       if sk notin builtinTools and sk notin resolvedSkills:

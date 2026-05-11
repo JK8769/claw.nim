@@ -1,7 +1,7 @@
 ---
 name: tools
-version: 1.0.0
-description: "Manage your capability surface: discover hidden tools by intent, delegate to peers, forge new MCP tools when nothing fits, capture reusable workflows as skills. The umbrella skill for everything tool-related."
+version: 1.1.0
+description: "Manage your capability surface: discover hidden tools by intent, delegate to peers, forge new MCP tools when nothing fits, capture reusable workflows as skills. Teaches the four-layer architecture (tools / skills / competencies / heart) and the elementary-primitives-plus-skill-workflows principle."
 operations:
   - find
   - delegate
@@ -32,6 +32,51 @@ This skill is about the agent's relationship to its tools. Five faces:
 - **What's worth saving** — capturing workflows as skills
 
 The mistake to avoid: bouncing through random tool calls or burning iterations on guesses. Every "I need to do X" starts with a deliberate decision tree.
+
+## The four layers — push complexity down
+
+**Atomicity at the framework layer demands a composite; everything else defaults to the layer below.**
+
+| Layer | Unit | What it is | Examples |
+|---|---|---|---|
+| **1. Tools** | framework primitive | Atomic, trust-gated, universal. Compiled into `claw` or served by an MCP server. | `read_file`, `query_graph`, `create_customer_invite`, `exec` |
+| **2. Skills** | `SKILL.md` (+ optional MCP server) | Workflow that composes tools | `tools` (this skill), `customer-onboarding`, `daily-yield-sync` |
+| **3. Competencies** | `COMPETENCY.json` + `HANDBOOK.md` | Role discipline: bundles skills + procedural rules + periodic duties | `solar-operator`, `technical-communication` |
+| **4. Heart** | `<office>/heart/HEART.md` | Per-agent cares — what THIS agent is tracking, worried about, wanting to improve | (per-agent personal state) |
+
+Three crisp tests when deciding where a capability belongs:
+
+- **"Is this just sequencing safe primitives?"** → Skill (layer 2). Most "complex tools" are workflows in disguise.
+- **"Is this a discipline shared across multiple agents in this role?"** → Competency (layer 3).
+- **"Is this 'me' — what I personally care about across all my work?"** → Heart (layer 4). Not a competency; not a skill; the agent's own state of mind.
+
+### When to forge a framework tool vs. author a skill
+
+Framework tool (layer 1) when **any** of these hold:
+- Operation needs atomicity (identity mint, transactional state change)
+- Trust-tier gating across compound effects (SuperAdmin-only)
+- Replay-protected mutation (one-shot codes, unique IDs)
+- Pure computation primitive or hardware/API wrapper with no workflow
+
+Otherwise — **author a skill**. If the "complex tool" you're tempted to forge is really a sequence of safe primitives, the skill becomes the documented workflow; the primitives stay tiny.
+
+### Layer 1 floor
+
+Every agent gets a universal default set (~25 framework tools the manifest marks `default = true`) — file ops, comm, memory, basic web, scheduling. This is the **agent floor** — the minimum required to BE an agent. Skills should NOT re-declare these in `requires.tools`; list only the opt-in tools the skill actually needs that aren't already in the default set.
+
+### Vocabulary
+
+| Canonical term | Meaning |
+|---|---|
+| **Framework tool** | Layer 1, compiled into `claw`, manifest entry |
+| **MCP tool** | Layer 1 via a separately-compiled MCP server |
+| **Foundation skill** | Layer 2, Tier 1 — ships with framework (`res/foundation/`) |
+| **Company skill** | Layer 2, Tier 2 — declared via ClawDSL per company |
+| **Workstation skill** | Layer 2, Tier 3 — agent-authored at runtime |
+| **Competency** | Layer 3, role discipline (skills + handbook + duties) |
+| **Heart** | Layer 4, per-agent personal state |
+
+The decision tree below (memory → active → find_tools → delegate → forge → learn) is one specific application of this architecture — discovering and acquiring capabilities. The same layering applies when you're deciding where to put new knowledge.
 
 ## The decision tree, in order
 

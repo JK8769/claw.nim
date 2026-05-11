@@ -1,4 +1,4 @@
-import std/[os, strutils, sequtils, json, options, sets]
+import std/[os, strutils, sequtils, json, options, sets, algorithm]
 import openclaw_compat, skill_types
 export skill_types
 import ../logger
@@ -337,6 +337,21 @@ proc loadSkillsForContext*(sl: SkillsLoader, skillNames: seq[string]): string =
   return parts.join("\n\n---\n\n")
 
 
+proc tierOrder(source: string): int =
+  ## Maps the `source` field to a tier-priority for prompt-display
+  ## ordering. Foundation (Tier 1) is universal disciplines and surfaces
+  ## first so the agent sees the broadest-scoped skills at the top of
+  ## the catalog; company (Tier 2) next; workstation (Tier 3) last
+  ## because it's per-agent and the agent already knows what they
+  ## authored. The legacy variants sort with their canonical tier.
+  case source
+  of "foundation", "foundation-legacy": 1
+  of "company", "company-legacy": 2
+  of "workstation": 3
+  of "workspace": 4
+  of "openclaw": 5
+  else: 99
+
 proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
                          currentChannel: string = ""): string =
   ## Build an XML summary of available skills.
@@ -356,6 +371,13 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
   ##   - When `currentChannel` is empty (e.g. the CLI introspection
   ##     path with no active message), all skills are emitted in
   ##     discovery order — same behavior as before this change.
+  ##
+  ## Within each pass, skills are sorted by tier (foundation → company
+  ## → workstation → workspace → openclaw) so the agent's prompt
+  ## surfaces the four-layer architecture visibly — Tier 1 universal
+  ## disciplines (e.g. `tools`) appear first, then per-company workflows,
+  ## then the agent's own authored skills. Matches the 4-layer principle
+  ## taught by the `tools` foundation skill.
   let skills = sl.listSkills()
   if skills.len == 0: return ""
 
@@ -392,6 +414,27 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
       lines.add("    <requires_tools>" & s.requires_tools.join(", ") & "</requires_tools>")
     lines.add("  </skill>")
 
+  # Stable sort by tier within each pass — preserves discovery order
+  # within a tier (matters for shadowing semantics) while grouping
+  # foundation/company/workstation visually.
+  proc emitGroup(group: seq[SkillInfo], lines: var seq[string],
+                  activeForChannel: bool) =
+    var sorted = group
+    sorted.sort(proc (a, b: SkillInfo): int = cmp(tierOrder(a.source), tierOrder(b.source)))
+    var lastTier = -1
+    for s in sorted:
+      let t = tierOrder(s.source)
+      if t != lastTier:
+        case t
+        of 1: lines.add("  <!-- Foundation (Tier 1) — universal disciplines -->")
+        of 2: lines.add("  <!-- Company (Tier 2) — this company's workflows -->")
+        of 3: lines.add("  <!-- Workstation (Tier 3) — your own authored -->")
+        of 4: lines.add("  <!-- Workspace — shared cross-office -->")
+        of 5: lines.add("  <!-- OpenClaw — third-party plugins -->")
+        else: discard
+        lastTier = t
+      s.emitOne(lines, activeForChannel = activeForChannel)
+
   var lines = @["<skills>"]
   let ch = currentChannel
   # Treat "social" as introspection-only (the CLI `claw agent prompt`
@@ -401,23 +444,29 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
   let realChannel = ch.len > 0 and ch.toLowerAscii() != "social"
   if realChannel:
     # Pass 1: skills explicitly tagged for the current channel.
+    var channelTagged: seq[SkillInfo]
     for s in skills:
       if not s.isAllowed: continue
       if not s.matchesChannel(ch): continue
-      s.emitOne(lines, activeForChannel = true)
+      channelTagged.add(s)
+    emitGroup(channelTagged, lines, activeForChannel = true)
     # Pass 2: channel-agnostic skills (no channels declaration).
     # Skills tagged for OTHER channels are skipped — they're noise on
     # this delivery surface.
+    var agnostic: seq[SkillInfo]
     for s in skills:
       if not s.isAllowed: continue
-      if s.channels.len > 0: continue   # tagged → already in pass 1 or filtered
-      s.emitOne(lines, activeForChannel = false)
+      if s.channels.len > 0: continue
+      agnostic.add(s)
+    emitGroup(agnostic, lines, activeForChannel = false)
   else:
     # Introspection / system task / no real channel: emit all allowed
-    # skills in discovery order, no filtering.
+    # skills, sorted by tier so the layering is visible.
+    var all: seq[SkillInfo]
     for s in skills:
       if not s.isAllowed: continue
-      s.emitOne(lines, activeForChannel = false)
+      all.add(s)
+    emitGroup(all, lines, activeForChannel = false)
   lines.add("</skills>")
   return lines.join("\n")
 
