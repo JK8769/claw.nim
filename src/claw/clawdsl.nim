@@ -1767,6 +1767,16 @@ proc writeEnvTemplate(spec: ClawSpec, envPath: string) =
       addKey(p.apiKey[2..^2])
   for a in spec.agents:
     for e in a.resolvedEnvs: addKey(e)
+  # Feishu app secrets — one env var per declared app. The framework's
+  # feishu channel reads these at boot to auto-init lark-cli without
+  # requiring a separate `claw channel auth feishu` step. Convention:
+  # FEISHU_APP_SECRET__<app_id>  (also matched against uppercase form
+  # at lookup time). See src/claw/channels/feishu.nim::start.
+  for ch in spec.channels:
+    if ch.kind != "feishu": continue
+    for f in ch.fields:
+      if f.key == "app":
+        addKey("FEISHU_APP_SECRET__" & f.val)
 
   if not fileExists(envPath):
     # First-time generation

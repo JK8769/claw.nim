@@ -1183,11 +1183,41 @@ method start*(c: FeishuChannel) {.async.} =
       infoCF("feishu", "Feishu app disabled", {"app_id": app.appID}.toTable)
       continue
 
-    # lark-cli config must exist (created by: nimclaw channel add feishu)
+    # lark-cli config must exist. Two ways to bootstrap:
+    #   (a) operator ran `claw channel auth feishu <APP_ID> <SECRET>` once
+    #       (manual path; lark-cli config lives at
+    #        <companyDir>/channels/feishu/lark-cli-<APP_ID>/config.json)
+    #   (b) auto-bootstrap from env var `FEISHU_APP_SECRET__<APP_ID>` (or
+    #       uppercase variant) in this deployment's .env. Makes migrations
+    #       turnkey: copy .env to a new deployment, restart gateway, channels
+    #       come up automatically. Saves a manual `channel auth` step per app.
     let configDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & app.appID
     if not fileExists(configDir / "config.json"):
-      errorCF("feishu", "lark-cli not configured for app. Run: nimclaw channel add feishu <APP_ID> <APP_SECRET>", {"app_id": app.appID}.toTable)
-      continue
+      # Try env-var bootstrap. Look up exact-case first, then uppercase
+      # variant (some operators uppercase everything in .env per shell
+      # convention; either should work).
+      var secret = getEnv("FEISHU_APP_SECRET__" & app.appID, "")
+      if secret.len == 0:
+        secret = getEnv("FEISHU_APP_SECRET__" & app.appID.toUpperAscii(), "")
+      if secret.len > 0:
+        infoCF("feishu", "Bootstrapping lark-cli from env var FEISHU_APP_SECRET__<app_id>",
+               {"app_id": app.appID}.toTable)
+        if initLarkCliConfig(c.larkCliBin, app.appID, secret):
+          # initLarkCliConfig logged success; continue with channel start
+          discard
+        else:
+          errorCF("feishu", "Env-var-driven lark-cli init failed; check secret value",
+                  {"app_id": app.appID}.toTable)
+          continue
+      else:
+        errorCF("feishu", "lark-cli not configured for app. Either: run `claw channel auth feishu <APP_ID> <APP_SECRET>`, OR set `FEISHU_APP_SECRET__" & app.appID & "=<secret>` in .env and restart",
+                {"app_id": app.appID}.toTable)
+        continue
+      # After bootstrap, the config should now exist
+      if not fileExists(configDir / "config.json"):
+        errorCF("feishu", "lark-cli config still missing after env-var bootstrap; init may have silently failed",
+                {"app_id": app.appID}.toTable)
+        continue
 
     # Kill any orphan subscriber from a previous gateway that didn't
     # terminate its lark-cli child (SIGTERM races, hung joinThread).
