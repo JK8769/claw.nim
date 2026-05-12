@@ -22,6 +22,7 @@ import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
 import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, pushover]
 import ../tools/web/[web_unified, browser_unified, playwright]
+import ../tools/search_unified
 import ../tools/dev/git
 import ../tools/sched/cron
 import ../tools/admin/[config_tools, feishu_add_app]
@@ -2907,7 +2908,18 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newWorkstationTool(officeDir), ["agent", "core", "workstation"], "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds")
 
   # --- Web tools ---
-  regTagged(newWebTool(expandEnv(cfg.tools.web.search.api_key), cfg.tools.web.search.max_results, 50000, toolCurly, createMaster(), createMaster()), ["web", "search", "http", "data"], "HTTP-ish data fetching: search engines, page extraction, raw HTTP requests (action=search|fetch|request)")
+  # Internet stack — sea / ship / navigator
+  #   web    = the sea (HTTP fetch + raw request)
+  #   browser= the ship (interactive Chromium)  — registered elsewhere via browser_unified
+  #   search = the navigator (search engines: Brave w/ DDG fallback)
+  regTagged(newWebTool(50000, toolCurly, createMaster()),
+            ["web", "http", "data"],
+            "HTTP fetching: page extraction and raw HTTP requests (action=fetch|request)")
+  regTagged(newSearchTool(expandEnv(cfg.tools.web.search.api_key),
+                          cfg.tools.web.search.max_results,
+                          toolCurly, createMaster()),
+            ["web", "search", "discovery", "core"],
+            "search the web — find pages by query, returns title/url/snippet")
 
   # --- Dev tools ---
   regTagged(newGitTool(workspace, cfg.agents.security.allowed_paths, officeDir), ["git", "devops", "vcs"], "git version control operations")

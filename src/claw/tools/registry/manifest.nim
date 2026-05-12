@@ -112,12 +112,29 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["agent", "automation"], domain = "agent",
        default = true, heartbeatSafe = false, category = "self-management"),
 
-  # Web
+  # Internet stack — sea / ship / navigator
+  #   web    = the sea (HTTP fetch/raw request)
+  #   browser= the ship (Playwright/Chromium)
+  #   search = the navigator (Brave/DuckDuckGo)
   spec(name = "web",
-       description = "HTTP-ish data fetching (action=search|fetch|request); SSRF-protected",
-       tags = @["web", "search", "http", "data"],
-       searchKeywords = @["fetch", "download", "url", "http", "search", "google",
-                           "lookup", "api", "rest", "post", "get"],
+       description = "HTTP fetching (action=fetch|request); SSRF-protected. " &
+                     "The 'sea' of the internet trio — for raw HTTP. " &
+                     "For search use the standalone `search` tool; " &
+                     "for interactive pages use `browser`.",
+       tags = @["web", "http", "data"],
+       searchKeywords = @["fetch", "download", "url", "http",
+                           "api", "rest", "post", "get"],
+       domain = "web",
+       default = true, heartbeatSafe = false, category = "web"),
+  spec(name = "search",
+       description = "Search the web — find pages by query, returns " &
+                     "title/url/snippet for each. The 'navigator' of the " &
+                     "internet trio. Brave when BRAVE_API_KEY set; " &
+                     "DuckDuckGo fallback.",
+       tags = @["web", "search", "discovery", "core"],
+       searchKeywords = @["search", "query", "google", "bing", "duckduckgo",
+                           "brave", "ddg", "find on web", "lookup",
+                           "research"],
        domain = "web",
        default = true, heartbeatSafe = false, category = "web"),
   spec(name = "browser",

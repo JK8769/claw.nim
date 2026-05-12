@@ -1,12 +1,11 @@
-## web — single tool for all HTTP-ish data fetching.
+## web — single tool for HTTP-ish data fetching (the "sea").
 ##
-## Replaces three split tools: web_search, web_fetch, http_request.
+## Sea / ship / navigator for the internet stack:
+##   web    (the sea)       — HTTP-ish data fetching: GET URLs, raw requests
+##   browser(the ship)      — stateful Chromium for JS/login/interaction
+##   search (the navigator) — discover pages via search engines
 ##
 ## Actions:
-##
-##   search   — Query the configured search provider (Brave if
-##              BRAVE_API_KEY set, DuckDuckGo otherwise). Returns
-##              titles, URLs, snippets. (query, count)
 ##
 ##   fetch    — GET a URL and extract readable text from HTML/JSON.
 ##              Convenience for web pages. (url, maxChars)
@@ -14,6 +13,11 @@
 ##   request  — Lower-level HTTP client. Supports any method, custom
 ##              headers, request body. SSRF-protected (blocks
 ##              local/private hosts). (url, method, headers, body)
+##
+## For search engine queries use the standalone `search` tool —
+## extracted out of `web` so the action surface is purely transport.
+## For JS-rendered pages, login flows, or multi-step interaction,
+## use `browser` instead (heavier, stateful).
 ##
 ## Internally delegates to the existing implementations from web.nim
 ## and http_request.nim — this is a routing facade, not a rewrite.
@@ -28,8 +32,9 @@ import http_request
 
 const ToolSpec* = spec(
   name = "web",
-  description = "HTTP-ish data fetching (action=search|fetch|request); SSRF-protected",
-  tags = @["web", "search", "http", "data"],
+  description = "HTTP fetching (action=fetch|request); SSRF-protected. " &
+                "For search engines use the standalone `search` tool.",
+  tags = @["web", "http", "data"],
   domain = "web",
   default = true,
   heartbeatSafe = false,
@@ -38,33 +43,30 @@ const ToolSpec* = spec(
 
 type
   WebTool* = ref object of Tool
-    searchTool: WebSearchTool
     fetchTool: WebFetchTool
     httpTool: HttpRequestTool
 
-proc newWebTool*(apiKey: string, maxResults: int, maxChars: int,
-                 toolCurly: Curly, master1: sink Master,
-                 master2: sink Master): WebTool =
+proc newWebTool*(maxChars: int, toolCurly: Curly, master: sink Master): WebTool =
+  ## Constructor — no longer takes a search-engine apiKey or maxResults
+  ## (those moved to the standalone `search` tool's constructor).
   WebTool(
-    searchTool: newWebSearchTool(apiKey, maxResults, toolCurly, master1),
-    fetchTool: newWebFetchTool(maxChars, toolCurly, master2),
+    fetchTool: newWebFetchTool(maxChars, toolCurly, master),
     httpTool: newHttpRequestTool()
   )
 
 method name*(t: WebTool): string = "web"
 
 method description*(t: WebTool): string =
-  "HTTP-ish data fetching.\n\n" &
+  "HTTP fetching (the 'sea' of the internet trio).\n\n" &
   "Actions:\n" &
-  "  search   — query a search engine (Brave/DuckDuckGo). " &
-  "Requires query.\n" &
-  "  fetch    — GET a URL and extract readable text. " &
-  "Requires url.\n" &
+  "  fetch    — GET a URL and extract readable text. Requires url.\n" &
   "  request  — lower-level HTTP request with method/headers/body. " &
   "Requires url. Supports GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS. " &
   "SSRF-protected.\n\n" &
   "Use `fetch` for simple page reads, `request` when you need POST " &
-  "or custom headers (APIs)."
+  "or custom headers (APIs).\n\n" &
+  "For SEARCH ENGINE queries: use the standalone `search` tool.\n" &
+  "For JS-rendered/interactive pages: use `browser`."
 
 method parameters*(t: WebTool): Table[string, JsonNode] =
   {
@@ -72,17 +74,8 @@ method parameters*(t: WebTool): Table[string, JsonNode] =
     "properties": %*{
       "action": {
         "type": "string",
-        "enum": ["search", "fetch", "request"],
+        "enum": ["fetch", "request"],
         "description": "Operation to perform"
-      },
-      "query": {
-        "type": "string",
-        "description": "search only — search query"
-      },
-      "count": {
-        "type": "integer",
-        "description": "search only — number of results (1-10)",
-        "minimum": 1, "maximum": 10
       },
       "url": {
         "type": "string",
@@ -112,12 +105,15 @@ method parameters*(t: WebTool): Table[string, JsonNode] =
 
 method execute*(t: WebTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("action"):
-    return "Error: 'action' is required (search | fetch | request)"
+    return "Error: 'action' is required (fetch | request). " &
+           "For search engine queries use the standalone `search` tool."
   let action = args["action"].getStr()
   case action
-  of "search":  return await t.searchTool.execute(args)
   of "fetch":   return await t.fetchTool.execute(args)
   of "request": return await t.httpTool.execute(args)
+  of "search":
+    return "Error: `web action=search` was moved to the standalone " &
+           "`search` tool. Call `search query=...` instead."
   else:
     return "Error: Unknown action '" & action &
-           "'. Use: search | fetch | request"
+           "'. Use: fetch | request"
