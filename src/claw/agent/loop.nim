@@ -24,7 +24,10 @@ import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, push
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/dev/git
 import ../tools/sched/cron
-import ../tools/admin/[provider_auth, model_list, config_tools, feishu_add_app]
+import ../tools/admin/[config_tools, feishu_add_app]
+import ../tools/provider_unified
+import ../tools/model_unified
+import ../tools/capability_unified
 import ../tools/social_unified
 import ../tools/visual/[screenshot, image_info, image_analyze]
 import ../tools/hardware/hardware_unified
@@ -2954,20 +2957,31 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # Only exposed to agents with workstation:true — see the auto-add below near the ClawDSL scope block.
   # Skill management — install registry/GitHub skills + author workstation Tier-3 skills (skill_unified)
   regTagged(newSetApiKeyTool(getConfigPath()), ["admin", "config"], "configure API keys and secrets")
-  # provider_auth: read-only verify of the company's stored API keys. Never
-  # exposes the key value to the LLM; never writes .env (that's CLI-only).
-  regTagged(newProviderAuthTool(), ["admin", "diagnostics", "providers"],
-            "verify provider api key deepseek openai anthropic reachable")
-  # SuperAdmin-only: chat-driven Feishu app registration. Lets the
-  # SuperAdmin add new apps without dropping to `claw channel auth`.
+  # Provider / model / capability — the sea / ship / navigator trio for
+  # the LLM stack. Replaces provider_auth + model_list with three unified
+  # tools sharing the framework catalog as substrate:
+  #   provider   = LLM accounts (sea)   — list, verify, info
+  #   model      = LLM models (ship)    — list, info, current
+  #   capability = capability discovery (navigator) — list, find, has
+  # `capability action=has` is heartbeat-safe and designed for framework-
+  # internal feature gating (e.g., "does this agent's current model have
+  # vision before we serve an image?").
+  regTagged(newProviderTool(),
+            ["admin", "providers", "diagnostics", "core"],
+            "list verify info LLM provider api key endpoint")
+  regTagged(newModelTool(),
+            ["diagnostics", "providers", "models", "core"],
+            "list info current LLM model capabilities context pricing")
+  regTagged(newCapabilityTool(),
+            ["diagnostics", "models", "capability", "core"],
+            "find list has model capability tag vision tool-use reasoning")
+  # SuperAdmin-only: chat-driven Feishu app registration.
   regTagged(newFeishuAddAppTool(), ["admin", "channels", "feishu"],
             "register new feishu lark app id secret route agent")
   # (Customer onboarding + my-customers + graph-query + update-contact +
   # redeem-invite all collapsed into the unified `social` tool, registered
   # below near the contextBuilder creation site since `social` needs the
   # ContextBuilder for its guest-rename path.)
-  regTagged(newModelListTool(), ["diagnostics", "providers", "models"],
-            "list available llm models capabilities context pricing")
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
 
   # Fleet adapter — vendor-agnostic facade for multi-vendor solar deployments.

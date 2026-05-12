@@ -532,9 +532,10 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
 
   # Model identity: when the agent is asked "what model are you running
   # on?", the system prompt is the ground truth. Without this line,
-  # agents fall back to calling `model_list` (which describes the
+  # agents fall back to calling `model action=list` (which describes the
   # company's registry, not the driver of the current request) and
-  # confidently report the wrong thing.
+  # confidently report the wrong thing. `model action=current` is the
+  # right tool to ask if the system prompt's `## Driver` line is missing.
   var modelLine = ""
   if agentName.len > 0:
     for na in cb.agentsConfig:

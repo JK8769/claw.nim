@@ -181,11 +181,23 @@ proc effectiveProviders*(): seq[ProviderDef] =
   ## readability (the name reads better than "builtinProviders" at usage).
   builtinProviders()
 
+proc normalizeName(s: string): string =
+  ## Provider name lookup normalization: lowercase + space→hyphen.
+  ## Lets `"opencode-go"` (slug form, as operators commonly type) match
+  ## `"OpenCode Go"` (display form, as it appears in providers.json).
+  ## Same rule the DSL uses (see `normalizeProviderKey` in clawdsl.nim).
+  result = newStringOfCap(s.len)
+  for c in s:
+    if c == ' ': result.add('-')
+    else: result.add(c.toLowerAscii())
+
 proc findProvider*(name: string): (ProviderDef, bool) =
-  ## Case-insensitive lookup.
-  let lc = name.toLowerAscii()
+  ## Case-insensitive lookup. Also normalizes spaces↔hyphens so the
+  ## same provider can be addressed as `OpenCode Go` (display name in
+  ## providers.json) or `opencode-go` (the slug operators commonly type).
+  let lc = normalizeName(name)
   for p in effectiveProviders():
-    if p.name.toLowerAscii() == lc: return (p, true)
+    if normalizeName(p.name) == lc: return (p, true)
   return (ProviderDef(), false)
 
 proc providerNames*(): seq[string] =

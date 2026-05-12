@@ -182,7 +182,7 @@ proc verifyProviderKey*(def: ProviderDef, apiKey: string): auth.VerifyResult =
   ## voUnknown (e.g. 404 — some provider tiers don't expose /models), fall back
   ## to a minimal chat-completion probe with a model from the shipped catalog.
   ## Every caller (CLI auth, `provider list --verify`, the agent's
-  ## provider_auth tool) gets the same behavior this way.
+  ## `provider action=verify` tool) gets the same behavior this way.
   result = auth.verifyKey(def, apiKey)
   if result.outcome != auth.voUnknown: return
   let probe = probeModelFor(def.name)

@@ -1,7 +1,7 @@
 ## Provider key verification — hit the provider's models endpoint with the
 ## supplied API key and report outcome. Shared by the `claw provider auth`
-## CLI (runs at setup time) and the `provider_auth` agent tool (runs at
-## diagnose time).
+## CLI (runs at setup time) and the `provider action=verify` agent tool
+## (runs at diagnose time).
 ##
 ## Never logs or echoes the key. Error messages contain status codes + URLs
 ## but not the key.

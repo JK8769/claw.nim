@@ -2058,9 +2058,9 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
   echo "Resolving agent capabilities..."
 
   # Default toolset every agent gets.
-  # provider_auth and model_list are read-only diagnostics — neither exposes
+  # provider / model / capability are read-only diagnostics — none exposes
   # secrets nor writes .env (CLI-only). Useful for any agent to check LLM
-  # connectivity and enumerate available models (including live refresh).
+  # connectivity, enumerate models, and feature-gate by capability tags.
   # `cron` is universal because long-running async work (anygen tasks,
   # scheduled checks, customer follow-ups) needs deferred execution
   # without blocking the agent loop. Without cron in the default set,

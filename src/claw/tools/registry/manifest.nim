@@ -158,14 +158,35 @@ const AllTools*: seq[ToolSpec] = @[
                            "every", "interval", "fire at"],
        domain = "sched",
        default = true, heartbeatSafe = false, category = "scheduling"),
-  spec(name = "provider_auth",
-       description = "verify provider api key (deepseek, openai, anthropic, ...) reachable",
-       tags = @["admin", "diagnostics", "providers"], domain = "admin",
+  # LLM stack — sea/ship/navigator trio. Replaces provider_auth +
+  # model_list. `provider` shows accounts/endpoints, `model` shows
+  # specific LLMs, `capability` lets the framework or agent ask
+  # "which models can do X?" — used internally to feature-gate
+  # (e.g., vision check before serving an image).
+  spec(name = "provider",
+       description = "LLM providers (the 'sea'): list/verify/info (action=list|verify|info). Read-only — keys stay on disk.",
+       tags = @["admin", "providers", "diagnostics", "core"],
+       searchKeywords = @["llm", "api", "key", "endpoint", "openai",
+                           "anthropic", "deepseek", "ollama", "auth",
+                           "verify", "credentials"],
+       domain = "admin",
        default = true, heartbeatSafe = false, category = "admin"),
-  spec(name = "model_list",
-       description = "list available LLM models with capabilities, context, pricing",
-       tags = @["diagnostics", "providers", "models"], domain = "admin",
+  spec(name = "model",
+       description = "LLM models (the 'ship'): list/info/current (action=list|info|current). Includes capabilities, context, pricing; current = caller agent's primary.",
+       tags = @["diagnostics", "providers", "models", "core"],
+       searchKeywords = @["llm", "model", "vision", "tool-use", "reasoning",
+                           "context", "pricing", "capability", "vendor",
+                           "current", "primary"],
+       domain = "admin",
        default = true, heartbeatSafe = false, category = "admin"),
+  spec(name = "capability",
+       description = "find models by capability (action=list|find|has). Framework-callable feature gate (e.g. vision check before serving an image).",
+       tags = @["diagnostics", "models", "capability", "core"],
+       searchKeywords = @["tag", "feature", "vision", "tool-use",
+                           "reasoning", "thinking", "multilingual", "audio",
+                           "code", "supports", "gate"],
+       domain = "admin",
+       default = true, heartbeatSafe = true, category = "admin"),
 
   # Dev / utilities
   spec(name = "git", description = "structured git operations (status, diff, log, branch, commit, add, checkout, stash)",
