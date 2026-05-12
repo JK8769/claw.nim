@@ -3137,10 +3137,21 @@ Options:
             # An English-ish message gets English; Chinese gets
             # Chinese; unsupported scripts fall back to a bilingual
             # EN+ZH template (SunGrow's primary customer base).
+            #
+            # Deployment overrides: an env var `CLAW_REFUSAL_<LANG>` (e.g.
+            # `CLAW_REFUSAL_ZH`) replaces the framework default for that
+            # language. Useful during migrations / rebrands when the
+            # standard "send your invite code" wording needs context.
+            # Empty env value falls back to the default.
             let lang = detectLang(plainContent)
+            proc refusalFor(l: string): string =
+              let envOverride = getEnv("CLAW_REFUSAL_" & l.toUpperAscii(), "")
+              if envOverride.len > 0: return envOverride
+              if refusalByLang.hasKey(l): return refusalByLang[l]
+              return ""
             response =
-              if refusalByLang.hasKey(lang): refusalByLang[lang]
-              else: refusalByLang["en"] & "\n\n" & refusalByLang["zh"]
+              if refusalFor(lang).len > 0: refusalFor(lang)
+              else: refusalFor("en") & "\n\n" & refusalFor("zh")
 
         # Subscription gate — runs AFTER auth (we know who this nc:id
         # is) but BEFORE the agent loop (so no LLM tokens burned on
