@@ -90,8 +90,8 @@ cleanly, consider `spawn` per analytical step — pattern in
 
 1. **The framework owns work-visibility.** On supportive channels
    (Feishu when tech-comm mode is on), the framework auto-emits a
-   message after each `write_file`/`edit`/`spawn`/`shell` showing
-   the path + snippet, or the bash command + output. **Don't
+   message after each `file action=write`/`file action=edit`/`spawn`/`shell`
+   showing the path + snippet, or the bash command + output. **Don't
    paraphrase it.**
 2. **You own interpretation-checkpointing.** After tool clusters
    producing findings, send a `reply_progress` with what they MEAN

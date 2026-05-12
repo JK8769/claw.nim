@@ -15,7 +15,9 @@ import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
 import ../tools/fleet/fleet_adapter
-import ../tools/file/[read_file, write_file, list_dir, edit_file, append_file]
+import ../tools/fs_unified
+import ../tools/file_unified
+import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
 import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, pushover]
@@ -2874,10 +2876,22 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     if hint.len > 0: t.setSearchHint(hint)
     toolsRegistry.register(t)
 
-  # --- Core tools (filesystem, exec, clock) ---
-  regTagged(newReadFileTool(workspace, officeDir, allowedPaths), ["filesystem", "data", "core"], "read file contents from disk")
-  regTagged(newWriteFileTool(workspace, officeDir, allowedPaths), ["filesystem", "data", "core"], "write or create files on disk")
-  regTagged(newListDirTool(workspace, officeDir, allowedPaths), ["filesystem", "data", "core"], "list directory contents")
+  # --- Filesystem trio (sea / ship / navigator) + exec + clock ---
+  # fs     = structural ops (list, mkdir, delete, move, copy, info, exists)
+  # file   = single-file content I/O (read [offset/limit], write, edit, append)
+  # finder = discovery: files by glob pattern OR content by ripgrep search
+  # Replaces the prior read_file/write_file/list_dir/edit_file/append_file
+  # quintet. Path-safety (workspace-bounded, refuse `..` traversal) preserved
+  # verbatim through path_security helpers in each.
+  regTagged(newFsTool(workspace, officeDir, allowedPaths),
+            ["filesystem", "data", "core"],
+            "structural fs ops: list mkdir delete move copy exists info (action=list|exists|info|mkdir|delete|move|copy)")
+  regTagged(newFileTool(workspace, officeDir, allowedPaths),
+            ["filesystem", "data", "core"],
+            "single-file content I/O: read write edit append (action=read|write|edit|append)")
+  regTagged(newFinderTool(workspace, officeDir, allowedPaths),
+            ["filesystem", "search", "data", "core"],
+            "discover files and content: glob path search and ripgrep content search (action=files|content)")
   regTagged(newExecTool(workspace), ["system", "dev", "automation", "core"], "run shell commands and scripts")
   regTagged(newClockTool(), ["utility", "core"], "get current date and time")
   # The per-agent todo store lives at <officeDir>/notes/todo.jsonl;
@@ -2932,9 +2946,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # --- Tasks & orchestration (unified) ---
   regTagged(newNimclawTool(workspace), ["orchestration", "automation"], "assign claim submit tasks on the platform task board")
 
-  # --- Filesystem (edit, append) ---
-  regTagged(newEditFileTool(workspace), ["filesystem", "data", "core"], "edit files with find and replace")
-  regTagged(newAppendFileTool(workspace), ["filesystem", "data"], "append content to existing files")
+  # (edit + append moved into `file` tool above — actions edit/append)
 
   # --- Admin & config ---
   regTagged(newUnifiedMcpTool(toolsRegistry, officeDir), ["admin", "mcp", "skills"], "forge persist purge MCP tool servers skills")

@@ -19,7 +19,7 @@ requires:
   tools:
     - fleet_plant_list
     - fleet_plant_history
-    - read_file
+    - file        # action=read — for loading cached yield CSVs
     - reply
     - reply_progress
 ---

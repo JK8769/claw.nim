@@ -13,7 +13,7 @@ requires:
     - mcp
     - delegate
     - skill
-    - write_file
+    - file       # action=write — for capturing workflows as SKILL.md
     - shell
   deps:
     - package: nim
@@ -39,7 +39,7 @@ The mistake to avoid: bouncing through random tool calls or burning iterations o
 
 | Layer | Unit | What it is | Examples |
 |---|---|---|---|
-| **1. Tools** | framework primitive | Atomic, trust-gated, universal. Compiled into `claw` or served by an MCP server. | `read_file`, `social`, `mail`, `exec` |
+| **1. Tools** | framework primitive | Atomic, trust-gated, universal. Compiled into `claw` or served by an MCP server. | `file`, `social`, `mail`, `exec` |
 | **2. Skills** | `SKILL.md` (+ optional MCP server) | Workflow that composes tools | `tools` (this skill), `customer-onboarding`, `daily-yield-sync` |
 | **3. Competencies** | `COMPETENCY.json` + `HANDBOOK.md` | Role discipline: bundles skills + procedural rules + periodic duties | `solar-operator`, `technical-communication` |
 | **4. Heart** | `<office>/heart/HEART.md` | Per-agent cares — what THIS agent is tracking, worried about, wanting to improve | (per-agent personal state) |
@@ -82,7 +82,7 @@ The decision tree below (memory → active → find_tools → delegate → forge
 
 1. **Memory check.** `memory action=recall scope=all query="..."` — you might already remember how you did this. Cheapest, cited.
 2. **Active list.** Scan your current tool list. Don't search for what's already in front of you.
-3. **Hidden discovery.** `find_tools query="..."` — most tools are hidden by default to save context. Search by **INTENT**, not tool name; the framework's `searchKeywords` field maps task vocabulary to tool names (e.g., "remind" → `scheduler`, "modify" → `edit_file`).
+3. **Hidden discovery.** `find_tools query="..."` — most tools are hidden by default to save context. Search by **INTENT**, not tool name; the framework's `searchKeywords` field maps task vocabulary to tool names (e.g., "remind" → `scheduler`, "modify" → `file action=edit`).
 4. **Peer delegation.** `delegate agent=X prompt="..."` — if a peer agent has the capability and you don't, ask them. Cheaper than forging; respects trust boundaries.
 5. **Forge new.** `mcp action=forge ...` — create a new MCP tool. Heavy: writes Nim, compiles, registers a server, adds tokens to your context. Reserve for genuinely new capabilities you'll use ≥3 times.
 6. **Capture as skill.** `skill action=learn ...` — when an ad-hoc workflow has been useful 3+ times, the workflow itself deserves a SKILL.md. Forge creates *capability*; learn creates *discoverability*.
@@ -93,7 +93,7 @@ You don't always know the right tool name. Search by what you want to DO:
 
 | Intent | Try keywords | Likely match |
 |---|---|---|
-| modify a file | `modify`, `change`, `update`, `rewrite` | `edit_file` |
+| modify a file | `modify`, `change`, `update`, `rewrite` | `file action=edit` |
 | remember something | `remember`, `save`, `note`, `store` | `memory` action=store |
 | recall past events | `history`, `past`, `recall`, `earlier` | `memory` action=recall scope=all |
 | remind me later | `remind`, `later`, `timer`, `delay` | `scheduler` |

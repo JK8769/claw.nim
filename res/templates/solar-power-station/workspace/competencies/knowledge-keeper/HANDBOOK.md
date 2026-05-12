@@ -87,9 +87,9 @@ Three opportunities surface naturally:
 
 Standard file-system tools work:
 
-- `read_file knowledge/<topic>.md` — read a topic in full
-- `list_dir knowledge/` — list all topics
-- `exec command="grep -ri '<term>' knowledge/"` — search for a term
+- `file action=read path=knowledge/<topic>.md` — read a topic in full
+- `fs action=list path=knowledge/` — list all topics
+- `finder action=content pattern=<term> in=knowledge/**/*.md` — search for a term
 
 There's no auto-load into the system prompt. Recall is
 **on-demand**, when you sense a fact is relevant to the current

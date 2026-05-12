@@ -33,23 +33,33 @@ import ../spec
 # ── The canonical list of every framework-shipped tool ────────────
 
 const AllTools*: seq[ToolSpec] = @[
-  # Files
-  spec(name = "read_file", description = "read file contents from disk",
-       tags = @["filesystem", "data", "core"], domain = "file",
-       default = true, heartbeatSafe = true, category = "files"),
-  spec(name = "write_file", description = "write or create files on disk",
-       tags = @["filesystem", "data", "core"], domain = "file",
-       default = true, heartbeatSafe = false, category = "files"),
-  spec(name = "edit_file", description = "edit files with find and replace",
+  # Files — sea / ship / navigator trio. fs is the substrate (structural
+  # ops on the tree), file is the vessel (content I/O on one path), finder
+  # is the instrument (discovery by path glob or content grep). Replaces
+  # the read_file/write_file/edit_file/append_file/list_dir quintet.
+  spec(name = "fs",
+       description = "structural filesystem ops: list mkdir delete move copy exists info (action=list|exists|info|mkdir|delete|move|copy)",
        tags = @["filesystem", "data", "core"],
-       searchKeywords = @["modify", "change", "update", "rewrite", "replace", "patch", "fix"],
+       searchKeywords = @["ls", "mkdir", "rm", "mv", "cp", "stat", "exists",
+                           "directory", "folder", "delete", "move", "rename",
+                           "copy", "create dir"],
        domain = "file",
-       default = true, heartbeatSafe = false, category = "files"),
-  spec(name = "append_file", description = "append content to existing files",
-       tags = @["filesystem", "data"], domain = "file",
-       default = true, heartbeatSafe = false, category = "files"),
-  spec(name = "list_dir", description = "list directory contents",
-       tags = @["filesystem", "data", "core"], domain = "file",
+       default = true, heartbeatSafe = true, category = "files"),
+  spec(name = "file",
+       description = "single-file content I/O: read write edit append (action=read|write|edit|append). read supports offset/limit for chunked windows.",
+       tags = @["filesystem", "data", "core"],
+       searchKeywords = @["read", "write", "edit", "append", "modify",
+                           "change", "update", "rewrite", "replace", "patch",
+                           "fix", "save", "cat", "open file"],
+       domain = "file",
+       default = true, heartbeatSafe = true, category = "files"),
+  spec(name = "finder",
+       description = "discover files and content: glob path search and ripgrep content search (action=files|content)",
+       tags = @["filesystem", "search", "data", "core"],
+       searchKeywords = @["glob", "grep", "find", "search", "pattern",
+                           "ripgrep", "rg", "discover", "locate", "look up",
+                           "where", "match", "regex"],
+       domain = "file",
        default = true, heartbeatSafe = true, category = "files"),
   spec(name = "find_tools",
        description = "discover and activate hidden tools by keyword (meta-tool for tool surface introspection)",

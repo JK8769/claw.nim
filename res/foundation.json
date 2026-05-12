@@ -7,7 +7,7 @@
       "path": "res/foundation/tools",
       "description": "Manage your capability surface: discover hidden tools by intent, delegate to peers, forge new MCP tools when nothing fits, capture reusable workflows as skills. Universal — granted to every agent.",
       "requires": {
-        "tools": ["find_tools", "mcp", "delegate", "skill", "write_file", "shell"],
+        "tools": ["find_tools", "mcp", "delegate", "skill", "file", "shell"],
         "deps": [{"package": "nim", "manager": "system"}],
         "env": []
       }
