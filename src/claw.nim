@@ -24,6 +24,7 @@ Usage:
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>]
   claw (company|co) list-templates [--format=<fmt>]
   claw (company|co) update [--restart] [--no-pull]
+  claw (company|co) migrate <from> <to> [--no-credentials] [--no-channels] [--state] [--dry-run] [--force]
   claw upgrade [--check] [--rollback] [--branch=<b>] [--no-restart]
   claw (company|co) push [<url>] [--message=<m>] [--force]
   claw (company|co) pull
@@ -933,6 +934,188 @@ when isMainModule:
     cmd &= " " & quoteShell(scriptPath)
     let exitCode = execCmd(cmd)
     if exitCode != 0: quit(exitCode)
+
+  # Migrate — copy credentials + channel auth from one deployment to
+  # another. The common case during region splits, template upgrades,
+  # or machine moves: most assets boil down to credentials (env vars +
+  # channel auth tokens) that already belong to the operator and just
+  # need to move with them. Policy (BASE.nims) stays manual — operators
+  # want control. State (sessions/memory) is opt-in via --state.
+  elif isCompanyCmd(args, "migrate"):
+    let fromCo = $args["<from>"]
+    let toCo = $args["<to>"]
+    let doCredentials = not bool(args["--no-credentials"])
+    let doChannels = not bool(args["--no-channels"])
+    let doState = bool(args["--state"])
+    let dryRun = bool(args["--dry-run"])
+    let force = bool(args["--force"])
+
+    let fromDir = getHomeDir() / ".nimclaw-" & fromCo
+    let toDir = getHomeDir() / ".nimclaw-" & toCo
+    if not dirExists(fromDir):
+      echo "Error: source company not found at " & fromDir
+      quit(1)
+    if not dirExists(toDir):
+      echo "Error: destination company not found at " & toDir
+      echo "       Create it first: claw co create --template <t> --as=" & toCo
+      quit(1)
+    if fromDir == toDir:
+      echo "Error: source and destination are the same company"
+      quit(1)
+
+    echo "→ Migrating from " & fromDir
+    echo "          to     " & toDir
+    if dryRun: echo "  (--dry-run; no changes will be written)"
+    echo ""
+
+    # ── Credentials: .env merge ──
+    # For each key the destination declares, copy the value from source
+    # if (a) source has a non-empty value and (b) destination is either
+    # empty or --force is set. Keys the destination doesn't declare are
+    # left alone (no pollution).
+    if doCredentials:
+      proc parseEnv(path: string): OrderedTable[string, string] =
+        result = initOrderedTable[string, string]()
+        if not fileExists(path): return
+        for line in lines(path):
+          let s = line.strip()
+          if s.len == 0 or s.startsWith("#"): continue
+          let eq = s.find('=')
+          if eq <= 0: continue
+          let key = s[0 ..< eq].strip()
+          let val = s[eq + 1 .. ^1]
+          result[key] = val
+      let fromEnv = parseEnv(fromDir / ".env")
+      let toEnv = parseEnv(toDir / ".env")
+      if fromEnv.len == 0:
+        echo "[credentials] source has no .env or it's empty — skipping"
+      else:
+        echo "[credentials] reading " & fromDir / ".env"
+        var updates: OrderedTable[string, string] = initOrderedTable[string, string]()
+        var unchanged = 0
+        var preserved = 0
+        for k, toVal in toEnv.pairs:
+          if not fromEnv.hasKey(k): continue
+          let fromVal = fromEnv[k]
+          if fromVal.len == 0: continue
+          if fromVal == toVal:
+            inc unchanged
+            continue
+          if toVal.len > 0 and not force:
+            echo "  ~ " & k & ": destination has a different value (kept — use --force to overwrite)"
+            inc preserved
+            continue
+          updates[k] = fromVal
+          let action =
+            if toVal.len == 0: "filled in destination (was empty)"
+            else: "overwritten"
+          echo "  ✓ " & k & ": " & action
+        if not dryRun and updates.len > 0:
+          # Apply updates in-place, preserving line order + comments.
+          let raw = readFile(toDir / ".env").splitLines()
+          var newLines: seq[string] = @[]
+          for line in raw:
+            let s = line.strip(leading = true, trailing = false)
+            if s.len == 0 or s.startsWith("#"):
+              newLines.add(line); continue
+            let eq = s.find('=')
+            if eq <= 0:
+              newLines.add(line); continue
+            let key = s[0 ..< eq].strip()
+            if updates.hasKey(key):
+              newLines.add(key & "=" & updates[key])
+            else:
+              newLines.add(line)
+          writeFile(toDir / ".env", newLines.join("\n") & (if raw[^1].len == 0: "" else: "\n"))
+        echo "  (" & $toEnv.len & " keys checked, " & $updates.len &
+             " copied, " & $preserved & " preserved, " & $unchanged & " unchanged)"
+      echo ""
+
+    # ── Channels: copy per-app lark-cli configs (keychain refs) ──
+    # Credentials proper stay in keychain (per-user, machine-local);
+    # the per-app config dirs carry the pointer + per-deployment state.
+    # Without this, every migration breaks Feishu auth because .env
+    # doesn't carry app secrets.
+    if doChannels:
+      let fromCh = fromDir / "channels"
+      if not dirExists(fromCh):
+        echo "[channels] source has no channels/ directory — skipping"
+      else:
+        echo "[channels] scanning " & fromCh
+        var copiedTotal = 0
+        var keptTotal = 0
+        for kind, path in walkDir(fromCh):
+          if kind != pcDir: continue
+          let channelName = lastPathPart(path)
+          echo "  " & channelName & ":"
+          for k2, p2 in walkDir(path):
+            if k2 != pcDir: continue
+            let dirName = lastPathPart(p2)
+            let dest = toDir / "channels" / channelName / dirName
+            if dirExists(dest) and not force:
+              echo "    ~ " & dirName & ": already exists in destination (kept)"
+              inc keptTotal
+              continue
+            if not dryRun:
+              if dirExists(dest): removeDir(dest)
+              createDir(toDir / "channels" / channelName)
+              copyDir(p2, dest)
+            echo "    ✓ " & dirName & " copied"
+            inc copiedTotal
+        echo "  (" & $copiedTotal & " copied, " & $keptTotal & " preserved)"
+      echo ""
+
+    # ── State (opt-in) ──
+    # Copies workspace/offices/*/sessions, memory, heart, knowledge,
+    # workstation/active. NOT customer entities — those need graph
+    # merge with nc:id stability handling, which is v2.
+    if doState:
+      echo "[state] copying office data (sessions/memory/heart/knowledge/workstation)"
+      let fromOff = fromDir / "workspace" / "offices"
+      let toOff = toDir / "workspace" / "offices"
+      if not dirExists(fromOff):
+        echo "  (source has no workspace/offices/ — skipping)"
+      else:
+        for kind, path in walkDir(fromOff):
+          if kind != pcDir: continue
+          let agentName = lastPathPart(path)
+          let dest = toOff / agentName
+          if not dirExists(dest):
+            echo "  ~ " & agentName & ": destination has no office (agent renamed? skipping)"
+            continue
+          for sub in ["sessions", "memory", "heart", "knowledge"]:
+            let s = path / sub
+            let d = dest / sub
+            if not dirExists(s): continue
+            if dirExists(d) and not force:
+              echo "    ~ " & agentName & "/" & sub & ": already exists (kept)"
+              continue
+            if not dryRun:
+              if dirExists(d): removeDir(d)
+              copyDir(s, d)
+            echo "    ✓ " & agentName & "/" & sub & " copied"
+        # workstation/active also worth copying
+        let fromWs = fromDir / "workspace" / "offices"
+        for kind, path in walkDir(fromWs):
+          if kind != pcDir: continue
+          let agentName = lastPathPart(path)
+          let s = path / "workstation" / "active"
+          let d = toDir / "workspace" / "offices" / agentName / "workstation" / "active"
+          if dirExists(s):
+            if dirExists(d) and not force:
+              echo "    ~ " & agentName & "/workstation/active: already exists (kept)"
+              continue
+            if not dryRun:
+              createDir(d.parentDir)
+              if dirExists(d): removeDir(d)
+              copyDir(s, d)
+            echo "    ✓ " & agentName & "/workstation/active copied"
+      echo ""
+
+    echo "Migration " & (if dryRun: "preview" else: "complete") & "."
+    if not dryRun:
+      echo "Next: NIMCLAW_DIR=" & toDir & " claw co update"
+    quit(0)
 
   # Update — regenerate an existing company from its own BASE.nims. Same
   # machinery as `create` with no file arg, but with a clearer verb and an
