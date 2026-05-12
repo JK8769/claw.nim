@@ -44,7 +44,7 @@ Usage:
   claw provider set <name> [--rename=<name>] [--api-base=<url>] [--env-key=<var>] [--default-model=<model>] [--auth=<hdr>] [--verify-path=<path>]
   claw provider remove <name>
   claw provider <cmd> [<args>...]
-  claw channel <cmd> [<args>...]
+  claw channel <cmd> [<args>...] [--dry-run]
   claw user list [--kind=<k>] [--tier=<t>] [--permission=<p>] [--sort=<key>] [--reverse] [--format=<fmt>] [--recycled] [--all]
   claw user invite [<args>...] [--skill=<g>]... [--skills=<list>] [--lang=<l>]
   claw user subscription [<args>...] [--plan=<p>] [--days=<n>] [--tokens=<n>] [--reason=<r>] [--lang=<l>] [--company=<c>] [--agent=<a>]
@@ -2044,6 +2044,9 @@ when isMainModule:
     var cfg = loadConfig(getConfigPath())
     var chanArgs: seq[string]
     for a in @(args["<args>"]): chanArgs.add(a)
+    # Re-encode top-level flags as positional --flag strings so the
+    # sub-dispatcher can consume them (docopt strips them from <args>).
+    if bool(args["--dry-run"]): chanArgs.add("--dry-run")
     echo runChannelCommand(cfg, @[$args["<cmd>"]] & chanArgs)
 
   # User management — list/merge/invite human identities (graph Persons).

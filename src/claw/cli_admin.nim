@@ -744,17 +744,26 @@ proc rotateFeishuChannel*(cfg: var Config, args: seq[string]): string =
          "Restart the gateway to pick up the new secret:\n" &
          "  claw co stop && claw gateway"
 
-proc syncChannelSecrets*(cfg: var Config): string =
+proc syncChannelSecrets*(cfg: var Config, dryRun: bool = false): string =
   ## For every declared Feishu app: if .env has a non-empty
   ## FEISHU_APP_SECRET__<APP_ID>, push it into keychain via lark-cli.
   ## Idempotent. Designed for the post-migration / post-rotation case:
   ## operator edits .env, runs `claw co update --sync-secrets`, gateway
   ## picks up new secrets on next restart.
+  ##
+  ## When `dryRun=true`, no keychain writes happen — the report shows
+  ## the per-app secret length (not the value) so the operator can
+  ## verify .env was edited correctly before committing. Useful when
+  ## the deployment shares keychain entries with another one on the
+  ## same machine (typo would corrupt both).
   let bin = feishu_channel.findLarkCli()
   if bin.len == 0:
     return "[sync-secrets] lark-cli not found; skipping channel sync."
   let envPath = getNimClawDir() / ".env"
-  var report = "[sync-secrets] Reconciling env→keychain for declared Feishu apps:\n"
+  let header =
+    if dryRun: "[sync-secrets --dry-run] Previewing env→keychain reconciliation (no writes):\n"
+    else: "[sync-secrets] Reconciling env→keychain for declared Feishu apps:\n"
+  var report = header
   var synced = 0
   var skipped = 0
   var failed = 0
@@ -762,8 +771,16 @@ proc syncChannelSecrets*(cfg: var Config): string =
     let key = "FEISHU_APP_SECRET__" & app.app_id
     let secret = readEnvValue(envPath, key)
     if secret.len == 0:
-      report.add("  ~ " & app.app_id & ": .env value empty — skipping\n")
+      report.add("  ~ " & app.app_id & ": .env value empty — would skip\n")
       inc skipped
+      continue
+    if dryRun:
+      # Report length only — never the value (secrets must not surface
+      # in CLI output or logs). Length is enough to spot truncation /
+      # accidental empty value / wrong-key-pasted bugs.
+      report.add("  → " & app.app_id & ": .env has " & $secret.len &
+                 "-char value (would write to keychain)\n")
+      inc synced
       continue
     if feishu_channel.initLarkCliConfig(bin, app.app_id, secret):
       report.add("  ✓ " & app.app_id & ": keychain updated from .env\n")
@@ -771,9 +788,12 @@ proc syncChannelSecrets*(cfg: var Config): string =
     else:
       report.add("  ✗ " & app.app_id & ": initLarkCliConfig failed (check log)\n")
       inc failed
-  report.add("  (" & $synced & " synced, " & $skipped & " skipped" &
+  let verb = if dryRun: "would sync" else: "synced"
+  report.add("  (" & $synced & " " & verb & ", " & $skipped & " skipped" &
              (if failed > 0: ", " & $failed & " failed" else: "") & ")")
-  if synced > 0:
+  if dryRun and synced > 0:
+    report.add("\n\nLooks right? Re-run without --dry-run to commit to keychain.")
+  elif synced > 0:
     report.add("\n\nRestart gateway to apply: claw co stop && claw gateway")
   return report
 
@@ -1151,7 +1171,11 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
                  "For env-only channels, edit .env and restart the gateway."
 
   if subcmd == "sync-secrets":
-    return syncChannelSecrets(cfg)
+    # Optional --dry-run flag (positional after subcmd): preview only.
+    var dryRun = false
+    for a in args[1..^1]:
+      if a == "--dry-run": dryRun = true
+    return syncChannelSecrets(cfg, dryRun = dryRun)
 
   if subcmd == "build":
     if args.len < 2:
