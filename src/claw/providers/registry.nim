@@ -57,20 +57,33 @@ const FallbackProviders* = [
 proc findDistributionResource*(relativePath: string): string =
   ## Locate a file shipped in the claw distribution. Tries several paths
   ## so it works in: dev (running from the repo), nimble-installed (bin +
-  ## sibling share dirs), and symlinked binaries.
-  # 1. CWD-relative (dev: running from repo root)
+  ## sibling share dirs), symlinked binaries, AND NimScript evaluation
+  ## (which the `claw co update` rebuild path uses to run BASE.nims).
+  # 1. CWD-relative (dev: running from repo root). Works in both compiled
+  #    and NimScript contexts.
   let cwd = getCurrentDir() / relativePath
   if fileExists(cwd): return cwd
-  # 2. Next to the binary (nimble install puts the bin in pkgs/<name>/ with
-  #    res/ as a sibling)
-  let appDir = getAppDir()
-  for candidate in [
-    appDir / relativePath,                 # e.g. pkgs/claw-X.Y.Z/res/providers.json
-    appDir.parentDir / relativePath,       # parent dir
-    appDir / ".." / relativePath,
-  ]:
-    if fileExists(candidate): return candidate
-  # 3. Nimble-specific: ~/.nimble/pkgs/<name>*/res/providers.json
+  # 2. Walk up from this source file (`src/claw/providers/registry.nim`)
+  #    to find the framework root, then check the res/ sibling. Works in
+  #    BOTH compiled (returns build-time source path) AND NimScript
+  #    (returns the actual interpreted source path — useful when the
+  #    DSL is evaluated as a subprocess inside `claw co update`).
+  let sourceFile = currentSourcePath()
+  if sourceFile.len > 0:
+    # registry.nim sits at <root>/src/claw/providers/registry.nim → up 4
+    let frameworkRoot = sourceFile.parentDir.parentDir.parentDir.parentDir
+    let viaSource = frameworkRoot / relativePath
+    if fileExists(viaSource): return viaSource
+  # 3. Next to the binary (compiled context only — NimScript has no `getAppDir`).
+  when not defined(nimscript) and not defined(js):
+    let appDir = getAppDir()
+    for candidate in [
+      appDir / relativePath,                 # e.g. pkgs/claw-X.Y.Z/res/providers.json
+      appDir.parentDir / relativePath,       # parent dir
+      appDir / ".." / relativePath,
+    ]:
+      if fileExists(candidate): return candidate
+  # 4. Nimble-specific: ~/.nimble/pkgs/<name>*/res/providers.json
   let nimblePkgs = getEnv("NIMBLE_DIR", getHomeDir() / ".nimble") / "pkgs2"
   if dirExists(nimblePkgs):
     for kind, path in walkDir(nimblePkgs):
@@ -105,25 +118,30 @@ proc loadProvidersFile*(path: string): seq[ProviderDef] =
       if p.name.len > 0: result.add(p)
   except: discard
 
-proc providerToJson(p: ProviderDef): JsonNode =
-  result = newJObject()
-  result["name"] = %p.name
-  if p.envKey.len > 0: result["envKey"] = %p.envKey
-  if p.apiBase.len > 0: result["apiBase"] = %p.apiBase
-  if p.authHeader.len > 0: result["authHeader"] = %p.authHeader
-  if p.verifyPath.len > 0: result["verifyPath"] = %p.verifyPath
-  if p.defaultModel.len > 0: result["defaultModel"] = %p.defaultModel
-  if p.local: result["local"] = %true
+# Write side is compiled-binary only — the DSL evaluation path (NimScript)
+# never writes the registry, only reads it, and NimScript's VM doesn't allow
+# `createDir`. Guarding here lets clawdsl.nim `import providers/registry`
+# without dragging in unsupported procs.
+when not defined(nimscript) and not defined(js):
+  proc providerToJson(p: ProviderDef): JsonNode =
+    result = newJObject()
+    result["name"] = %p.name
+    if p.envKey.len > 0: result["envKey"] = %p.envKey
+    if p.apiBase.len > 0: result["apiBase"] = %p.apiBase
+    if p.authHeader.len > 0: result["authHeader"] = %p.authHeader
+    if p.verifyPath.len > 0: result["verifyPath"] = %p.verifyPath
+    if p.defaultModel.len > 0: result["defaultModel"] = %p.defaultModel
+    if p.local: result["local"] = %true
 
-proc saveProvidersFile*(path: string, providers: seq[ProviderDef]) =
-  ## Write the full provider list to the given JSON file (res/ or company).
-  ## Uses schema_version 1, matching the distribution format.
-  let parent = path.parentDir
-  if parent.len > 0 and not dirExists(parent): createDir(parent)
-  var arr = newJArray()
-  for p in providers: arr.add(providerToJson(p))
-  let wrapper = %*{"schema_version": 1, "providers": arr}
-  writeFile(path, pretty(wrapper, 2))
+  proc saveProvidersFile*(path: string, providers: seq[ProviderDef]) =
+    ## Write the full provider list to the given JSON file (res/ or company).
+    ## Uses schema_version 1, matching the distribution format.
+    let parent = path.parentDir
+    if parent.len > 0 and not dirExists(parent): createDir(parent)
+    var arr = newJArray()
+    for p in providers: arr.add(providerToJson(p))
+    let wrapper = %*{"schema_version": 1, "providers": arr}
+    writeFile(path, pretty(wrapper, 2))
 
 # ─── Cached distribution (res/) providers ───────────────────────
 

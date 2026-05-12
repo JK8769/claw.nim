@@ -4,6 +4,7 @@
 
 import std/[json, os, strutils, tables, options, sets, sequtils]
 import tools/registry/manifest
+import providers/registry as provider_registry
 
 # ── Spec Types ────────────────────────────────────────────────────
 
@@ -839,16 +840,28 @@ proc getProfile(name: string): ProfileData =
 proc hasProfile(name: string): bool =
   name in ["Default", "Secretary", "Tech Lead", "Security Analyst"]
 
-## Provider template defaults
-type ProviderDefault = tuple[apiBase, defaultModel: string]
+## Provider template defaults — sourced from the framework's res/providers.json
+## via `providers/registry`. SSoT: a provider's metadata (apiBase, envKey for
+## auto-filling apiKey, defaultModel) lives in ONE place and the DSL looks it
+## up by normalized name. Operators authoring BASE.nims only have to repeat
+## what they want to OVERRIDE.
+##
+## Name normalization: providers.json uses display names like "OpenCode Go"
+## while BASE.nims tends to use slug form like `provider "opencode-go":`.
+## We lowercase + space-to-hyphen on both sides for the match.
 
-proc getProviderDefault(name: string): ProviderDefault =
-  case name.toLowerAscii
-  of "deepseek": ("https://api.deepseek.com", "deepseek-chat")
-  of "ollama": ("http://localhost:11434/v1", "gemma4:31b-cloud")
-  of "nvidia": ("https://integrate.api.nvidia.com/v1", "nvidia/nemotron-3-super-120b-a12b")
-  of "opencode": ("https://opencode.ai/zen/go/v1", "opencode/kimi-k2.5")
-  else: ("", "")
+proc normalizeProviderKey(name: string): string =
+  name.toLowerAscii.replace(" ", "-")
+
+proc getProviderDefault(name: string): provider_registry.ProviderDef =
+  ## Look up provider metadata from the framework's res/providers.json (cached
+  ## by `provider_registry.builtinProviders`). Returns an empty ProviderDef
+  ## (all fields blank) if the name doesn't match any known provider — caller
+  ## must check `.apiBase.len > 0` etc. before using a field.
+  let key = normalizeProviderKey(name)
+  for p in provider_registry.builtinProviders():
+    if normalizeProviderKey(p.name) == key: return p
+  return provider_registry.ProviderDef()
 
 # ── BASE.json Builder ─────────────────────────────────────────────
 
@@ -1360,11 +1373,18 @@ proc buildProviders(spec: ClawSpec): JsonNode =
   ## need to special-case the empty-models case.
   result = newJObject()
   for p in spec.providers:
-    var apiBase = p.apiBase
-    let key = p.name.toLowerAscii
-    # Fill apiBase from registry defaults if omitted
-    let d = getProviderDefault(key)
-    if apiBase == "" and d.apiBase != "": apiBase = d.apiBase
+    let d = getProviderDefault(p.name)
+    let key = normalizeProviderKey(p.name)
+    # Fill apiBase from registry default if omitted
+    var apiBase = if p.apiBase.len > 0: p.apiBase else: d.apiBase
+    # Fill apiKey from the registry-declared envKey if omitted. Lets
+    # operators write a bare `provider "opencode-go":` block (no body,
+    # or just a `models` line) and have the framework auto-resolve
+    # `apiKey = ${OPENCODE_GO_API_KEY}` from providers.json's envKey
+    # field. ${VAR} expansion happens at gateway boot via loadDotEnv.
+    var apiKey = if p.apiKey.len > 0: p.apiKey
+                 elif d.envKey.len > 0: "${" & d.envKey & "}"
+                 else: ""
     # If models is empty AND the registry has a defaultModel, seed it
     # so the chain build has something to work with (this rescues
     # provider blocks that declared neither `models` nor `defaultModel`
@@ -1377,7 +1397,7 @@ proc buildProviders(spec: ClawSpec): JsonNode =
     result[key] = %*{
       "name": p.name.capitalizeAscii,
       "apiBase": apiBase,
-      "apiKey": p.apiKey,
+      "apiKey": apiKey,
       "models": models,
     }
 

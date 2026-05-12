@@ -22,21 +22,20 @@ org "REPLACE_WITH_YOUR_ORG_NAME":
   # automatically.
 
 # ── Providers (LLM backends) ──────────────────────────────────
-# Configure at least one provider before running gateway.
-# Use `claw provider auth <name>` to set up API keys, then list them here.
+# Configure at least one provider before running gateway. For providers
+# in the framework's res/providers.json catalog (deepseek, opencode-go,
+# anthropic, openai, ollama, nvidia, groq), apiBase + apiKey auto-fill
+# from the catalog — just declare the name + which models you want.
 #
 # RECOMMENDED FOR THIS TEMPLATE (validated May 2026 via long-task probes
 # on a real solar fleet — see commit history for the benchmark methodology):
 #
 #   provider "opencode-go":
-#     apiBase "https://opencode.ai/zen/go/v1"
-#     apiKey "${OPENCODE_GO_API_KEY}"
 #     models "mimo-v2.5", "mimo-v2.5-pro",
 #            "deepseek-v4-pro", "deepseek-v4-flash",
 #            "kimi-k2.5"
 #
 #   provider "deepseek":
-#     apiKey "${DEEPSEEK_API_KEY}"
 #     models "deepseek-v4-flash", "deepseek-v4-pro"
 #
 # Why OpenCode Go as primary: at the time of writing it's a $0-tier
@@ -44,10 +43,11 @@ org "REPLACE_WITH_YOUR_ORG_NAME":
 # Chinese fluency, and structured-output quality for solar ops). Direct
 # `deepseek` access kept as a robust fallback if the proxy is down.
 #
-# Other examples:
+# Override only when needed:
 #   provider "anthropic":
-#     apiKey "${ANTHROPIC_API_KEY}"
 #     models "claude-sonnet-4.5"
+#   # apiBase + ${ANTHROPIC_API_KEY} auto-filled. To pin a different
+#   # endpoint or auth, add `apiBase "..."` / `apiKey "..."` explicitly.
 
 # ── Foundation skills (L0, auto-mirrored from framework) ─────
 # These ship with claw.nim and apply to every agent. No declaration needed.
