@@ -175,9 +175,26 @@ method execute*(t: WebSearchTool, args: Table[string, JsonNode]): Future[string]
     count = args["count"].getInt()
     if count <= 0 or count > 10: count = t.maxResults
 
-  # Mock provider extraction - ideally passed in from agent config
-  # For now, if no API key is set, we fallback to duckduckgo as a free option
-  let activeProvider = if t.apiKey == "": "duckduckgo" else: "brave"
+  # Engine selection: DDG is the keyless default. `engine=brave` is the
+  # opt-in for operators who have a key. We deliberately do NOT auto-
+  # promote to Brave when the key happens to be present — explicit beats
+  # implicit, and operators expect "no setup = it just works."
+  let requestedEngine =
+    if args.hasKey("engine"): args["engine"].getStr().toLowerAscii()
+    else: ""
+  let activeProvider =
+    case requestedEngine
+    of "brave":
+      if t.apiKey == "" or t.apiKey.startsWith("${"):
+        return "Error: engine=brave requires BRAVE_API_KEY. " &
+               "Run: nimclaw service auth set BRAVE_API_KEY. " &
+               "Or omit `engine` to use DuckDuckGo (the keyless default)."
+      "brave"
+    of "ddg", "duckduckgo", "":
+      "duckduckgo"
+    else:
+      return "Error: unknown engine '" & requestedEngine &
+             "'. Supported: ddg (default), brave (requires BRAVE_API_KEY)."
 
   var headers = emptyHttpHeaders()
   applyBrowserHeaders(headers)
