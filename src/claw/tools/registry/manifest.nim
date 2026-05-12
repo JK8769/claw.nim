@@ -180,13 +180,18 @@ const AllTools*: seq[ToolSpec] = @[
        domain = "admin",
        default = true, heartbeatSafe = false, category = "admin"),
   spec(name = "capability",
-       description = "find models by capability (action=list|find|has). Framework-callable feature gate (e.g. vision check before serving an image).",
-       tags = @["diagnostics", "models", "capability", "core"],
+       description = "find or USE models by capability (action=list|find|has|route|invoke). " &
+                     "`invoke` is the 'LLM as tool' primitive — give a tag (vision/audio/...) " &
+                     "and an input (file path or text) and the framework routes to a capable " &
+                     "model and returns text. Lets any agent 'see' an image without their " &
+                     "primary model needing native multimodal support.",
+       tags = @["diagnostics", "models", "capability", "multimodal", "core"],
        searchKeywords = @["tag", "feature", "vision", "tool-use",
                            "reasoning", "thinking", "multilingual", "audio",
-                           "code", "supports", "gate"],
+                           "code", "supports", "gate", "invoke", "route",
+                           "image", "see", "describe", "analyze", "llm as tool"],
        domain = "admin",
-       default = true, heartbeatSafe = true, category = "admin"),
+       default = true, heartbeatSafe = false, category = "admin"),
 
   # Dev / utilities
   spec(name = "git", description = "structured git operations (status, diff, log, branch, commit, add, checkout, stash)",

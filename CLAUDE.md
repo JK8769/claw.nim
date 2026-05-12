@@ -151,6 +151,50 @@ without losing any framework-internal precision.
    data structure, stop. Name it after the capability instead — and
    leave the file/class/structure name unchanged in code.
 
+### LLM as tool (multimodal via routing, not via primary model)
+
+Rather than requiring the agent's primary model to handle every modality
+natively (vision, audio, video), the framework treats **specialist models
+as tools** that any agent can invoke regardless of their own model's
+capabilities. The mechanism is the `capability` tool's `invoke` action:
+
+```
+capability action=invoke tag=vision input=/path/img.jpg prompt="what is this?"
+```
+
+The framework:
+1. Finds a model with the requested tag (preferring the agent's primary
+   if eligible — saves a round-trip and preserves context — else local
+   models like Ollama+gemma4, else cheapest configured remote)
+2. Reads the input file (with path-safety + IAM gates), base64-encodes
+3. Constructs an OpenAI-multimodal request (`content` is an array of
+   text + image_url blocks)
+4. POSTs to the chosen provider, parses, returns TEXT to the calling
+   agent
+
+The agent's primary model stays text-in/text-out — no need for
+multimodal `Message.content_blocks` plumbing in the primary conversation.
+A reasoning model on `deepseek-v4-pro` (no vision) can still "see" an
+image by calling `capability action=invoke tag=vision ...` and reasoning
+on the returned description.
+
+**Why this is the preferred design over native multimodal everywhere:**
+- Not every agent's primary model supports every modality
+- Models drift in their multimodal support across vendor releases —
+  centralizing the routing isolates that churn
+- Cost/latency tradeoffs differ per modality (vision often cheap on
+  local Ollama; reasoning often warrants the big paid model). Routing
+  by capability lets each modality pick its best-fit model independently
+- Specialist routing composes: `tag=audio` can hit Whisper, `tag=vision`
+  can hit gemma4 or mimo, all through one invocation pattern
+- Tag-shaped feature gates work uniformly: a future `tag=code-exec`,
+  `tag=image-gen`, `tag=embedding` extends the same primitive
+
+The legacy `image_analyze` tool (hardcoded Ollama+gemma4 dispatch) is a
+specific instance of this pattern — kept as a pass-through during the
+transition but marked deprecated in its description, pointing at
+`capability action=invoke tag=vision`.
+
 ### Message Flow
 
 `Channel → MessageBus → Gateway → AgentLoop → LLM Provider → MessageBus → Channel`

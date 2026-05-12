@@ -80,9 +80,11 @@ proc resolveAndCheckPath*(path, workspaceDir: string, allowedPaths: seq[string],
         fullPath = workspaceDir / path
     else:
       fullPath = workspaceDir / path
-  else:
-    if allowedPaths.len == 0: return "Error: absolute paths not allowed (no allowed paths configured)"
-
+  # Absolute paths fall through to the workspace/office/allowedPaths gate
+  # at the `isResolvedPathAllowed` call below — that's the SSoT for path
+  # acceptance. The prior early-return-on-empty-allowedPaths was wrong:
+  # it rejected absolute paths under workspace too, which broke tools
+  # like `capability action=invoke input=/absolute/path/under/workspace`.
   var resolved = ""
   try:
     resolved = absolutePath(fullPath)

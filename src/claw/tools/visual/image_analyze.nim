@@ -22,7 +22,12 @@ proc newImageAnalyzeTool*(): ImageAnalyzeTool =
 method name*(t: ImageAnalyzeTool): string = "image_analyze"
 
 method description*(t: ImageAnalyzeTool): string =
-  "Analyze an image using a local vision model (Ollama). " &
+  "DEPRECATED — use `capability action=invoke tag=vision input=<path> prompt=<text>` " &
+  "instead. That route handles vision via ANY capable model (local Ollama, " &
+  "OpenCode Go's mimo, etc.) with automatic preference for the agent's own model " &
+  "when it has vision. This tool remains as a thin pass-through to a local Ollama " &
+  "vision model and may be removed in a later release. " &
+  "Analyze an image — local Ollama vision model. " &
   "Use when you see [image: /path] in a message and need to understand image content."
 
 method parameters*(t: ImageAnalyzeTool): Table[string, JsonNode] =
