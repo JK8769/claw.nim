@@ -412,10 +412,11 @@
         },
         {
           "id": "mimo-v2.5-pro",
-          "context_length": 128000,
+          "context_length": 1000000,
           "capabilities": [
             "tool-use",
-            "reasoning"
+            "reasoning",
+            "multilingual"
           ]
         },
         {
