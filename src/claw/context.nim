@@ -44,16 +44,50 @@ proc companyDirForName*(name: string): string =
   return getHomeDir() / (".nimclaw-" & name)
 
 proc listCompanies*(): seq[tuple[name, path: string]] =
-  ## Enumerate every ~/.nimclaw-<name>/ directory on this host (names + paths only).
+  ## Enumerate deployments. Sources scanned in priority order:
+  ##   1. $HOME/.nimclaw-*           — the canonical location
+  ##   2. /Volumes/*/.nimclaw-*      — USB / external drives (macOS)
+  ##
+  ## Volume entries get a `[VolumeName]` suffix in the returned `name`
+  ## so they're visually disambiguated in `claw co list` even when the
+  ## short name collides with a home-dir entry. The `path` field always
+  ## holds the absolute filesystem path — use that for any subsequent
+  ## file ops (don't reconstruct from name).
   let home = getHomeDir()
-  if not dirExists(home): return
-  for kind, entry in walkDir(home):
-    if kind != pcDir: continue
-    let base = entry.lastPathPart
-    if not base.startsWith(".nimclaw-"): continue
-    # Exclude ~/.nimclaw (default/unnamed) from the company list
-    if base.len <= ".nimclaw-".len: continue
-    result.add((name: base[".nimclaw-".len .. ^1], path: entry))
+  if dirExists(home):
+    for kind, entry in walkDir(home):
+      if kind != pcDir: continue
+      let base = entry.lastPathPart
+      if not base.startsWith(".nimclaw-"): continue
+      # Exclude ~/.nimclaw (default/unnamed) from the company list
+      if base.len <= ".nimclaw-".len: continue
+      result.add((name: base[".nimclaw-".len .. ^1], path: entry))
+
+  # Auto-scan external volumes so USB-resident deployments aren't
+  # silently invisible. Tag with [VolumeName] for disambiguation;
+  # skip system-internal volumes (".Spotlight…", "Macintosh HD" symlink).
+  when defined(macosx):
+    let volumes = "/Volumes"
+    if dirExists(volumes):
+      for kindV, vol in walkDir(volumes):
+        if kindV != pcDir: continue
+        let volName = vol.lastPathPart
+        if volName.startsWith(".") or volName == "Macintosh HD": continue
+        try:
+          for kindE, entry in walkDir(vol):
+            if kindE != pcDir: continue
+            let base = entry.lastPathPart
+            if not base.startsWith(".nimclaw-"): continue
+            if base.len <= ".nimclaw-".len: continue
+            # If this exact path was already collected via a home symlink,
+            # don't double-list it.
+            var dup = false
+            for r in result:
+              if r.path == entry: dup = true; break
+            if dup: continue
+            let shortName = base[".nimclaw-".len .. ^1]
+            result.add((name: shortName & " [" & volName & "]", path: entry))
+        except OSError: discard  # unreadable mounts (mid-eject, perms) ignored
 
 # ── Richer inspection for `claw company list` ────────────────────
 

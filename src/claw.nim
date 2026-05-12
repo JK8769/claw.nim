@@ -410,7 +410,11 @@ when isMainModule:
         rawUptime: uptime,
         rawModified: info.modified.toUnix,
         rawRunning: running,
-        active: c.name == active
+        # Active marker matches against either the short name (legacy
+        # active-context format) or the full path (current format —
+        # supports USB entries whose display name carries a [VolumeName]
+        # tag).
+        active: (c.name == active or c.path == active)
       ))
 
     # Filter by --status if set
@@ -547,8 +551,25 @@ when isMainModule:
         echo "Active company: " & active
         echo "Path: " & companyDirForName(active)
       quit(0)
-    # Validate that the company exists
-    let resolved = companyDirForName(nameArg)
+    # Resolve nameArg → absolute path. Path-mode (~/foo, /abs/path,
+    # contains '/') goes straight through. Bare names are matched against
+    # listCompanies — picks up both home-dir entries AND USB entries
+    # (whose display names look like "MyCo [VolumeName]"). Storing the
+    # resolved path in the active context (rather than the bare name)
+    # keeps the `*` marker in `co list` consistent regardless of which
+    # source the deployment lives in.
+    var resolved = ""
+    if nameArg.startsWith("~") or "/" in nameArg:
+      resolved = companyDirForName(nameArg)
+    else:
+      for c in listCompanies():
+        if c.name == nameArg:
+          resolved = c.path; break
+      if resolved.len == 0:
+        # Fallback: maybe the user typed a bare name that isn't in
+        # listCompanies (e.g., not yet created) — let dirExists below
+        # produce a clean "no company at <path>" error.
+        resolved = companyDirForName(nameArg)
     if not dirExists(resolved):
       echo "Error: no company at " & resolved
       echo ""
@@ -556,7 +577,7 @@ when isMainModule:
       for c in listCompanies():
         echo "  " & c.name
       quit(1)
-    writeActiveContext(nameArg)
+    writeActiveContext(resolved)
     echo "Active company: " & nameArg & " (" & resolved & ")"
 
   # Create company from .nims script.
@@ -630,8 +651,16 @@ when isMainModule:
       if not fileExists(tplBase):
         echo "Error: template at " & templateDir & " is missing BASE.nims — not a valid template."
         quit(1)
-      # Refuse to clobber an existing service dir.
-      let targetDir = getHomeDir() / ".nimclaw-" & renameAs
+      # Refuse to clobber an existing service dir. Honor NIMCLAW_DIR
+      # override (USB-resident deployments, CI sandboxes) before falling
+      # back to the org-name-derived home path. Mirrors the precedence
+      # rule used by `build*` in clawdsl.nim so both the template
+      # scaffold copy AND the subsequent BASE.json build land at the
+      # same location.
+      let envDir = getEnv("NIMCLAW_DIR")
+      let targetDir =
+        if envDir.len > 0: envDir
+        else: getHomeDir() / ".nimclaw-" & renameAs
       if dirExists(targetDir):
         echo "Error: " & targetDir & " already exists. Pick a different --as name,"
         echo "       or remove the existing company first."

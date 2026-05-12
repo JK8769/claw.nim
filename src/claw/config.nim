@@ -374,8 +374,46 @@ proc getTemplateDir*(): string =
   # 4. Last resort fallback
   return getNimClawDir() / "templates"
 
+proc expandEnvTemplates*(value: string): string =
+  ## Expand ${VARNAME} placeholders using the process environment.
+  ##
+  ## Lets .env values stay portable across machines and mount points:
+  ##   ANYGEN_HOME=${NIMCLAW_DIR}/support/anygen
+  ## works on internal SSD, on a USB-mounted deployment, on a fresh
+  ## machine — no sed-rewrite at each boundary.
+  ##
+  ## Special-case ${NIMCLAW_DIR}: resolved via getNimClawDir() (which
+  ## honors the env-var → active-context → default precedence chain),
+  ## so it works even when NIMCLAW_DIR isn't literally in the env.
+  ##
+  ## Unrecognized variables are left as-is (no error, no warning) so
+  ## downstream consumers can decide how to handle them. Fast-path
+  ## skips entirely if there's no '${' in the value.
+  if "${" notin value: return value
+  result = ""
+  var i = 0
+  while i < value.len:
+    if i + 1 < value.len and value[i] == '$' and value[i+1] == '{':
+      let close = value.find('}', i + 2)
+      if close > i + 2:
+        let varName = value[i+2 ..< close]
+        let expanded =
+          if varName == "NIMCLAW_DIR": getNimClawDir()
+          else:
+            let v = getEnv(varName, "")
+            if v.len > 0: v else: value[i .. close]
+        result.add(expanded)
+        i = close + 1
+        continue
+    result.add(value[i])
+    inc i
+
 proc loadDotEnv*() =
-  ## Load .env files from CWD and NIMCLAW_DIR
+  ## Load .env files from CWD and NIMCLAW_DIR. Values may contain
+  ## ${NIMCLAW_DIR}, ${HOME}, ${USER}, etc. — expanded at load time
+  ## via expandEnvTemplates so consumers calling getEnv() see the
+  ## resolved string. Cross-process safe: child processes inherit
+  ## the expanded values via the OS env.
   let paths = [
     getCurrentDir() / ".env",
     getNimClawDir() / ".env"
@@ -387,7 +425,7 @@ proc loadDotEnv*() =
         if pair.len == 2:
           let key = pair[0].strip()
           let val = pair[1].strip()
-          if key.len > 0: putEnv(key, val)
+          if key.len > 0: putEnv(key, expandEnvTemplates(val))
 
 proc defaultConfig*(): Config =
   result = Config(
