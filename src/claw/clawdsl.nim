@@ -251,6 +251,17 @@ type
     tools*: ClawTools
     trust*: ClawTrust
     updates*: ClawUpdates           ## Phase 9 — auto-update config (opt-in; default: enabled=false)
+    refusal*: Table[string, string] ## Per-language override for the
+      ## "I don't recognize you on this channel — send your invite code"
+      ## message. Keys are BCP-47 language tags ("zh", "en", "ja", "ko").
+      ## Authored in BASE.nims via the `refusal:` block. Versioned with
+      ## the company; survives migrations / rebrands. Env var
+      ## CLAW_REFUSAL_<LANG> still works as a per-machine override layer
+      ## above this. Framework defaults in gateway.nim::refusalByLang are
+      ## the final fallback. Lookup precedence:
+      ##   1. env CLAW_REFUSAL_<LANG>  (operator emergency override)
+      ##   2. BASE.nims refusal: block (this field, in cfg)
+      ##   3. framework default        (refusalByLang)
 
 # ── Global State ──────────────────────────────────────────────────
 
@@ -264,6 +275,7 @@ var spec* {.global.} = ClawSpec(
     checkIntervalHours: 4,
     autoApply: false,          # safer default: notify-only until operator opts in
   ),
+  refusal: initTable[string, string](),
 )
 
 # ── DSL: Organization ─────────────────────────────────────────────
@@ -583,6 +595,43 @@ template updates*(body: untyped) =
       spec.updates.autoApply = b
     template notify_agent(name: string) {.used.} =
       spec.updates.notifyAgent = name
+    body
+
+# ── DSL: Refusal messages ────────────────────────────────────────
+#
+# Per-language override for the "I don't recognize you on this
+# channel — send your invite code" message that strangers see at
+# the unrecognized-user gate. Versioned with the company so the
+# wording survives migrations + can be shared across deployments.
+#
+# Useful during migrations / rebrands to give existing customers
+# context for why they're being asked to re-authenticate. When
+# left undeclared, the framework's defaults (gateway.nim::
+# refusalByLang) are used. Env var CLAW_REFUSAL_<LANG> still
+# overrides this per-machine for emergency tweaks.
+#
+# Example BASE.nims block:
+#
+#   refusal:
+#     zh "抱歉，我们的系统正在进行升级迁移..."
+#     en "Our system is currently undergoing a migration upgrade..."
+#     ja "申し訳ありません。現在システムの移行..."
+#     ko "죄송합니다. 현재 시스템 마이그레이션..."
+#
+# Free-form `lang "<bcp47>", "<text>"` form supports other languages.
+
+template refusal*(body: untyped) =
+  block:
+    template lang(code, text: string) {.used.} =
+      spec.refusal[code.toLowerAscii] = text
+    template zh(text: string) {.used.} =
+      spec.refusal["zh"] = text
+    template en(text: string) {.used.} =
+      spec.refusal["en"] = text
+    template ja(text: string) {.used.} =
+      spec.refusal["ja"] = text
+    template ko(text: string) {.used.} =
+      spec.refusal["ko"] = text
     body
 
 # ── DSL: Tools ────────────────────────────────────────────────────
@@ -1276,6 +1325,10 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
       "auto_apply": spec.updates.autoApply,
       "notify_agent": spec.updates.notifyAgent,
     },
+    "refusal": (proc(): JsonNode =
+      result = newJObject()
+      for k, v in spec.refusal.pairs: result[k] = %v
+    )(),
     "trust": {"roles": trustRoles},
     "tools": {
       "web": {

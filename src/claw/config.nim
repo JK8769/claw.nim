@@ -221,6 +221,11 @@ type
     trust*: TrustConfig
     focus_modes*: seq[FocusMode]
     updates*: UpdatesConfig
+    refusal*: Table[string, string]
+      ## Per-language refusal-message overrides. Keys are BCP-47 lang
+      ## tags ("zh", "en", "ja", "ko", ...). Empty if BASE.nims has no
+      ## refusal: block. The gateway's refusal lookup consults this
+      ## after env CLAW_REFUSAL_<LANG> but before framework defaults.
 
 proc expandHome*(path: string): string =
   if path == "": return path
