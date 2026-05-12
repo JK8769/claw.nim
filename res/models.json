@@ -374,11 +374,11 @@
   },
   "providers": {
     "OpenCode Go": {
-      "updated": "2026-04-18",
+      "updated": "2026-05-13",
       "models": [
         {
           "id": "glm-5",
-          "model": "z-ai/glm5"
+          "model": "z-ai/glm-5"
         },
         {
           "id": "glm-5.1",
@@ -394,7 +394,16 @@
           ]
         },
         {
-          "id": "mimo-v2-pro",
+          "id": "kimi-k2.6",
+          "context_length": 262144,
+          "capabilities": [
+            "tool-use",
+            "reasoning",
+            "multilingual"
+          ]
+        },
+        {
+          "id": "mimo-v2.5",
           "context_length": 128000,
           "capabilities": [
             "tool-use",
@@ -402,13 +411,11 @@
           ]
         },
         {
-          "id": "mimo-v2-omni",
+          "id": "mimo-v2.5-pro",
           "context_length": 128000,
           "capabilities": [
             "tool-use",
-            "reasoning",
-            "vision",
-            "audio"
+            "reasoning"
           ]
         },
         {
@@ -442,6 +449,14 @@
             "tool-use",
             "multilingual"
           ]
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "model": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash",
+          "model": "deepseek/deepseek-v4-flash"
         }
       ]
     },
