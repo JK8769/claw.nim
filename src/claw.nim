@@ -21,7 +21,7 @@ Usage:
   claw gateway [--stdio] [--pane=PANE] [--debug]
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
-  claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>]
+  claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>] [--dir=<path>]
   claw (company|co) list-templates [--format=<fmt>]
   claw (company|co) update [--restart] [--no-pull] [--sync-secrets]
   claw (company|co) migrate <from> <to> [--no-credentials] [--no-channels] [--state] [--dry-run] [--force]
@@ -105,6 +105,11 @@ Options:
   --verify-path=<path> Path suffix (relative to apiBase) used to validate key  [default: /models]
   --local              Mark provider as local (no auth required, e.g. ollama)
   --vendor=<v>         Filter by vendor (meta, anthropic, openai, ...)
+  --dir=<path>         Parent directory for `co create` (e.g. /Volumes/SSD256G/).
+                       Creates `<path>/.nimclaw-<as>/`. Requires --as. Useful for
+                       USB-resident, sandboxed, or otherwise non-default
+                       deployment locations. Equivalent to setting
+                       NIMCLAW_DIR=<path>/.nimclaw-<as> for one invocation.
   --owner=<v>          Alias for --vendor (matches the OWNED BY column)
   --family=<fam>       Filter by model family (llama-3.3, claude-3.5, gpt-4o, ...)
   --all-versions       Include older versions (default: latest version per family-variant)
@@ -593,7 +598,32 @@ when isMainModule:
     if templateName == "nil": templateName = ""
     var vendorName = $args["--vendor"]
     if vendorName == "nil": vendorName = ""
+    var dirArg = $args["--dir"]
+    if dirArg == "nil": dirArg = ""
     var scriptPath = ""
+
+    # --dir=<parent>: create the deployment under <parent>/.nimclaw-<as>
+    # instead of $HOME/.nimclaw-<as>. Sugar for the existing NIMCLAW_DIR
+    # env-var mechanism — set it here so every downstream surface
+    # (template scaffold copy, build*() via NimScript subprocess,
+    # source-copy variant) sees the resolved path uniformly.
+    #
+    # Requires --as because we need a name to construct the convention-
+    # named `.nimclaw-<name>` subdir. Without --as the org name is only
+    # known after parsing BASE.nims (template's or user-supplied), which
+    # this dispatcher doesn't do.
+    if dirArg.len > 0:
+      if renameAs.len == 0:
+        echo "Error: --dir=<path> requires --as=<name>"
+        echo "       (the deployment dir is named <path>/.nimclaw-<name>;"
+        echo "        we need <name> at dispatch time to compute the path)"
+        quit(1)
+      let parent = expandTilde(dirArg)
+      if not dirExists(parent):
+        echo "Error: --dir=" & parent & " does not exist or isn't a directory"
+        echo "       (parent must exist; deployment subdir will be created)"
+        quit(1)
+      putEnv("NIMCLAW_DIR", parent / (".nimclaw-" & renameAs))
 
     # Resolve framework's res/templates/ directory — checked in order:
     #   1. cwd/res/templates/ (running from cloned framework repo)
