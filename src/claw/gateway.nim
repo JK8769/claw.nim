@@ -3134,24 +3134,19 @@ Options:
             }.toTable)
             # Zero-LLM refusal: pick from a pre-translated catalog
             # based on detected script in the stranger's own message.
-            # An English-ish message gets English; Chinese gets
-            # Chinese; unsupported scripts fall back to a bilingual
-            # EN+ZH template (SunGrow's primary customer base).
+            # An English-ish message gets English; Chinese gets Chinese;
+            # unsupported scripts fall back to a bilingual EN+ZH template
+            # (SunGrow's primary customer base).
             #
-            # Lookup precedence (each layer overrides the next):
-            #   1. env CLAW_REFUSAL_<LANG>  (per-machine emergency override)
-            #   2. cfg.refusal[<lang>]      (BASE.nims `refusal:` block —
-            #                                versioned with the company)
-            #   3. refusalByLang[<lang>]    (framework default)
-            #
-            # The BASE.nims layer is the canonical authoring location —
-            # version-controlled, shareable across deployments, survives
-            # migrations. The env-var layer is for transient operator tweaks.
+            # Lookup: cfg.refusal[<lang>] (BASE.nims `refusal:` block) first,
+            # framework default refusalByLang[<lang>] as the fallback.
+            # One authoring location (BASE.nims), one fallback (framework).
+            # No env-var layer — refusal messages are content/policy, not
+            # secrets, and a single canonical edit location keeps
+            # operations clean.
             let lang = detectLang(plainContent)
             let cfgRefusal = cfg[].refusal
             proc refusalFor(l: string): string =
-              let envOverride = getEnv("CLAW_REFUSAL_" & l.toUpperAscii(), "")
-              if envOverride.len > 0: return envOverride
               if cfgRefusal.hasKey(l) and cfgRefusal[l].len > 0:
                 return cfgRefusal[l]
               if refusalByLang.hasKey(l): return refusalByLang[l]
