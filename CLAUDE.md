@@ -72,6 +72,56 @@ At `claw create` time, ClawDSL reads each skill's frontmatter and resolves the t
 set of tools/deps/envs per agent. Output lands in `BASE.json` per agent and a `claw.lock`
 file captures versions + content hashes for reproducibility.
 
+### Framework Catalogs as Single Source of Truth (SSoT)
+
+The framework ships JSON catalogs under `res/` that the ClawDSL auto-fills from
+during BASE.nims evaluation. **BASE.nims should never duplicate what's in a
+catalog — operators declare only the overrides they actually need.**
+
+| Catalog | Holds | Auto-fills into BASE.nims |
+|---|---|---|
+| `res/providers.json` | `apiBase`, `envKey`, `authHeader`, `verifyPath`, `defaultModel`, `local` per provider | `provider "name":` blocks |
+| `res/models.json` | per-provider model catalogs + canonical model registry (context_length, capabilities, pricing) | model metadata seen by `claw model list` |
+| `res/channels.json` | channel types + their required auth fields | `channel "name":` discovery |
+| `tools/registry/manifest.nim` | tool definitions compiled into the binary | tool discovery for agent grants |
+
+Example — minimum provider declaration:
+```nim
+provider "opencode-go":
+  models "mimo-v2.5", "mimo-v2.5-pro"
+# apiBase + apiKey auto-fill from res/providers.json (envKey → ${OPENCODE_GO_API_KEY})
+```
+
+Operators add `apiBase "..."` / `apiKey "..."` lines only to override the catalog
+default (custom endpoint, hardcoded key, etc.).
+
+**Name normalization**: catalogs may use display names (`"OpenCode Go"`) while
+BASE.nims tends to use slug form (`"opencode-go"`). Both sides are lowercased
+and space→hyphen normalized before lookup. When adding a new resource type
+that bridges catalog ↔ DSL, apply the same normalization or names will silently
+mismatch.
+
+**Implementation reference**: `getProviderDefault` + `normalizeProviderKey` in
+`src/claw/clawdsl.nim`. When adding a new framework catalog, follow the same
+pattern: data in `res/<type>.json`, DSL macro consults the catalog, BASE.nims
+carries only overrides.
+
+**Anti-pattern to avoid**: hardcoded `case` blocks that duplicate catalog data.
+The DSL had one of these for providers (`case name.toLowerAscii of "deepseek":
+...`) — it diverged from `res/providers.json` over time, silently missed
+half the catalog (e.g. `opencode-go`), and forced operators to repeat
+metadata that should have been auto-filled. If you find yourself writing one,
+read from the catalog instead.
+
+**NimScript constraint**: `BASE.nims` is evaluated by NimScript (via
+`nim e BASE.nims` in `rebuildBaseJson`). Any module the DSL imports must work
+in NimScript's sandboxed VM:
+- Wrap `getAppDir`, `createDir`, and other forbidden procs in
+  `when not defined(nimscript) and not defined(js):` blocks.
+- Prefer `currentSourcePath()` over `getAppDir()` for path resolution —
+  works in both compiled and NimScript contexts.
+- File reads (`readFile`, `fileExists`, `parseJson`, `walkDir`) are allowed.
+
 ### Message Flow
 
 `Channel → MessageBus → Gateway → AgentLoop → LLM Provider → MessageBus → Channel`
