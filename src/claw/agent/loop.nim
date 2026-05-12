@@ -827,22 +827,44 @@ proc formatSessionStatus*(s: SessionStatus): string =
     result.add("Status:   active (~" & $toGo & " tokens to threshold)\n")
 
 proc resolveContextWindow*(modelName: string, fallback: int): int =
-  ## Look up the model's INPUT limit from the canonical catalog
-  ## (`res/models.json`). Used to size the summarisation threshold,
-  ## NOT to set the per-request `max_tokens` field.
+  ## Look up the model's INPUT limit from `res/models.json`. Used to size
+  ## the summarisation / size-guard thresholds, NOT the per-request
+  ## `max_tokens` field.
   ##
   ## Tries (in order):
-  ##   1. exact id (e.g. "deepseek/deepseek-v4-flash")
-  ##   2. as canonical id with `<vendor>/` prefix scan
-  ##   3. fallback to caller-supplied default
+  ##   1. exact canonical id match (e.g. "deepseek/deepseek-v4-flash")
+  ##   2. canonical id with `<vendor>/` prefix scan
+  ##   3. per-provider models[] by id (e.g. providers["OpenCode Go"].models
+  ##      contains `mimo-v2.5` with context_length: 1_000_000)
+  ##         a. if the entry links to a canonical via its `model` field
+  ##            AND that canonical has contextLength, prefer canonical
+  ##            (richer metadata, hand-curated)
+  ##         b. otherwise use the entry's inline contextLen
+  ##   4. fallback to caller-supplied default (typically 32K)
+  ##
+  ## Without step 3, models in the per-provider catalog (most OpenCode Go
+  ## entries, vendor-specific aggregator listings, etc.) silently fell
+  ## back to 32K — undersizing the size-guard threshold and making
+  ## tool-heavy turns trip the guard far below the model's real capacity.
   if modelName.len == 0: return fallback
   let cat = effectiveCatalog()
+  # 1. Direct canonical match
   if cat.canonical.hasKey(modelName):
     let ctx = cat.canonical[modelName].contextLength
     if ctx > 0: return ctx
+  # 2. <vendor>/<modelName> canonical scan
   for canonicalId, canonical in cat.canonical.pairs:
     if canonicalId.endsWith("/" & modelName):
       if canonical.contextLength > 0: return canonical.contextLength
+  # 3. Per-provider models[] — prefer canonical link if available,
+  #    fall back to the per-provider inline contextLen.
+  for provName, provCat in cat.providers.pairs:
+    for m in provCat.models:
+      if m.id == modelName:
+        if m.canonical.len > 0 and cat.canonical.hasKey(m.canonical):
+          let ctx = cat.canonical[m.canonical].contextLength
+          if ctx > 0: return ctx
+        if m.contextLen > 0: return m.contextLen
   fallback
 
 proc resolveMaxOutputTokens*(modelName: string, requested: int): int =
@@ -853,9 +875,11 @@ proc resolveMaxOutputTokens*(modelName: string, requested: int): int =
   ## so a high request like 32k still works on a model whose ceiling
   ## is 8k or 384k, without operator guesswork per-model.
   ##
-  ## If the catalog doesn't record a cap, the requested value is
-  ## returned unchanged (defer to the operator's setting and let the
-  ## provider enforce its own limit if any).
+  ## Lookup order mirrors resolveContextWindow:
+  ##   1. exact canonical id
+  ##   2. `<vendor>/<modelName>` canonical scan
+  ##   3. per-provider models[] → linked canonical (if any)
+  ##   4. fallback to requested value (defer to provider's own enforcement)
   if modelName.len == 0: return requested
   let cat = effectiveCatalog()
   var modelCap = 0
@@ -866,6 +890,15 @@ proc resolveMaxOutputTokens*(modelName: string, requested: int): int =
       if canonicalId.endsWith("/" & modelName):
         modelCap = canonical.maxOutputTokens
         if modelCap > 0: break
+  if modelCap == 0:
+    # Per-provider entry → follow `canonical` link if present
+    for provName, provCat in cat.providers.pairs:
+      for m in provCat.models:
+        if m.id == modelName and m.canonical.len > 0 and
+           cat.canonical.hasKey(m.canonical):
+          modelCap = cat.canonical[m.canonical].maxOutputTokens
+          if modelCap > 0: break
+      if modelCap > 0: break
   if modelCap > 0 and requested > modelCap: return modelCap
   requested
 
