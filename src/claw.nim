@@ -23,7 +23,7 @@ Usage:
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>]
   claw (company|co) list-templates [--format=<fmt>]
-  claw (company|co) update [--restart] [--no-pull]
+  claw (company|co) update [--restart] [--no-pull] [--sync-secrets]
   claw (company|co) migrate <from> <to> [--no-credentials] [--no-channels] [--state] [--dry-run] [--force]
   claw upgrade [--check] [--rollback] [--branch=<b>] [--no-restart]
   claw (company|co) push [<url>] [--message=<m>] [--force]
@@ -1091,6 +1091,7 @@ when isMainModule:
   elif isCompanyCmd(args, "update"):
     let doRestart = bool(args["--restart"])
     let noPull = bool(args["--no-pull"])
+    let syncSecrets = bool(args["--sync-secrets"])
     let companyDir = getNimClawDir()
     let scriptPath = companyDir / "BASE.nims"
     if not fileExists(scriptPath):
@@ -1148,6 +1149,15 @@ when isMainModule:
     let (ok, output) = rebuildBaseJson(companyDir)
     if output.len > 0: stdout.write output
     if not ok: quit(1)
+
+    # --sync-secrets: push .env values into keychain for every declared
+    # Feishu app. Useful after editing .env to rotate a secret, or after
+    # `claw co migrate --include-secrets` lands new secrets on a fresh
+    # machine. Idempotent; skips apps with empty .env values.
+    if syncSecrets:
+      echo ""
+      var cfg = loadConfig(companyDir / "config.json")
+      echo runChannelCommand(cfg, @["sync-secrets"])
 
     if wasRunning and doRestart:
       echo ""

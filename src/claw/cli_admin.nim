@@ -1,5 +1,6 @@
 import std/[os, strutils, strformat, osproc, json, options, times, tables, asyncdispatch, algorithm, random, sets, unicode, sequtils]
 import config, agent/invites, agent/cortex, agent/binding, libnkn/nkn_bridge, QRgen, utils
+import env_file
 import skill_grant
 import tools/registry/manifest as tool_manifest
 import billing/[subscription as sub_mod, usage as usage_mod, welcome as welcome_mod, company as company_mod, plants as plants_mod]
@@ -678,6 +679,104 @@ proc authFeishuChannel*(cfg: var Config, args: seq[string]): string =
   res.add("\nRestart the gateway to connect.")
   return res
 
+proc rotateFeishuChannel*(cfg: var Config, args: seq[string]): string =
+  ## Rotate the App Secret for an already-bound Feishu app. Unlike `auth`,
+  ## refuses to set up a new app — rotation assumes prior binding.
+  ##
+  ## Writes the new secret to TWO places:
+  ##   1. macOS Keychain via lark-cli (runtime source of truth)
+  ##   2. `.env` as FEISHU_APP_SECRET__<APP_ID> (captures the value for
+  ##      `claw co migrate --include-secrets` so it travels cross-machine)
+  ##
+  ## Usage:
+  ##   claw channel rotate feishu <APP_ID> <NEW_SECRET>
+  ##   claw channel rotate feishu <APP_ID>           # read from .env
+  let bin = feishu_channel.findLarkCli()
+  if bin.len == 0:
+    return "Error: lark-cli not found; run `claw channel build lark` first."
+  if args.len < 1:
+    return "Usage: claw channel rotate feishu <APP_ID> [<NEW_SECRET>]\n\n" &
+           "  Omit <NEW_SECRET> to read it from FEISHU_APP_SECRET__<APP_ID>\n" &
+           "  in this company's .env. Use that form if you've already edited\n" &
+           "  .env and want claw to push the value into keychain.\n\n" &
+           "  For first-time setup use `claw channel auth feishu` instead."
+  let appID = args[0]
+
+  # Refuse if app isn't declared — rotate ≠ first-time bind. Operator
+  # mistakes ("rotate" when meant "auth") shouldn't silently create new
+  # bindings without going through BASE.nims persistence.
+  var declared = false
+  for a in cfg.channels.feishu.apps:
+    if a.app_id == appID: declared = true; break
+  if not declared:
+    return "Error: app '" & appID & "' is not bound to this company.\n" &
+           "       Use `claw channel auth feishu " & appID &
+           " <SECRET>` for first-time setup."
+
+  # Determine new secret: arg, else .env
+  let envPath = getNimClawDir() / ".env"
+  var newSecret = ""
+  var source = ""
+  if args.len >= 2 and args[1].len > 0:
+    newSecret = args[1]
+    source = "cli arg"
+  else:
+    newSecret = readEnvValue(envPath, "FEISHU_APP_SECRET__" & appID)
+    source = ".env"
+    if newSecret.len == 0:
+      return "Error: no secret provided. Either pass it as the second arg, or\n" &
+             "       set FEISHU_APP_SECRET__" & appID & "=<secret> in .env first."
+
+  stdout.write "Updating keychain for " & appID & " (source: " & source & ")... "
+  stdout.flushFile()
+  if not feishu_channel.initLarkCliConfig(bin, appID, newSecret):
+    return "Failed. Check the secret value (lark-cli reported an error)."
+  echo "OK"
+
+  # Mirror to .env. If the source was .env this is a no-op write; if the
+  # source was CLI we capture it for future migrations.
+  writeEnvValue(envPath, "FEISHU_APP_SECRET__" & appID, newSecret)
+
+  return "Rotated Feishu app " & appID & ".\n" &
+         "  ✓ keychain updated via lark-cli\n" &
+         "  ✓ .env captured FEISHU_APP_SECRET__" & appID &
+         " (for future cross-machine migrations)\n\n" &
+         "Restart the gateway to pick up the new secret:\n" &
+         "  claw co stop && claw gateway"
+
+proc syncChannelSecrets*(cfg: var Config): string =
+  ## For every declared Feishu app: if .env has a non-empty
+  ## FEISHU_APP_SECRET__<APP_ID>, push it into keychain via lark-cli.
+  ## Idempotent. Designed for the post-migration / post-rotation case:
+  ## operator edits .env, runs `claw co update --sync-secrets`, gateway
+  ## picks up new secrets on next restart.
+  let bin = feishu_channel.findLarkCli()
+  if bin.len == 0:
+    return "[sync-secrets] lark-cli not found; skipping channel sync."
+  let envPath = getNimClawDir() / ".env"
+  var report = "[sync-secrets] Reconciling env→keychain for declared Feishu apps:\n"
+  var synced = 0
+  var skipped = 0
+  var failed = 0
+  for app in cfg.channels.feishu.apps:
+    let key = "FEISHU_APP_SECRET__" & app.app_id
+    let secret = readEnvValue(envPath, key)
+    if secret.len == 0:
+      report.add("  ~ " & app.app_id & ": .env value empty — skipping\n")
+      inc skipped
+      continue
+    if feishu_channel.initLarkCliConfig(bin, app.app_id, secret):
+      report.add("  ✓ " & app.app_id & ": keychain updated from .env\n")
+      inc synced
+    else:
+      report.add("  ✗ " & app.app_id & ": initLarkCliConfig failed (check log)\n")
+      inc failed
+  report.add("  (" & $synced & " synced, " & $skipped & " skipped" &
+             (if failed > 0: ", " & $failed & " failed" else: "") & ")")
+  if synced > 0:
+    report.add("\n\nRestart gateway to apply: claw co stop && claw gateway")
+  return report
+
 proc renderQRAsString(qr: DrawedQRCode): string  # forward: defined later
 
 proc slugForIdentifier(agentName: string): string =
@@ -929,12 +1028,14 @@ proc channelInstanceRows(cfg: Config): seq[tuple[name, status, credType, details
 
 proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false): string =
   if args.len == 0:
-    return "Usage: claw channel <list|types|auth|build|remove> [args]\n" &
-           "  list   — channels configured on this company (table)\n" &
-           "  types  — channel types the binary supports (res/channels.json)\n" &
-           "  auth   — bind credentials for a channel to this company\n" &
-           "  build  — build a vendor CLI (lark, nkn) from the submodule\n" &
-           "  remove — disable a channel on this company\n\n" &
+    return "Usage: claw channel <list|types|auth|rotate|sync-secrets|build|remove> [args]\n" &
+           "  list         — channels configured on this company (table)\n" &
+           "  types        — channel types the binary supports (res/channels.json)\n" &
+           "  auth         — bind credentials for a channel to this company\n" &
+           "  rotate       — rotate the secret for an already-bound app (keychain + .env)\n" &
+           "  sync-secrets — push .env values into keychain for every declared Feishu app\n" &
+           "  build        — build a vendor CLI (lark, nkn) from the submodule\n" &
+           "  remove       — disable a channel on this company\n\n" &
            "Mirror of providers: `channel add/remove` the TYPE is done in\n" &
            "res/channels.json (binary-level). Per-company is just `auth`."
   let subcmd = args[0]
@@ -1033,6 +1134,24 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
     else: return "Auth helper not yet available for '" & args[1] & "'.\n" &
                  "Set the required env vars from `claw channel types` and\n" &
                  "declare the channel block in BASE.nims directly."
+
+  if subcmd == "rotate":
+    if args.len < 2:
+      return "Usage: claw channel rotate <type> <APP_ID> [<NEW_SECRET>]\n\n" &
+             "  Rotate the secret for an already-bound channel app. Updates\n" &
+             "  both the keychain (via lark-cli) AND the .env file so the new\n" &
+             "  value travels with `claw co migrate --include-secrets`.\n\n" &
+             "  Omit <NEW_SECRET> to read it from .env (handy if you already\n" &
+             "  edited .env and just want claw to apply the change to keychain).\n\n" &
+             "  For first-time setup use `claw channel auth` instead."
+    case args[1]
+    of "feishu", "lark": return rotateFeishuChannel(cfg, args[2..^1])
+    else: return "Rotate helper not yet available for '" & args[1] & "'.\n" &
+                 "Only feishu/lark support keychain-backed secrets today.\n" &
+                 "For env-only channels, edit .env and restart the gateway."
+
+  if subcmd == "sync-secrets":
+    return syncChannelSecrets(cfg)
 
   if subcmd == "build":
     if args.len < 2:
