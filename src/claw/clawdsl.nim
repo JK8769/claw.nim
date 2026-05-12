@@ -2216,7 +2216,17 @@ proc build*(s: var ClawSpec) =
     echo "Error: org name is required. Add: org \"MyCompany\": ..."
     quit(1)
 
-  let serviceDir = getHomeDir() / ".nimclaw-" & s.org.name
+  # Service-dir precedence: NIMCLAW_DIR env override (USB-resident dirs,
+  # CI, tests, `claw co update` against a non-active deployment) wins;
+  # otherwise derive from the org name in BASE.nims. We deliberately do
+  # NOT fall through to the active-context pointer (`getNimClawDir`'s
+  # behavior) — `build` is the canonical site that determines where the
+  # company materializes, and "create a new company while another is
+  # active" should land at the org-named path, not clobber the active.
+  let envDir = getEnv("NIMCLAW_DIR")
+  let serviceDir =
+    if envDir.len > 0: envDir
+    else: getHomeDir() / ".nimclaw-" & s.org.name
   let workspace = serviceDir / "workspace"
 
   # Load prior nc:id assignments from existing BASE.json @graph BEFORE
@@ -2324,7 +2334,12 @@ proc build*(s: var ClawSpec, sourcePath: string) =
   ## a canonical editable config co-located with BASE.json and .env.
   build(s)
   if sourcePath.len == 0: return
-  let serviceDir = getHomeDir() / (".nimclaw-" & s.org.name)
+  # Mirror the precedence rule from the single-arg `build*` overload above:
+  # NIMCLAW_DIR wins (USB / CI / tests), else org-name-derived home path.
+  let envDir = getEnv("NIMCLAW_DIR")
+  let serviceDir =
+    if envDir.len > 0: envDir
+    else: getHomeDir() / (".nimclaw-" & s.org.name)
   let dest = serviceDir / "BASE.nims"
   try:
     if sourcePath != dest:
