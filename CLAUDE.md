@@ -122,6 +122,35 @@ in NimScript's sandboxed VM:
   works in both compiled and NimScript contexts.
 - File reads (`readFile`, `fileExists`, `parseJson`, `walkDir`) are allowed.
 
+### Naming: code modules vs tool surface
+
+Code modules are named after what they ARE (the substrate). Tools are named
+after what they ENABLE (the capability the user invokes). The same data
+layer can carry an anatomical/structural name internally and a functional
+name in the tool surface — these should NOT be the same name.
+
+| Code module (substrate) | Tool surface (capability) | Why |
+|---|---|---|
+| `cortex.nim` (world graph: people, agents, relations, RBAC) | `social` (query/who/update/invite/redeem/customers) | The cortex is the brain organ; "social ability" is what it enables. Operators read tool names thousands of times daily; surface should map to what they DO. |
+| `bus.nim`, `mailbox.nim` (queues, JSON files) | `mail` (send persistent message) | Substrate vs capability |
+| `reply_unified.nim` (Feishu format guards, CardKit promotion) | `reply` (respond to current partner) | Substrate name carries implementation detail; tool name is the user verb |
+| `memory_unified.nim` + `agent/memory.nim` | `memory` (store / recall / verify) | Verb is the affordance |
+
+Anti-pattern (caught in May 2026): a tool named `query_graph` exposed the
+"graph" data-structure name to the agent surface — generic, didn't say
+WHICH graph or WHAT lived in it. The agent (and the LLM reading the tool
+list) had to infer the connection between "graph" and "the people/customers
+my company knows about." Renaming the tool to `social` while keeping
+`cortex.nim` as the implementation module fixed the operator/LLM UX
+without losing any framework-internal precision.
+
+**Rule of thumb when adding a new tool:**
+1. Pick the name an operator would type into a help search: "How do I
+   …?" The verb in their question is the right tool prefix.
+2. If you find yourself naming a tool after a file path, a class, or a
+   data structure, stop. Name it after the capability instead — and
+   leave the file/class/structure name unchanged in code.
+
 ### Message Flow
 
 `Channel → MessageBus → Gateway → AgentLoop → LLM Provider → MessageBus → Channel`

@@ -13,12 +13,12 @@ const
   # has been the dominant token sink because the agent saw all 30+
   # tool schemas every tick and reached for them open-endedly (clock
   # was the top one — redundant with the time already in the prompt;
-  # mcp_sungrow_* polled APIs on every tick; redeem_invite was being
-  # hallucinated). The minimum useful set for "scan inbox, deliver
+  # mcp_sungrow_* polled APIs on every tick; `social action=redeem` was
+  # being hallucinated). The minimum useful set for "scan inbox, deliver
   # queued forwards, review memory, escalate if urgent":
   #   - read_file / list_dir   review HEARTBEAT.md, scan mail/
   #   - forward                deliver queued cross-user messages
-  #   - update_contact         apply pending name updates
+  #   - social action=update   apply pending name updates
   #   - reply                  high-priority output (per prompt's
   #                            "do NOT communicate unless urgent")
   #   - delegate               hand urgent work to a peer agent

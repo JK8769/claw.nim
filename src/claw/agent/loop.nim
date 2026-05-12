@@ -22,8 +22,8 @@ import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, push
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/dev/git
 import ../tools/sched/cron
-import ../tools/admin/[provider_auth, model_list, config_tools, query_graph, update_contact, feishu_add_app]
-import ../tools/customer/[invite, create_customer_invite, my_customers]
+import ../tools/admin/[provider_auth, model_list, config_tools, feishu_add_app]
+import ../tools/social_unified
 import ../tools/visual/[screenshot, image_info, image_analyze]
 import ../tools/hardware/hardware_unified
 import ../tools/mcp/mcp_unified
@@ -2925,12 +2925,12 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # --- Hardware (unified) ---
   regTagged(newUnifiedHardwareTool(cfg.peripherals.boards), ["hardware", "sensors", "i2c", "spi"], "I2C SPI board info memory read write hardware peripherals")
   regTagged(newDelegateTool(workspace, cfg.agents.named, askPeer = askPeer), ["agent", "delegation"], "delegate tasks to other named agents")
-  regTagged(newRedeemInviteTool(), ["admin", "core"])
+  # `social` (formerly query_graph + update_contact + my_customers +
+  # create_customer_invite + invite/redeem) registered after
+  # contextBuilder is created — see below.
 
   # --- Tasks & orchestration (unified) ---
   regTagged(newNimclawTool(workspace), ["orchestration", "automation"], "assign claim submit tasks on the platform task board")
-  # update_contact moved to after contextBuilder creation — it needs
-  # the ContextBuilder for Guest-ledger writes.
 
   # --- Filesystem (edit, append) ---
   regTagged(newEditFileTool(workspace), ["filesystem", "data", "core"], "edit files with find and replace")
@@ -2950,14 +2950,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # SuperAdmin add new apps without dropping to `claw channel auth`.
   regTagged(newFeishuAddAppTool(), ["admin", "channels", "feishu"],
             "register new feishu lark app id secret route agent")
-  # SuperAdmin-only: chat-driven customer onboarding. Creates a Person
-  # entity + invite code; returns an `nc:X/CODE` string to share.
-  regTagged(newCreateCustomerInviteTool(), ["admin", "customer", "invite"],
-            "create customer invite code onboarding nc:id bundled string")
-  # Internal-tier self-service: lets any internal user ask their
-  # agent "how many customers have I invited?" without a slash.
-  regTagged(newMyCustomersTool(workspace), ["customer", "invite", "stats"],
-            "my customers count list onboarded invited referrals")
+  # (Customer onboarding + my-customers + graph-query + update-contact +
+  # redeem-invite all collapsed into the unified `social` tool, registered
+  # below near the contextBuilder creation site since `social` needs the
+  # ContextBuilder for its guest-rename path.)
   regTagged(newModelListTool(), ["diagnostics", "providers", "models"],
             "list available llm models capabilities context pricing")
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
@@ -3038,7 +3034,14 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
              {"agent": agentName, "sessions": $injected,
               "hash": policyHash}.toTable)
 
-  regTagged(newUpdateContactTool(officeDir, contextBuilder), ["admin", "contacts", "core"], "update contact information in graph or guest ledger")
+  # Social — single tool for read/write of the world graph + customer
+  # onboarding flow. Backed by cortex module. Consolidates the former
+  # query_graph + update_contact + my_customers + create_customer_invite
+  # + invite (the misnamed redeemer) tools. Action enum: query | who |
+  # update | customers | invite | redeem.
+  regTagged(newSocialTool(officeDir, workspace, contextBuilder),
+            ["admin", "social", "graph", "customer", "invite", "core"],
+            "query graph who entity rename contact customers onboard mint redeem invite pin code")
 
   let rTool = newReplyTool()
   rTool.setSendCallback(callback)
@@ -3068,7 +3071,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   findToolInstance.setTags(@["utility", "core"])
   findToolInstance.setSearchHint("discover and activate hidden tools")
   toolsRegistry.register(findToolInstance)
-  regTagged(newQueryGraphTool(contextBuilder), ["admin", "graph", "core"], "query world graph entities and relations")
+  # (Graph query collapsed into `social action=query` — see registration above.)
 
   # Phase 400: Scan Tier 1 (foundation), Tier 2 (company), and system-wide MCPs.
   #

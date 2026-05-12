@@ -43,7 +43,8 @@ possible; falls through to the live API for gaps.
 ## Workflow
 
 1. Identify the customer and their `plant_ids` from the cortex
-   graph (`query_graph`) or the operator's prompt.
+   graph (`social action=query` or `social action=who id=nc:N`)
+   or the operator's prompt.
 2. Send `reply_progress`: "Generating <month> report for
    <customer> — pulling cached data..."
 3. For each plant, pull historical yield:

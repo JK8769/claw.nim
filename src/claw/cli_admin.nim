@@ -1212,7 +1212,7 @@ proc runChannelCommand*(cfg: var Config, args: seq[string], asJson: bool = false
 # Human identities (graph Persons) that this company knows about.
 # Not the same as `agent list` — those are AIs (ekAI), these are the
 # humans they talk to. Guests are users too; they sit at trust 10 until
-# someone promotes them via redeem_invite or a SuperAdmin edit.
+# someone promotes them via `social action=redeem` or a SuperAdmin edit.
 
 proc maxTrustFor(graph: WorldGraph, userID: WorldEntityID): int =
   ## Peek across every agent's relationships and take the highest trust
@@ -1458,7 +1458,7 @@ proc mintCustomerInvite*(workspace: string,
                          lang: string = ""): CustomerInviteResult =
   ## Single source of truth for "issue a customer access code". Used by
   ## `claw user invite` (CLI), `/user invite` (slash command), and the
-  ## `create_customer_invite` MCP tool.
+  ## `social action=invite` agent-callable tool.
   ##
   ## Does the full dance: validate skill grants, pre-allocate a Customer
   ## Person entity with an `allowed_skills` custom field, mint a code with

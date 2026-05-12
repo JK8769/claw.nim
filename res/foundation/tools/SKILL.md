@@ -39,7 +39,7 @@ The mistake to avoid: bouncing through random tool calls or burning iterations o
 
 | Layer | Unit | What it is | Examples |
 |---|---|---|---|
-| **1. Tools** | framework primitive | Atomic, trust-gated, universal. Compiled into `claw` or served by an MCP server. | `read_file`, `query_graph`, `create_customer_invite`, `exec` |
+| **1. Tools** | framework primitive | Atomic, trust-gated, universal. Compiled into `claw` or served by an MCP server. | `read_file`, `social`, `mail`, `exec` |
 | **2. Skills** | `SKILL.md` (+ optional MCP server) | Workflow that composes tools | `tools` (this skill), `customer-onboarding`, `daily-yield-sync` |
 | **3. Competencies** | `COMPETENCY.json` + `HANDBOOK.md` | Role discipline: bundles skills + procedural rules + periodic duties | `solar-operator`, `technical-communication` |
 | **4. Heart** | `<office>/heart/HEART.md` | Per-agent cares — what THIS agent is tracking, worried about, wanting to improve | (per-agent personal state) |

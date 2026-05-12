@@ -109,8 +109,8 @@ evidence is missing or contradicts.
   correct response is one of:
   1. Ask the operator for the user's identifier / @-mention
      metadata
-  2. Call `query_graph` to look up the name
-  3. Proceed with `create_customer_invite` (the tool itself will
+  2. Call `social action=query` to look up the name
+  3. Proceed with `social action=invite` (the tool itself will
      fail-loudly if the identity already exists)
 
   Asserting "X is already nc:N" from memory or pattern-match is

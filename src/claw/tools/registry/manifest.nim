@@ -119,15 +119,22 @@ const AllTools*: seq[ToolSpec] = @[
        domain = "web",
        default = true, heartbeatSafe = false, category = "web"),
 
-  # Cortex / admin (granted by default — every agent might query the graph)
-  spec(name = "query_graph", description = "query world graph entities and relations",
-       tags = @["admin", "graph", "core"], domain = "admin",
-       default = true, heartbeatSafe = false, category = "admin"),
-  spec(name = "update_contact",
-       description = "update contact information in graph or guest ledger",
-       tags = @["admin", "contacts", "core"], domain = "admin",
-       default = true, heartbeatSafe = true, externalAllowed = true,
-       category = "admin"),
+  # Social — read/write world graph + customer onboarding flow.
+  # Replaces the former query_graph + update_contact + my_customers +
+  # create_customer_invite + redeem_invite tools. Single tool, action
+  # enum (query | who | update | customers | invite | redeem). Backed
+  # by the cortex module — the brain's social organ, hence the name.
+  spec(name = "social",
+       description = "social interactions over the world graph: " &
+                     "query, look up, rename, list onboarded customers, " &
+                     "mint/redeem customer invites",
+       tags = @["admin", "social", "graph", "customer", "invite", "core"],
+       searchKeywords = @["graph", "who", "lookup", "entity", "rename",
+                           "contact", "customers", "onboard", "mint",
+                           "redeem", "invite", "pin", "code"],
+       domain = "social",
+       default = true, heartbeatSafe = false, externalAllowed = true,
+       category = "social"),
 
   # Time / scheduling / housekeeping
   spec(name = "clock", description = "get current date and time",
@@ -216,20 +223,9 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["admin", "channels", "feishu"], domain = "admin",
        default = false, heartbeatSafe = false, category = "vendor"),
 
-  # Customer onboarding
-  spec(name = "create_customer_invite",
-       description = "create customer invite code; returns nc:X/CODE bundled string — SuperAdmin only",
-       tags = @["admin", "customer", "invite"], domain = "customer",
-       default = false, heartbeatSafe = false, category = "customer"),
-  spec(name = "my_customers",
-       description = "my customers count, list, onboarded, invited, referrals",
-       tags = @["customer", "invite", "stats"], domain = "customer",
-       default = false, heartbeatSafe = false, category = "customer"),
-  spec(name = "redeem_invite",
-       description = "redeem an invite code to claim a pre-allocated entity identity",
-       tags = @["admin", "core"], domain = "customer",
-       default = false, heartbeatSafe = false, externalAllowed = true,
-       category = "customer"),
+  # (Customer onboarding — create_customer_invite, my_customers,
+  # redeem_invite — all collapsed into the unified `social` tool above
+  # as actions=invite, =customers, =redeem respectively.)
 
   # MCP forge (heavy — for agents that need to author tools)
   spec(name = "mcp",
