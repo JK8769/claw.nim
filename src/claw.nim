@@ -941,7 +941,12 @@ when isMainModule:
   # channel auth tokens) that already belong to the operator and just
   # need to move with them. Policy (BASE.nims) stays manual — operators
   # want control. State (sessions/memory) is opt-in via --state.
-  elif isCompanyCmd(args, "migrate"):
+  #
+  # Two `migrate` usages share the verb (this one + the older BASE.nims
+  # syntax rewriter further below). Disambiguate by argument shape:
+  # this arm only fires when <from> is present; the rewriter handles
+  # the `--apply` form.
+  elif isCompanyCmd(args, "migrate") and $args["<from>"] != "nil":
     let fromCo = $args["<from>"]
     let toCo = $args["<to>"]
     let doCredentials = not bool(args["--no-credentials"])
@@ -950,8 +955,8 @@ when isMainModule:
     let dryRun = bool(args["--dry-run"])
     let force = bool(args["--force"])
 
-    let fromDir = getHomeDir() / ".nimclaw-" & fromCo
-    let toDir = getHomeDir() / ".nimclaw-" & toCo
+    let fromDir = companyDirForName(fromCo)
+    let toDir = companyDirForName(toCo)
     if not dirExists(fromDir):
       echo "Error: source company not found at " & fromDir
       quit(1)
@@ -974,24 +979,13 @@ when isMainModule:
     # empty or --force is set. Keys the destination doesn't declare are
     # left alone (no pollution).
     if doCredentials:
-      proc parseEnv(path: string): OrderedTable[string, string] =
-        result = initOrderedTable[string, string]()
-        if not fileExists(path): return
-        for line in lines(path):
-          let s = line.strip()
-          if s.len == 0 or s.startsWith("#"): continue
-          let eq = s.find('=')
-          if eq <= 0: continue
-          let key = s[0 ..< eq].strip()
-          let val = s[eq + 1 .. ^1]
-          result[key] = val
-      let fromEnv = parseEnv(fromDir / ".env")
-      let toEnv = parseEnv(toDir / ".env")
+      let fromEnv = parseEnvFile(fromDir / ".env")
+      let toEnv = parseEnvFile(toDir / ".env")
       if fromEnv.len == 0:
         echo "[credentials] source has no .env or it's empty — skipping"
       else:
         echo "[credentials] reading " & fromDir / ".env"
-        var updates: OrderedTable[string, string] = initOrderedTable[string, string]()
+        var updates = initOrderedTable[string, string]()
         var unchanged = 0
         var preserved = 0
         for k, toVal in toEnv.pairs:
@@ -1011,27 +1005,13 @@ when isMainModule:
             else: "overwritten"
           echo "  ✓ " & k & ": " & action
         if not dryRun and updates.len > 0:
-          # Apply updates in-place, preserving line order + comments.
-          let raw = readFile(toDir / ".env").splitLines()
-          var newLines: seq[string] = @[]
-          for line in raw:
-            let s = line.strip(leading = true, trailing = false)
-            if s.len == 0 or s.startsWith("#"):
-              newLines.add(line); continue
-            let eq = s.find('=')
-            if eq <= 0:
-              newLines.add(line); continue
-            let key = s[0 ..< eq].strip()
-            if updates.hasKey(key):
-              newLines.add(key & "=" & updates[key])
-            else:
-              newLines.add(line)
-          writeFile(toDir / ".env", newLines.join("\n") & (if raw[^1].len == 0: "" else: "\n"))
+          writeEnvValues(toDir / ".env", updates)
         echo "  (" & $toEnv.len & " keys checked, " & $updates.len &
-             " copied, " & $preserved & " preserved, " & $unchanged & " unchanged)"
+             (if dryRun: " would copy" else: " copied") &
+             ", " & $preserved & " preserved, " & $unchanged & " unchanged)"
       echo ""
 
-    # ── Channels: copy per-app lark-cli configs (keychain refs) ──
+    # ── Channels: copy per-app config dirs (keychain refs) ──
     # Credentials proper stay in keychain (per-user, machine-local);
     # the per-app config dirs carry the pointer + per-deployment state.
     # Without this, every migration breaks Feishu auth because .env
@@ -1048,17 +1028,18 @@ when isMainModule:
           if kind != pcDir: continue
           let channelName = lastPathPart(path)
           echo "  " & channelName & ":"
+          let destChannelDir = toDir / "channels" / channelName
+          if not dryRun: createDir(destChannelDir)
           for k2, p2 in walkDir(path):
             if k2 != pcDir: continue
             let dirName = lastPathPart(p2)
-            let dest = toDir / "channels" / channelName / dirName
+            let dest = destChannelDir / dirName
             if dirExists(dest) and not force:
               echo "    ~ " & dirName & ": already exists in destination (kept)"
               inc keptTotal
               continue
             if not dryRun:
-              if dirExists(dest): removeDir(dest)
-              createDir(toDir / "channels" / channelName)
+              removeDir(dest)  # no-op when missing
               copyDir(p2, dest)
             echo "    ✓ " & dirName & " copied"
             inc copiedTotal
@@ -1071,6 +1052,8 @@ when isMainModule:
     # merge with nc:id stability handling, which is v2.
     if doState:
       echo "[state] copying office data (sessions/memory/heart/knowledge/workstation)"
+      const stateSubs = ["sessions", "memory", "heart", "knowledge",
+                         "workstation/active"]
       let fromOff = fromDir / "workspace" / "offices"
       let toOff = toDir / "workspace" / "offices"
       if not dirExists(fromOff):
@@ -1079,37 +1062,22 @@ when isMainModule:
         for kind, path in walkDir(fromOff):
           if kind != pcDir: continue
           let agentName = lastPathPart(path)
-          let dest = toOff / agentName
-          if not dirExists(dest):
+          let destOffice = toOff / agentName
+          if not dirExists(destOffice):
             echo "  ~ " & agentName & ": destination has no office (agent renamed? skipping)"
             continue
-          for sub in ["sessions", "memory", "heart", "knowledge"]:
+          for sub in stateSubs:
             let s = path / sub
-            let d = dest / sub
+            let d = destOffice / sub
             if not dirExists(s): continue
             if dirExists(d) and not force:
               echo "    ~ " & agentName & "/" & sub & ": already exists (kept)"
               continue
             if not dryRun:
-              if dirExists(d): removeDir(d)
+              removeDir(d)  # no-op when missing
+              if "/" in sub: createDir(d.parentDir)
               copyDir(s, d)
             echo "    ✓ " & agentName & "/" & sub & " copied"
-        # workstation/active also worth copying
-        let fromWs = fromDir / "workspace" / "offices"
-        for kind, path in walkDir(fromWs):
-          if kind != pcDir: continue
-          let agentName = lastPathPart(path)
-          let s = path / "workstation" / "active"
-          let d = toDir / "workspace" / "offices" / agentName / "workstation" / "active"
-          if dirExists(s):
-            if dirExists(d) and not force:
-              echo "    ~ " & agentName & "/workstation/active: already exists (kept)"
-              continue
-            if not dryRun:
-              createDir(d.parentDir)
-              if dirExists(d): removeDir(d)
-              copyDir(s, d)
-            echo "    ✓ " & agentName & "/workstation/active copied"
       echo ""
 
     echo "Migration " & (if dryRun: "preview" else: "complete") & "."
