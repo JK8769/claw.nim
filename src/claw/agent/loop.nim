@@ -21,6 +21,7 @@ import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
 import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, pushover]
+import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
 import ../tools/dev/git
@@ -2954,6 +2955,12 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # --- Hardware (unified) ---
   regTagged(newUnifiedHardwareTool(cfg.peripherals.boards), ["hardware", "sensors", "i2c", "spi"], "I2C SPI board info memory read write hardware peripherals")
   regTagged(newDelegateTool(workspace, cfg.agents.named, askPeer = askPeer), ["agent", "delegation"], "delegate tasks to other named agents")
+  # Collaborate — multi-agent orchestration over delegate. The navigator
+  # of the social/delegate/collaborate trio: fan_out (parallel) or
+  # pipeline (sequential A→B→C). Internally calls askPeer N times.
+  regTagged(newCollaborateTool(workspace, cfg.agents.named, askPeer = askPeer),
+            ["agent", "delegation", "orchestration", "core"],
+            "fan out parallel pipeline orchestrate multiple agents collaborate")
   # `social` (formerly query_graph + update_contact + my_customers +
   # create_customer_invite + invite/redeem) registered after
   # contextBuilder is created — see below.

@@ -81,6 +81,23 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["agent", "delegation"], domain = "comm",
        default = true, heartbeatSafe = true, externalAllowed = true,
        category = "comm"),
+  # The navigator of the social/delegate/collaborate trio. Multi-agent
+  # orchestration on top of `delegate`: fan tasks out in parallel or
+  # pipeline through agents sequentially. Internal-only (would amplify
+  # external requests into N peer calls).
+  spec(name = "collaborate",
+       description = "multi-agent orchestration (action=fan_out|pipeline). " &
+                     "fan_out: same task to N agents in parallel; pipeline: " &
+                     "sequential A→B→C with each stage seeing the prior output. " &
+                     "Goes through the delegate primitive — peers run their " &
+                     "own tools and trust gate.",
+       tags = @["agent", "delegation", "orchestration", "core"],
+       searchKeywords = @["fan-out", "fanout", "parallel", "pipeline",
+                           "orchestrate", "coordinate", "multi-agent",
+                           "broadcast", "chain", "sequential", "all agents",
+                           "ensemble", "scatter-gather", "navigator"],
+       domain = "comm",
+       default = true, heartbeatSafe = false, category = "comm"),
   spec(name = "forward", description = "forward messages between channels/identities",
        tags = @["messaging", "core"], domain = "comm",
        default = true, heartbeatSafe = true, externalAllowed = true,
