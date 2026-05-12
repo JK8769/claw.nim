@@ -24,11 +24,30 @@ org "REPLACE_WITH_YOUR_ORG_NAME":
 # ── Providers (LLM backends) ──────────────────────────────────
 # Configure at least one provider before running gateway.
 # Use `claw provider auth <name>` to set up API keys, then list them here.
-# Example:
+#
+# RECOMMENDED FOR THIS TEMPLATE (validated May 2026 via long-task probes
+# on a real solar fleet — see commit history for the benchmark methodology):
+#
+#   provider "opencode-go":
+#     apiBase "https://opencode.ai/zen/go/v1"
+#     apiKey "${OPENCODE_GO_API_KEY}"
+#     models "mimo-v2.5", "mimo-v2.5-pro",
+#            "deepseek-v4-pro", "deepseek-v4-flash",
+#            "kimi-k2.5"
+#
 #   provider "deepseek":
-#     model "deepseek-v4-flash"
+#     apiKey "${DEEPSEEK_API_KEY}"
+#     models "deepseek-v4-flash", "deepseek-v4-pro"
+#
+# Why OpenCode Go as primary: at the time of writing it's a $0-tier
+# proxy for the recommended mimo-v2.5 series (best balance of latency,
+# Chinese fluency, and structured-output quality for solar ops). Direct
+# `deepseek` access kept as a robust fallback if the proxy is down.
+#
+# Other examples:
 #   provider "anthropic":
-#     model "claude-sonnet-4.5"
+#     apiKey "${ANTHROPIC_API_KEY}"
+#     models "claude-sonnet-4.5"
 
 # ── Foundation skills (L0, auto-mirrored from framework) ─────
 # These ship with claw.nim and apply to every agent. No declaration needed.
@@ -105,7 +124,12 @@ skill "vendor-sungrow"
 # Customize their names, soul, and channel bindings below.
 
 agent "Frontdesk":
-  models "deepseek-v4-flash"
+  # Validated via probe + live in-loop test on a real solar fleet:
+  # mimo-v2.5 is fast (~17s for a multi-step task), $0 via opencode-go
+  # at current tier, perfect Chinese fluency. mimo-v2.5-pro as fallback
+  # for harder customer questions that benefit from structured output.
+  # Operators on deepseek-only can substitute "deepseek-v4-flash" here.
+  models "mimo-v2.5", "mimo-v2.5-pro"
   role "Staff"
   identity "Staff"
   jobTitle "Customer Support"
@@ -125,7 +149,13 @@ agent "Frontdesk":
     trustLevel 100
 
 agent "Analyst":
-  models "deepseek-v4-flash"
+  # Validated via probe + live in-loop test: mimo-v2.5-pro is the
+  # standout for analytical workloads — produces structured markdown
+  # tables with deviation calculations natively, identifies anomalies
+  # with domain-correct reasoning, $0 via opencode-go at current tier.
+  # deepseek-v4-flash as fallback for long-doc analysis (1M ctx canonical).
+  # Operators on deepseek-only can swap to "deepseek-v4-flash", "deepseek-v4-pro".
+  models "mimo-v2.5-pro", "deepseek-v4-flash"
   role "Admin"
   identity "Staff"
   jobTitle "Performance Analyst"
