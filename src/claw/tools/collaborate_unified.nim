@@ -102,22 +102,30 @@
 ##        domain = "comm",
 ##        default = true, heartbeatSafe = false, category = "comm"),
 
-import std/[json, tables, strutils, options, asyncdispatch, strformat]
+import std/[json, tables, strutils, options, asyncdispatch, strformat,
+              algorithm, sets]
 import ./types
 import ./spec
 import ../config
 import ./comm/delegate as delegate_tool
+import ./capability_unified
 
 const ToolSpec* = spec(
   name = "collaborate",
   description = "Multi-agent orchestration — fan a task out to N peers in " &
-                "parallel, or pipeline through them sequentially. Each step " &
-                "uses the delegate primitive under the hood.",
+                "parallel, pipeline them sequentially, synthesize a single " &
+                "answer (consensus), or pick the best peer for a task " &
+                "(route, dry-run). Pipeline supports per-stage timeouts and " &
+                "on_error policy. Each step uses the delegate primitive " &
+                "under the hood.",
   tags = @["agent", "delegation", "orchestration", "core"],
   searchKeywords = @["fan-out", "fanout", "parallel", "pipeline",
                       "orchestrate", "coordinate", "multi-agent",
                       "broadcast", "chain", "sequential", "all agents",
-                      "ensemble", "scatter-gather", "navigator"],
+                      "ensemble", "scatter-gather", "navigator",
+                      "consensus", "synthesize", "vote", "reduce",
+                      "route", "pick", "recommend", "best-fit",
+                      "on-error", "skip", "retry", "stage-timeout"],
   domain = "comm",
   default = true,
   heartbeatSafe = false,  # makes N parallel LLM calls — never on the heartbeat
@@ -180,13 +188,20 @@ method description*(t: CollaborateTool): string =
     "which uses social for peer identity + trust.",
     "",
     "Actions:",
-    "  fan_out  — dispatch the SAME task to N agents in parallel; collect " &
+    "  fan_out   — dispatch the SAME task to N agents in parallel; collect " &
                   "all replies (or partial set if any timeout). Use for " &
                   "diverse perspectives, parallel research, or comparing " &
                   "specialist answers before deciding.",
-    "  pipeline — sequential A → B → C; each stage sees the prior stage's " &
-                  "output as context. Use for draft→critique→polish or " &
-                  "research→analysis→presentation chains.",
+    "  pipeline  — sequential A → B → C; each stage sees the prior stage's " &
+                  "output as context. Supports stage_timeouts (per-stage " &
+                  "override array) and on_error=abort|skip|retry_once.",
+    "  consensus — fan_out + LLM synthesis: gather N replies then ask a " &
+                  "reasoning-tagged model to reconcile them into one " &
+                  "coherent answer (notes disagreements). Optional " &
+                  "show_raw=true returns the raw replies too.",
+    "  route     — DRY-RUN: pick the best peer for a task by scoring " &
+                  "role/skills/practices keyword overlap. Returns a " &
+                  "recommendation with reasoning; you call delegate yourself.",
   ]
   if t.agents.len > 0:
     lines.add("")
@@ -211,30 +226,49 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
     var names = newJArray()
     for a in t.agents: names.add(%a.name)
     agentItem["enum"] = names
+  # `from_agents` (route only) constrains which peers to score over.
+  var fromAgentsItem = %*{
+    "type": "string",
+    "minLength": 1,
+    "description": "Exact name of a candidate peer to consider during routing."
+  }
+  if t.agents.len > 0:
+    var names = newJArray()
+    for a in t.agents: names.add(%a.name)
+    fromAgentsItem["enum"] = names
   {
     "type": %"object",
     "properties": %*{
       "action": {
         "type": "string",
-        "enum": ["fan_out", "pipeline"],
-        "description": "Orchestration mode. Default 'fan_out' if omitted."
+        "enum": ["fan_out", "pipeline", "consensus", "route"],
+        "description": "Orchestration mode. Default 'fan_out' if omitted. " &
+                       "consensus = fan_out + LLM synthesis. route = pick " &
+                       "best peer by skills/role match (dry-run, no dispatch)."
       },
       "agents": {
         "type": "array",
         "items": agentItem,
         "minItems": 1,
         "maxItems": MaxAgentsPerCall,
-        "description": "Ordered list of peer agent names. For fan_out the " &
-                       "order is just the response order; for pipeline the " &
-                       "order IS the execution order (A→B→C)."
+        "description": "Ordered list of peer agent names. For fan_out & " &
+                       "consensus the order is response order; for pipeline " &
+                       "the order IS execution order (A→B→C). Not used by " &
+                       "route (use from_agents instead)."
       },
       "task": {
         "type": "string",
         "minLength": 1,
-        "description": "The task/prompt. For fan_out it's sent verbatim to " &
-                       "every agent. For pipeline it's the original goal — " &
-                       "each downstream stage is told the prior stage's " &
-                       "output AND the original task."
+        "description": "The task/prompt. fan_out & consensus: sent verbatim " &
+                       "to every agent. pipeline: original goal threaded " &
+                       "through each stage with prior output. route: the " &
+                       "task to score peers against. consensus calls this " &
+                       "'question' but accepts 'task' as a synonym."
+      },
+      "question": {
+        "type": "string",
+        "description": "consensus only — the question to put to every agent. " &
+                       "Synonym for 'task' in consensus mode."
       },
       "timeout_seconds": {
         "type": "integer",
@@ -243,11 +277,60 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
         "description": fmt"Per-agent timeout in seconds. Default {DefaultTimeoutSeconds}, " &
                        fmt"cap {MaxTimeoutSeconds}. For fan_out applies to each " &
                        "future independently (slow peers don't block fast ones); " &
-                       "for pipeline applies to each stage (one stage timing out " &
-                       "aborts the whole pipeline)."
+                       "for pipeline applies to each stage as the default " &
+                       "when stage_timeouts is absent or short for that index."
+      },
+      "stage_timeouts": {
+        "type": "array",
+        "items": {"type": "integer", "minimum": 1, "maximum": MaxTimeoutSeconds},
+        "description": "pipeline only — per-stage timeout overrides (seconds). " &
+                       "Length must match agents.len. Each value clamped to " &
+                       fmt"[1, {MaxTimeoutSeconds}]. Absent → use timeout_seconds " &
+                       "for every stage."
+      },
+      "on_error": {
+        "type": "string",
+        "enum": ["abort", "skip", "retry_once"],
+        "description": "pipeline only — failure policy. Default 'abort' " &
+                       "(current behavior). 'skip' = log error, pass prior " &
+                       "stage's output (or original task if first) to next. " &
+                       "'retry_once' = retry the failing stage once; if " &
+                       "still fails, fall through to abort."
+      },
+      "reduce_prompt": {
+        "type": "string",
+        "description": "consensus only — custom synthesis prompt. Default: " &
+                       "'Synthesize a single coherent answer that reconciles " &
+                       "the responses. Note any disagreement explicitly. " &
+                       "Be concise.'"
+      },
+      "arbiter_tag": {
+        "type": "string",
+        "description": "consensus only — capability tag of the model that " &
+                       "synthesizes the responses. Default 'reasoning'. " &
+                       "Routes via the same path as `capability action=invoke`."
+      },
+      "show_raw": {
+        "type": "boolean",
+        "description": "consensus only — when true, prefix the synthesized " &
+                       "answer with the raw fan_out envelope. Default false."
+      },
+      "from_agents": {
+        "type": "array",
+        "items": fromAgentsItem,
+        "minItems": 1,
+        "maxItems": MaxAgentsPerCall,
+        "description": "route only — restrict scoring to this subset. " &
+                       "Default: every declared peer except the caller."
+      },
+      "explain": {
+        "type": "boolean",
+        "description": "route only — when true, return full ranked list " &
+                       "with each candidate's score breakdown. Default false " &
+                       "(top recommendation only)."
       }
     },
-    "required": %["agents", "task"]
+    "required": %["action"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -363,6 +446,94 @@ proc summarize(text: string, maxLen: int = 120): string =
 # fan_out — dispatch the SAME task to N agents in parallel
 # ---------------------------------------------------------------------------
 
+type
+  FanOutOutcome = object
+    ## One peer's reply (or non-reply). Reused by consensus to feed the
+    ## arbiter; kept module-level so consensus doesn't have to re-derive
+    ## what counts as "succeeded".
+    name: string
+    ok: bool
+    text: string
+    timedOut: bool
+
+  FanOutResult = object
+    outcomes: seq[FanOutOutcome]
+    successCount: int
+    timeoutCount: int
+    errorCount: int
+    timeoutMs: int
+
+proc fanOutCore(t: CollaborateTool, names: seq[string], task: string,
+                timeoutMs: int): Future[FanOutResult] {.async.} =
+  ## Pure dispatch: launch N futures, gather outcomes with per-future
+  ## timeouts. No envelope formatting — that's the caller's job (fan_out
+  ## formats one way; consensus consumes the raw outcomes for synthesis).
+  let alias = delegatorAlias(t)
+
+  # Launch all futures eagerly (they start running on this tick) before
+  # awaiting any of them. async/await + sleepAsync runs cooperatively:
+  # because every askPeer call is itself I/O-bound (HTTP to the peer's
+  # provider), this gives genuine concurrency on the asyncdispatch loop.
+  var futures: seq[Future[string]] = @[]
+  for name in names:
+    futures.add(t.askPeer(name, task, alias, t.sessionKey))
+
+  var res = FanOutResult(timeoutMs: timeoutMs)
+
+  # Per-future timeout. Using `withTimeout` on each future independently
+  # so a slow peer doesn't block fast peers — fan_out's whole value is
+  # gathering whatever comes back inside the budget. `all()` would fail
+  # the whole batch on the first slow one, which is wrong here.
+  for i in 0 ..< futures.len:
+    let fut = futures[i]
+    let name = names[i]
+    let completed = await withTimeout(fut, timeoutMs)
+    if not completed:
+      res.outcomes.add(FanOutOutcome(name: name, ok: false, text: "",
+                                     timedOut: true))
+      inc res.timeoutCount
+      # NB: we don't `cancel(fut)` — Nim's asyncdispatch doesn't have a
+      # safe cooperative cancel for arbitrary futures, and the underlying
+      # askPeer is going to complete in the peer's own time regardless.
+      # The future stays alive, garbage-collected once it resolves; from
+      # the caller's perspective the slot is closed.
+      continue
+    if fut.failed:
+      res.outcomes.add(FanOutOutcome(name: name, ok: false,
+                                     text: "exception: " & fut.error.msg,
+                                     timedOut: false))
+      inc res.errorCount
+      continue
+    let text = fut.read()
+    res.outcomes.add(FanOutOutcome(name: name, ok: true, text: text,
+                                   timedOut: false))
+    inc res.successCount
+  res
+
+proc renderFanOutEnvelope(t: CollaborateTool, names: seq[string],
+                          fr: FanOutResult): string =
+  ## Format the multi-agent reply envelope. Header line is informative even
+  ## when truncated — operator can see at a glance whether it's a clean
+  ## fan-out or partial. Used by both fan_out and consensus (when show_raw).
+  var lines: seq[string] = @[]
+  var headerBits: seq[string] = @[$fr.successCount & " succeeded"]
+  if fr.timeoutCount > 0: headerBits.add($fr.timeoutCount & " timed out")
+  if fr.errorCount > 0:   headerBits.add($fr.errorCount & " errored")
+  lines.add("Fan-out to " & $names.len & " agents (" & headerBits.join(", ") & "):")
+  lines.add("")
+  for o in fr.outcomes:
+    let label = "## " & o.name & roleHint(t, o.name)
+    if o.timedOut:
+      lines.add(label & " [TIMEOUT after " & $(fr.timeoutMs div 1000) & "s]")
+    elif not o.ok:
+      lines.add(label & " [ERROR]")
+      lines.add(o.text)
+    else:
+      lines.add(label)
+      lines.add(o.text)
+    lines.add("")
+  lines.join("\n").strip(leading = false)
+
 proc doFanOut(t: CollaborateTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if t.askPeer == nil:
     # No peer-RPC wired in — collaborate won't fall back to a tool-less
@@ -386,77 +557,93 @@ proc doFanOut(t: CollaborateTool, args: Table[string, JsonNode]): Future[string]
   if validateErr.len > 0: return validateErr
 
   let timeoutMs = extractTimeout(args)
-  let alias = delegatorAlias(t)
-
-  # Launch all futures eagerly (they start running on this tick) before
-  # awaiting any of them. async/await + sleepAsync runs cooperatively:
-  # because every askPeer call is itself I/O-bound (HTTP to the peer's
-  # provider), this gives genuine concurrency on the asyncdispatch loop.
-  var futures: seq[Future[string]] = @[]
-  for name in names:
-    futures.add(t.askPeer(name, task, alias, t.sessionKey))
-
-  # Per-future timeout. Using `withTimeout` on each future independently
-  # so a slow peer doesn't block fast peers — fan_out's whole value is
-  # gathering whatever comes back inside the budget. `all()` would fail
-  # the whole batch on the first slow one, which is wrong here.
-  type Outcome = object
-    name: string
-    ok: bool
-    text: string
-    timedOut: bool
-  var outcomes: seq[Outcome] = @[]
-  var successCount = 0
-  var timeoutCount = 0
-  var errorCount = 0
-
-  for i in 0 ..< futures.len:
-    let fut = futures[i]
-    let name = names[i]
-    let completed = await withTimeout(fut, timeoutMs)
-    if not completed:
-      outcomes.add(Outcome(name: name, ok: false, text: "", timedOut: true))
-      inc timeoutCount
-      # NB: we don't `cancel(fut)` — Nim's asyncdispatch doesn't have a
-      # safe cooperative cancel for arbitrary futures, and the underlying
-      # askPeer is going to complete in the peer's own time regardless.
-      # The future stays alive, garbage-collected once it resolves; from
-      # the caller's perspective the slot is closed.
-      continue
-    if fut.failed:
-      outcomes.add(Outcome(name: name, ok: false,
-                           text: "exception: " & fut.error.msg, timedOut: false))
-      inc errorCount
-      continue
-    let text = fut.read()
-    outcomes.add(Outcome(name: name, ok: true, text: text, timedOut: false))
-    inc successCount
-
-  # Format the structured envelope. Header line is informative even when
-  # truncated (e.g. truncated by the caller's context limit) — operator
-  # can see at a glance whether it's a clean fan-out or partial.
-  var lines: seq[string] = @[]
-  var headerBits: seq[string] = @[$successCount & " succeeded"]
-  if timeoutCount > 0: headerBits.add($timeoutCount & " timed out")
-  if errorCount > 0:   headerBits.add($errorCount & " errored")
-  lines.add("Fan-out to " & $names.len & " agents (" & headerBits.join(", ") & "):")
-  lines.add("")
-  for o in outcomes:
-    let label = "## " & o.name & roleHint(t, o.name)
-    if o.timedOut:
-      lines.add(label & " [TIMEOUT after " & $(timeoutMs div 1000) & "s]")
-    elif not o.ok:
-      lines.add(label & " [ERROR]")
-      lines.add(o.text)
-    else:
-      lines.add(label)
-      lines.add(o.text)
-    lines.add("")
-  lines.join("\n").strip(leading = false)
+  let fr = await fanOutCore(t, names, task, timeoutMs)
+  return renderFanOutEnvelope(t, names, fr)
 
 # ---------------------------------------------------------------------------
 # pipeline — sequential A → B → C with each stage seeing the prior output
 # ---------------------------------------------------------------------------
+
+type
+  OnErrorPolicy = enum
+    oeAbort       ## v1 default — first failure aborts the pipeline
+    oeSkip        ## log + reuse prior output (or original task if first stage)
+    oeRetryOnce   ## one retry on the failing stage; if still fails → abort
+
+proc parseOnError(args: Table[string, JsonNode]): tuple[policy: OnErrorPolicy, err: string] =
+  ## Default: abort (preserves v1 behavior).
+  if not args.hasKey("on_error"): return (oeAbort, "")
+  let raw = args["on_error"].getStr("").strip().toLowerAscii()
+  case raw
+  of "", "abort":          return (oeAbort, "")
+  of "skip":               return (oeSkip, "")
+  of "retry_once", "retry-once", "retry": return (oeRetryOnce, "")
+  else:
+    return (oeAbort, "Error: 'on_error' must be one of: abort, skip, retry_once " &
+                     "(got '" & raw & "')")
+
+proc parseStageTimeouts(args: Table[string, JsonNode], stageCount, fallbackMs: int):
+                       tuple[timeoutsMs: seq[int], err: string] =
+  ## Returns a per-stage timeout in MILLISECONDS. If `stage_timeouts` is
+  ## absent, every slot gets `fallbackMs` (which is the global timeout).
+  ## Length mismatch → error (the LLM should know precisely which stage
+  ## got which budget). Each value is independently clamped to
+  ## [1, MaxTimeoutSeconds].
+  var timeouts: seq[int] = @[]
+  if not args.hasKey("stage_timeouts"):
+    for _ in 0 ..< stageCount: timeouts.add(fallbackMs)
+    return (timeouts, "")
+  let node = args["stage_timeouts"]
+  if node.kind != JArray:
+    return (@[], "Error: 'stage_timeouts' must be a JSON array of integers " &
+                 "(one per agent in the pipeline)")
+  if node.len != stageCount:
+    return (@[], "Error: 'stage_timeouts' has " & $node.len &
+                 " entries but agents has " & $stageCount &
+                 ". Lengths must match (one timeout per stage).")
+  for i, item in node:
+    var seconds = fallbackMs div 1000
+    case item.kind
+    of JInt:    seconds = int(item.getInt(seconds))
+    of JFloat:  seconds = int(item.getFloat(float(seconds)))
+    of JString:
+      try: seconds = parseInt(item.getStr().strip())
+      except: discard
+    else:
+      return (@[], "Error: 'stage_timeouts[" & $i & "]' is not a number")
+    if seconds < 1: seconds = 1
+    if seconds > MaxTimeoutSeconds: seconds = MaxTimeoutSeconds
+    timeouts.add(seconds * 1000)
+  (timeouts, "")
+
+type
+  StageOutcome = enum
+    soOk
+    soTimeout
+    soFailed
+    soSkipped     ## on_error=skip — reused prior output, didn't actually fail-fast
+
+  StageRecord = object
+    idx: int           ## 1-based stage number for human-readable trail
+    agent: string
+    inputSummary: string
+    outputSummary: string
+    outcome: StageOutcome
+    note: string       ## "retried after timeout", "skipped: TIMEOUT 60s", etc.
+
+proc renderTrail(t: CollaborateTool, trail: seq[StageRecord]): seq[string] =
+  for r in trail:
+    var marker = ""
+    case r.outcome
+    of soOk:      marker = ""
+    of soTimeout: marker = "  [TIMEOUT]"
+    of soFailed:  marker = "  [FAILED]"
+    of soSkipped: marker = "  [SKIPPED]"
+    result.add("  " & $r.idx & ". " & r.agent & roleHint(t, r.agent) & marker)
+    result.add("     in:  " & r.inputSummary)
+    result.add("     out: " & r.outputSummary)
+    if r.note.len > 0:
+      result.add("     note: " & r.note)
 
 proc doPipeline(t: CollaborateTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if t.askPeer == nil:
@@ -477,31 +664,41 @@ proc doPipeline(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
   let validateErr = validateAgentNames(t, names)
   if validateErr.len > 0: return validateErr
 
-  let timeoutMs = extractTimeout(args)
+  let globalTimeoutMs = extractTimeout(args)
   let alias = delegatorAlias(t)
 
-  # Special case: 1-element pipeline = a single delegate call. Don't
-  # bother with stage prefixes; just run it.
-  if names.len == 1:
-    let only = names[0]
-    let fut = t.askPeer(only, task, alias, t.sessionKey)
+  let (policy, policyErr) = parseOnError(args)
+  if policyErr.len > 0: return policyErr
+
+  let (stageTimeoutsMs, stErr) =
+    parseStageTimeouts(args, names.len, globalTimeoutMs)
+  if stErr.len > 0: return stErr
+
+  # Helper to build one stage's prompt — original task on stage 1, prior
+  # output threaded through on subsequent stages.
+  proc buildStagePrompt(stageIdx: int, prevAgent, prevOutput: string): string =
+    if stageIdx == 0:
+      return task
+    "Previous step (Agent " & prevAgent & ") returned:\n" &
+    prevOutput & "\n\nNow: " & task
+
+  # Helper to dispatch one stage with a per-stage timeout. Returns:
+  #   ok = true  → completed successfully, text holds the output
+  #   ok = false → either timed out OR errored; fillMsg names which
+  proc runStage(agent, prompt: string, timeoutMs: int):
+                Future[tuple[ok: bool, text: string,
+                             timedOut: bool, errMsg: string]] {.async.} =
+    let fut = t.askPeer(agent, prompt, alias, t.sessionKey)
     let completed = await withTimeout(fut, timeoutMs)
     if not completed:
-      return "Error: pipeline aborted at stage 1 (" & only & "): " &
-             "TIMEOUT after " & $(timeoutMs div 1000) & "s"
+      return (false, "", true, "TIMEOUT after " & $(timeoutMs div 1000) & "s")
     if fut.failed:
-      return "Error: pipeline aborted at stage 1 (" & only & "): " & fut.error.msg
-    return fut.read()
+      return (false, "", false, fut.error.msg)
+    return (true, fut.read(), false, "")
 
   # Stage-by-stage. We build the audit trail as we go so an abort on
   # stage K still returns "stages 1..K-1 succeeded, stage K broke
   # because <reason>" rather than just "pipeline failed".
-  type StageRecord = object
-    idx: int           ## 1-based stage number for human-readable trail
-    agent: string
-    inputSummary: string
-    outputSummary: string
-    ok: bool
   var trail: seq[StageRecord] = @[]
   var prevOutput = ""   ## empty before stage 1; stage 1 sees just `task`
   var prevAgent = ""
@@ -509,67 +706,105 @@ proc doPipeline(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
   for i in 0 ..< names.len:
     let stageNum = i + 1
     let agent = names[i]
+    let stageTimeoutMs = stageTimeoutsMs[i]
+    let stagePrompt = buildStagePrompt(i, prevAgent, prevOutput)
 
-    # Compose the per-stage prompt. Stage 1 just gets the raw task;
-    # subsequent stages get the prior output prefixed with "Previous step
-    # (Agent X) returned: ... Now: <task>". The phrasing matches what
-    # the brief specifies and is concrete enough that the peer doesn't
-    # have to guess what to do with it.
-    let stagePrompt =
-      if i == 0:
-        task
+    var (ok, output, timedOut, errMsg) =
+      await runStage(agent, stagePrompt, stageTimeoutMs)
+    var note = ""
+
+    # retry_once: try the failing stage one more time before deciding.
+    if not ok and policy == oeRetryOnce:
+      let firstFailure = if timedOut: "TIMEOUT" else: "ERROR"
+      let (ok2, output2, timedOut2, errMsg2) =
+        await runStage(agent, stagePrompt, stageTimeoutMs)
+      if ok2:
+        ok = true
+        output = output2
+        note = "succeeded on retry after first " & firstFailure &
+               " (" & errMsg & ")"
       else:
-        "Previous step (Agent " & prevAgent & ") returned:\n" &
-        prevOutput & "\n\nNow: " & task
+        # Retry also failed → fall through to the abort path with both
+        # failures recorded in the note. This matches "if still fails,
+        # fall through to abort behavior".
+        ok = false
+        timedOut = timedOut2
+        errMsg = errMsg2
+        note = "retry also failed (first " & firstFailure &
+               ": " & (if errMsg.len > 0: errMsg else: "—") & ")"
 
-    let fut = t.askPeer(agent, stagePrompt, alias, t.sessionKey)
-    let completed = await withTimeout(fut, timeoutMs)
+    if not ok:
+      # `skip` policy — record the failure in the trail and reuse prior
+      # output (or the original task if this is the first stage). Don't
+      # abort.
+      if policy == oeSkip:
+        let outcomeMarker = if timedOut: soTimeout else: soFailed
+        trail.add(StageRecord(idx: stageNum, agent: agent,
+                              inputSummary: summarize(stagePrompt),
+                              outputSummary:
+                                (if timedOut: "[TIMEOUT after " &
+                                              $(stageTimeoutMs div 1000) & "s — skipped]"
+                                 else: "[ERROR: " & errMsg & " — skipped]"),
+                              outcome: outcomeMarker,
+                              note: "on_error=skip; passing prior output to next stage"))
+        # prevOutput / prevAgent stay as they were so the next stage
+        # sees the last successful upstream result. If this is stage 1
+        # the next stage will see the raw task again (because prevOutput
+        # is "", and buildStagePrompt for i>0 with empty prevOutput
+        # threads an empty "Previous step" block — that's a slightly
+        # awkward shape, so handle the i==0-skipped case by leaving
+        # prevAgent empty; the next iteration's buildStagePrompt(i>0)
+        # will still wrap the empty string, which is unusual but
+        # honest about the audit trail).
+        continue
 
-    if not completed:
-      # Build the partial trail and bail.
+      # `abort` policy (default) and `retry_once` exhausted → bail with
+      # the partial trail.
+      let outcomeMarker = if timedOut: soTimeout else: soFailed
+      let outSummary =
+        if timedOut: "[TIMEOUT after " & $(stageTimeoutMs div 1000) & "s]"
+        else: "[ERROR: " & errMsg & "]"
       trail.add(StageRecord(idx: stageNum, agent: agent,
                             inputSummary: summarize(stagePrompt),
-                            outputSummary: "[TIMEOUT after " & $(timeoutMs div 1000) & "s]",
-                            ok: false))
+                            outputSummary: outSummary,
+                            outcome: outcomeMarker,
+                            note: note))
       var lines: seq[string] = @[]
-      lines.add("Pipeline aborted at stage " & $stageNum & " (" & agent & "): TIMEOUT after " & $(timeoutMs div 1000) & "s.")
+      let reason =
+        if timedOut: "TIMEOUT after " & $(stageTimeoutMs div 1000) & "s"
+        else: errMsg
+      lines.add("Pipeline aborted at stage " & $stageNum & " (" & agent & "): " & reason &
+                ".")
+      if note.len > 0: lines.add("(" & note & ")")
       lines.add("")
       lines.add("Audit trail (stages completed before abort):")
-      for r in trail:
-        lines.add("  " & $r.idx & ". " & r.agent & roleHint(t, r.agent) &
-                  (if r.ok: "" else: "  [FAILED]"))
-        lines.add("     in:  " & r.inputSummary)
-        lines.add("     out: " & r.outputSummary)
+      for ln in renderTrail(t, trail): lines.add(ln)
       return lines.join("\n")
 
-    if fut.failed:
-      trail.add(StageRecord(idx: stageNum, agent: agent,
-                            inputSummary: summarize(stagePrompt),
-                            outputSummary: "[ERROR: " & fut.error.msg & "]",
-                            ok: false))
-      var lines: seq[string] = @[]
-      lines.add("Pipeline aborted at stage " & $stageNum & " (" & agent & "): " & fut.error.msg)
-      lines.add("")
-      lines.add("Audit trail (stages completed before abort):")
-      for r in trail:
-        lines.add("  " & $r.idx & ". " & r.agent & roleHint(t, r.agent) &
-                  (if r.ok: "" else: "  [FAILED]"))
-        lines.add("     in:  " & r.inputSummary)
-        lines.add("     out: " & r.outputSummary)
-      return lines.join("\n")
-
-    let output = fut.read()
+    # Stage succeeded (possibly via retry).
     trail.add(StageRecord(idx: stageNum, agent: agent,
                           inputSummary: summarize(stagePrompt),
                           outputSummary: summarize(output),
-                          ok: true))
+                          outcome: soOk,
+                          note: note))
     prevOutput = output
     prevAgent = agent
 
-  # All stages succeeded. Return the final stage's full output + the
-  # trail. Final output goes FIRST so the caller's downstream consumer
-  # (an LLM, a relay, etc.) gets the actionable content without having
-  # to skip past the trail.
+  # Final output. With on_error=skip and ALL stages skipped (every stage
+  # failed), prevOutput stays "" — return a clear error rather than an
+  # empty-looking success.
+  if prevOutput.len == 0:
+    var lines: seq[string] = @[]
+    lines.add("Pipeline completed but produced no output — every stage " &
+              "failed under on_error=skip.")
+    lines.add("")
+    lines.add("Audit trail:")
+    for ln in renderTrail(t, trail): lines.add(ln)
+    return lines.join("\n")
+
+  # All stages succeeded (or skipped with at least one prior output to
+  # carry forward). Return the final output FIRST so the downstream
+  # consumer gets the actionable content without skipping past the trail.
   var lines: seq[string] = @[]
   lines.add("# Final output (from " & prevAgent & roleHint(t, prevAgent) & ")")
   lines.add("")
@@ -577,10 +812,459 @@ proc doPipeline(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
   lines.add("")
   lines.add("---")
   lines.add("Audit trail (" & $names.len & " stages):")
-  for r in trail:
-    lines.add("  " & $r.idx & ". " & r.agent & roleHint(t, r.agent))
-    lines.add("     in:  " & r.inputSummary)
-    lines.add("     out: " & r.outputSummary)
+  for ln in renderTrail(t, trail): lines.add(ln)
+  lines.join("\n")
+
+# ---------------------------------------------------------------------------
+# consensus — fan_out + LLM synthesis (the arbiter reconciles the replies)
+# ---------------------------------------------------------------------------
+
+const DefaultReducePrompt =
+  "Synthesize a single coherent answer that reconciles the responses. " &
+  "Note any disagreement explicitly. Be concise."
+
+const DefaultArbiterTag = "reasoning"
+
+proc buildSynthesisPrompt(t: CollaborateTool, question: string,
+                          fr: FanOutResult, reducePrompt: string): string =
+  ## Compose the arbiter's input. Header = the original question; body =
+  ## one section per agent (only successful responses; timeouts/errors
+  ## get a labeled placeholder so the arbiter knows the input was partial).
+  ## Footer = the reduce instruction.
+  var lines: seq[string] = @[]
+  lines.add("Question: " & question)
+  lines.add("")
+  lines.add("Responses from each agent:")
+  for o in fr.outcomes:
+    lines.add("")
+    let label = "## " & o.name & roleHint(t, o.name)
+    if o.timedOut:
+      lines.add(label)
+      lines.add("[no response — timed out after " &
+                $(fr.timeoutMs div 1000) & "s]")
+    elif not o.ok:
+      lines.add(label)
+      lines.add("[no response — error: " & o.text & "]")
+    else:
+      lines.add(label)
+      lines.add(o.text)
+  lines.add("")
+  lines.add(reducePrompt)
+  lines.join("\n")
+
+proc invokeArbiter(t: CollaborateTool, tag, prompt: string,
+                   timeoutMs: int): Future[tuple[ok: bool, text: string,
+                                                 err: string]] {.async.} =
+  ## Compose the synthesis call by delegating to capability_unified's
+  ## `invoke` action. We construct a fresh CapabilityTool, propagate the
+  ## minimal context fields it needs (agentName for primary-model
+  ## preference, sessionKey/role for the path-safety fallback paths),
+  ## then call `execute({"action":"invoke", "tag":..., "input":<prompt>,
+  ## "prompt":""})`. Single source of truth for LLM routing — no
+  ## duplicate HTTP shape inline.
+  let cap = newCapabilityTool()
+  cap.agentName = t.agentName
+  cap.agentID = t.agentID
+  cap.sessionKey = t.sessionKey
+  cap.role = t.role
+  # We deliberately don't pass `input` as a file — the prompt is text,
+  # so capability_unified's resolveInvokeInput will fall through the
+  # path-checks and treat it as inline text. That's why we leave
+  # workspaceDir/officeDir/allowedPaths unset (capability will derive
+  # fallbacks from config if it ever needed them, which it doesn't here).
+
+  # capability_unified's `invoke` requires both `input` and `prompt`.
+  # We put the WHOLE synthesis text into `input` (the multimodal block
+  # is text-only here) and a short `prompt` instructing the arbiter how
+  # to read it. Splitting like this matches the wire shape — invoke
+  # builds a 2-block content array (text=prompt, then text=input).
+  var capArgs = initTable[string, JsonNode]()
+  capArgs["action"] = %"invoke"
+  capArgs["tag"] = %tag
+  capArgs["input"] = %prompt
+  capArgs["prompt"] = %("You are an arbiter. Read the multi-agent " &
+                        "responses below and produce the synthesized " &
+                        "answer the user asked for.")
+
+  # Capability's invoke awaits its own HTTP call; wrap the whole thing
+  # with our own timeout so a slow arbiter doesn't stall the calling
+  # agent. We use the per-agent timeout × 2 — synthesis on a reasoning
+  # model is generally slower than a peer's single response.
+  let arbiterTimeoutMs = min(timeoutMs * 2, MaxTimeoutSeconds * 1000)
+  let fut = cap.execute(capArgs)
+  let completed = await withTimeout(fut, arbiterTimeoutMs)
+  if not completed:
+    return (false, "",
+            "arbiter LLM call timed out after " &
+            $(arbiterTimeoutMs div 1000) & "s")
+  if fut.failed:
+    return (false, "", "arbiter LLM call failed: " & fut.error.msg)
+  let resp = fut.read()
+  # capability_unified prefixes successful responses with
+  # "[via <model> (<provider>)]\n<content>" and prefixes failures with
+  # "Error:". Detect the latter and surface it as an error so we can
+  # fall back gracefully.
+  if resp.startsWith("Error:"):
+    return (false, "", resp)
+  return (true, resp, "")
+
+proc doConsensus(t: CollaborateTool,
+                 args: Table[string, JsonNode]): Future[string] {.async.} =
+  if t.askPeer == nil:
+    return "Error: collaborate requires a wired askPeer callback. " &
+           "If this fires in production it means the agent loop registered " &
+           "collaborate without passing askPeer — fix the registration."
+
+  let parsed = parseAgentList(args)
+  if not parsed.ok: return parsed.err
+  let names = parsed.names
+
+  # `question` is the canonical key; `task` accepted as synonym for
+  # consistency with the other actions.
+  var question = ""
+  if args.hasKey("question"):
+    question = args["question"].getStr().strip()
+  elif args.hasKey("task"):
+    question = args["task"].getStr().strip()
+  if question.len == 0:
+    return "Error: 'question' (or 'task') is required (the question to put " &
+           "to every agent)"
+
+  let validateErr = validateAgentNames(t, names)
+  if validateErr.len > 0: return validateErr
+
+  let timeoutMs = extractTimeout(args)
+  let reducePrompt =
+    if args.hasKey("reduce_prompt"):
+      let r = args["reduce_prompt"].getStr().strip()
+      if r.len > 0: r else: DefaultReducePrompt
+    else: DefaultReducePrompt
+  let arbiterTag =
+    if args.hasKey("arbiter_tag"):
+      let a = args["arbiter_tag"].getStr().strip()
+      if a.len > 0: a else: DefaultArbiterTag
+    else: DefaultArbiterTag
+  var showRaw = false
+  if args.hasKey("show_raw"):
+    let n = args["show_raw"]
+    case n.kind
+    of JBool:   showRaw = n.getBool()
+    of JString: showRaw = n.getStr().toLowerAscii() in ["true", "yes", "1"]
+    of JInt:    showRaw = n.getInt() != 0
+    else: discard
+
+  # 1. Fan-out to collect raw responses.
+  let fr = await fanOutCore(t, names, question, timeoutMs)
+
+  # 2. Edge case: zero successful responses. Synthesis would have nothing
+  # to reconcile — degrade gracefully with the raw envelope and an error
+  # note rather than spending an arbiter call on a guaranteed failure.
+  if fr.successCount == 0:
+    var lines: seq[string] = @[]
+    lines.add("Consensus failed: no agents responded successfully.")
+    lines.add("")
+    lines.add(renderFanOutEnvelope(t, names, fr))
+    return lines.join("\n")
+
+  # 3. Build synthesis prompt + call the arbiter.
+  let synthPrompt = buildSynthesisPrompt(t, question, fr, reducePrompt)
+  let (arbOk, arbText, arbErr) =
+    await invokeArbiter(t, arbiterTag, synthPrompt, timeoutMs)
+
+  # 4. Compose the response.
+  var lines: seq[string] = @[]
+
+  # Soft warning when fewer than 2 succeeded — synthesis still runs (one
+  # answer is at least an answer) but the caller should know it's not
+  # really a "consensus".
+  if fr.successCount < 2:
+    lines.add("Note: only " & $fr.successCount & " of " & $names.len &
+              " agents responded — synthesizing from a single voice.")
+    lines.add("")
+
+  if showRaw:
+    lines.add(renderFanOutEnvelope(t, names, fr))
+    lines.add("")
+    lines.add("---")
+    lines.add("# Synthesis")
+    lines.add("")
+
+  if arbOk:
+    lines.add(arbText)
+  else:
+    # 5. Arbiter failed — fall back to the raw envelope + an error note.
+    # The caller's primary model can still read the raw replies and
+    # synthesize manually.
+    lines.add("[arbiter synthesis failed: " & arbErr & "]")
+    lines.add("[falling back to raw fan-out so the caller can synthesize " &
+              "manually]")
+    lines.add("")
+    if not showRaw:
+      # When the arbiter fails AND show_raw was off, surface the raw
+      # envelope anyway — otherwise the caller is stranded with just an
+      # error message.
+      lines.add(renderFanOutEnvelope(t, names, fr))
+  lines.join("\n")
+
+# ---------------------------------------------------------------------------
+# route — pick THE ONE best peer for a task by skills/role keyword overlap
+# ---------------------------------------------------------------------------
+#
+# Pure inspection — does NOT dispatch the task. The caller takes the
+# recommendation and calls `delegate` themselves. Mirrors the
+# `capability action=route` vs `capability action=invoke` separation:
+# preview the routing, then commit (or override) explicitly.
+
+const Stopwords = [
+  # Tiny English stopword list — keeps token overlap from being dominated
+  # by "the", "of", "a", etc. Not exhaustive; just the highest-frequency
+  # noise words. Don't add domain-specific terms here (they ARE the signal).
+  "the", "of", "a", "an", "and", "or", "but", "to", "in", "on", "for",
+  "with", "by", "at", "from", "is", "are", "was", "were", "be", "been",
+  "this", "that", "these", "those", "it", "its", "as", "if", "then",
+  "i", "we", "you", "they", "he", "she", "do", "did", "does", "have",
+  "has", "had", "can", "could", "should", "would", "will", "may",
+  "might", "shall", "what", "which", "who", "when", "where", "why",
+  "how", "about", "into", "than", "so", "no", "not", "all", "any",
+  "some", "more", "most", "less", "few", "such", "very", "just"
+].toHashSet
+
+proc tokenize(s: string): HashSet[string] =
+  ## Lowercase + alphanumeric-only token split. Drops stopwords and
+  ## tokens shorter than 2 chars (single letters are always noise).
+  result = initHashSet[string]()
+  var current = ""
+  for ch in s:
+    if ch.isAlphaNumeric:
+      current.add(ch.toLowerAscii)
+    else:
+      if current.len >= 2 and current notin Stopwords:
+        result.incl(current)
+      current = ""
+  if current.len >= 2 and current notin Stopwords:
+    result.incl(current)
+
+proc overlapCount(a, b: HashSet[string]): tuple[count: int, terms: seq[string]] =
+  ## Returns (intersection size, sorted intersection terms) — the terms
+  ## are surfaced in the explanation so the operator can see WHY the
+  ## scorer chose a candidate.
+  var hit: seq[string] = @[]
+  for tok in a:
+    if tok in b: hit.add(tok)
+  hit.sort()
+  (hit.len, hit)
+
+type
+  RouteScore = object
+    name: string
+    score: float
+    role: string                   ## display copy of role (Option unwrapped)
+    titleHits: seq[string]         ## tokens matched in jobTitle/role
+    skillHits: seq[string]         ## tokens matched in skills (the `skills` field)
+    practiceHits: seq[string]      ## tokens matched in practices/competencies
+    soulHits: seq[string]          ## tokens matched in system_prompt (proxy for soul)
+    roleBias: float                ## +/- bias from role tier
+    breakdown: string              ## human-readable score recipe
+    reachable: bool                ## false → agent has no usable id (rare)
+
+proc roleTierBias(roleStr: string, taskTokens: HashSet[string]): float =
+  ## Mild bias for Admin on complex tasks; lower for Member on trivial.
+  ## "Complex" is heuristically inferred from task length; a longer task
+  ## is, on average, more complex than a one-liner. This is intentionally
+  ## soft — the operator can still pick anyone they want; this is just
+  ## the recommended ordering.
+  let role = roleStr.toLowerAscii()
+  let isComplex = taskTokens.len >= 8
+  case role
+  of "admin", "superadmin": return (if isComplex: 0.5 else: 0.1)
+  of "staff":               return 0.0
+  of "member":              return (if isComplex: -0.3 else: 0.0)
+  else:                     return 0.0
+
+proc lookupNamedAgent(t: CollaborateTool, name: string): Option[NamedAgentConfig] =
+  for a in t.agents:
+    if a.name == name: return some(a)
+  none(NamedAgentConfig)
+
+proc scoreCandidate(t: CollaborateTool, ac: NamedAgentConfig,
+                    taskTokens: HashSet[string]): RouteScore =
+  ## Compute a candidate's match score. Weights:
+  ##   jobTitle/role  = 3.0  (the strongest signal — what they DO)
+  ##   skills         = 2.0  (declared via `skills` on NamedAgentConfig)
+  ##   competencies   = 2.0  (declared via `practices`)
+  ##   soul/sys-prompt= 0.5  (weakest — system prompts contain a lot of
+  ##                          generic scaffolding; only a few overlap
+  ##                          tokens are meaningful)
+  ## roleBias is added (small +/- for Admin/Member tier).
+  result.name = ac.name
+  result.role = if ac.role.isSome: ac.role.get() else: ""
+  # NamedAgentConfig has no `jobTitle` field at runtime (that's a
+  # ClawAgentSpec field, captured at .nims compile time and projected
+  # into BASE.json). The closest live signal we have is `role` —
+  # treat it as the runtime stand-in for jobTitle. (Future: surface
+  # jobTitle on NamedAgentConfig too if route-matching warrants it.)
+  let titleTok = tokenize(result.role)
+  let skillTok = tokenize(ac.skills.join(" "))
+  let practiceTok = tokenize(ac.practices.join(" "))
+  let soulTok =
+    if ac.system_prompt.isSome: tokenize(ac.system_prompt.get())
+    else: initHashSet[string]()
+
+  let (titleN, titleHit)       = overlapCount(taskTokens, titleTok)
+  let (skillN, skillHit)       = overlapCount(taskTokens, skillTok)
+  let (practiceN, practiceHit) = overlapCount(taskTokens, practiceTok)
+  let (soulN, soulHit)         = overlapCount(taskTokens, soulTok)
+
+  result.titleHits = titleHit
+  result.skillHits = skillHit
+  result.practiceHits = practiceHit
+  result.soulHits = soulHit
+  result.roleBias = roleTierBias(result.role, taskTokens)
+
+  result.score = float(titleN) * 3.0 +
+                 float(skillN) * 2.0 +
+                 float(practiceN) * 2.0 +
+                 float(soulN) * 0.5 +
+                 result.roleBias
+
+  # NamedAgentConfig doesn't carry per-agent channel identifiers (those
+  # live on channel configs). For now treat every declared peer as
+  # reachable — askPeer will surface a real "no route" error at dispatch
+  # time if it's actually unreachable. This keeps route from suppressing
+  # valid candidates over a signal we can't reliably read.
+  result.reachable = true
+
+  # Build the explanation string. Only include sub-scores that contributed.
+  var bits: seq[string] = @[]
+  if titleN > 0:    bits.add("title +" & $(titleN * 3) & " on [" & titleHit.join(", ") & "]")
+  if skillN > 0:    bits.add("skills +" & $(skillN * 2) & " on [" & skillHit.join(", ") & "]")
+  if practiceN > 0: bits.add("competencies +" & $(practiceN * 2) & " on [" & practiceHit.join(", ") & "]")
+  if soulN > 0:     bits.add("soul +" & $(soulN.float * 0.5) & " on [" & soulHit.join(", ") & "]")
+  if result.roleBias != 0.0:
+    bits.add("role(" & result.role & ") " &
+             (if result.roleBias > 0: "+" else: "") & $result.roleBias)
+  if bits.len == 0:
+    result.breakdown = "no signal — score 0 (no overlap with role/skills/competencies/soul)"
+  else:
+    result.breakdown = bits.join(" · ")
+
+proc doRoute(t: CollaborateTool, args: Table[string, JsonNode]): string =
+  if not args.hasKey("task"):
+    return "Error: 'task' is required (the task to score peers against)"
+  let task = args["task"].getStr().strip()
+  if task.len == 0:
+    return "Error: 'task' must be non-empty"
+
+  if t.agents.len == 0:
+    return "Error: no peer agents are declared in this company; route has " &
+           "nothing to score against."
+
+  # Determine candidate set.
+  var candidates: seq[NamedAgentConfig] = @[]
+  if args.hasKey("from_agents"):
+    # Reuse parseAgentList for shape lenience (JArray of strings or comma
+    # form). Wrap in a synthetic table because parseAgentList expects
+    # `agents` as the key.
+    var synth = initTable[string, JsonNode]()
+    synth["agents"] = args["from_agents"]
+    let parsed = parseAgentList(synth)
+    if not parsed.ok:
+      return parsed.err.replace("'agents'", "'from_agents'")
+    let validateErr = validateAgentNames(t, parsed.names)
+    if validateErr.len > 0:
+      return validateErr.replace("Pick from those exact strings.",
+                                 "Pick from those exact strings or omit " &
+                                 "from_agents to score over all peers.")
+    for n in parsed.names:
+      let a = lookupNamedAgent(t, n)
+      if a.isSome: candidates.add(a.get())
+  else:
+    # All declared peers EXCEPT the calling agent (you don't recommend
+    # someone delegate to themselves).
+    for ac in t.agents:
+      if ac.name == t.agentName: continue
+      candidates.add(ac)
+    if candidates.len == 0:
+      # Fallback: if the only declared peer IS the caller (or there's no
+      # caller context), include them so route still has something to say.
+      for ac in t.agents: candidates.add(ac)
+
+  if candidates.len == 0:
+    return "Error: no candidate agents available for routing (after filtering)."
+
+  # Tokenize the task once — same set used against every candidate's
+  # signals.
+  let taskTokens = tokenize(task)
+  if taskTokens.len == 0:
+    return "Error: task has no scoreable tokens after stopword removal " &
+           "(only stopwords?). Try a more descriptive task description."
+
+  var explain = false
+  if args.hasKey("explain"):
+    let n = args["explain"]
+    case n.kind
+    of JBool:   explain = n.getBool()
+    of JString: explain = n.getStr().toLowerAscii() in ["true", "yes", "1"]
+    of JInt:    explain = n.getInt() != 0
+    else: discard
+
+  # Score every candidate.
+  var scores: seq[RouteScore] = @[]
+  for ac in candidates:
+    scores.add(scoreCandidate(t, ac, taskTokens))
+
+  # Rank: highest score first; on tie, prefer reachable; on further tie,
+  # alphabetical (deterministic).
+  scores.sort(proc(a, b: RouteScore): int =
+    if a.score > b.score: return -1
+    if a.score < b.score: return 1
+    if a.reachable and not b.reachable: return -1
+    if b.reachable and not a.reachable: return 1
+    return cmp(a.name, b.name))
+
+  let top = scores[0]
+
+  # Compose the response.
+  var lines: seq[string] = @[]
+
+  if top.score == 0:
+    # No signal at all — make this explicit. The recommendation is the
+    # alphabetically-first peer, which is essentially a coin flip; the
+    # caller should pick deliberately.
+    lines.add("Routing recommendation for task: \"" &
+              (if task.len > 80: task[0..79] & "…" else: task) & "\"")
+    lines.add("")
+    lines.add("→ No clear best-fit found (no role/skill/competency overlap with " &
+              "any candidate). Listing all candidates so you can pick:")
+    for s in scores:
+      lines.add("  - " & s.name &
+                (if s.role.len > 0: " (" & s.role & ")" else: "") &
+                "  score " & $s.score)
+    lines.add("")
+    lines.add("Tip: a more descriptive task (with terms that match a peer's " &
+              "role/skills/competencies) would let route make a confident pick.")
+    return lines.join("\n")
+
+  lines.add("Routing recommendation for task: \"" &
+            (if task.len > 80: task[0..79] & "…" else: task) & "\"")
+  lines.add("")
+  lines.add("→ " & top.name & roleHint(t, top.name) &
+            "   score " & $top.score)
+  lines.add("   why: " & top.breakdown)
+  lines.add("")
+  lines.add("To dispatch: collaborate action=fan_out agents=[\"" &
+            top.name & "\"] task=...   (or use delegate for a single peer)")
+
+  if explain:
+    lines.add("")
+    lines.add("---")
+    lines.add("Full ranked list (" & $scores.len & " candidates):")
+    for i, s in scores:
+      lines.add("  " & $(i + 1) & ". " & s.name &
+                (if s.role.len > 0: " (" & s.role & ")" else: "") &
+                "   score " & $s.score)
+      lines.add("     " & s.breakdown)
+
   lines.join("\n")
 
 # ---------------------------------------------------------------------------
@@ -599,6 +1283,10 @@ method execute*(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
     return await doFanOut(t, args)
   of "pipeline", "chain", "sequential":
     return await doPipeline(t, args)
+  of "consensus", "vote", "synthesize":
+    return await doConsensus(t, args)
+  of "route", "pick", "recommend":
+    return doRoute(t, args)
   else:
     return "Error: Unknown action '" & action &
-           "'. Use: fan_out | pipeline"
+           "'. Use: fan_out | pipeline | consensus | route"

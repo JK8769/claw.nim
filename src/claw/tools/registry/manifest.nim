@@ -86,16 +86,24 @@ const AllTools*: seq[ToolSpec] = @[
   # pipeline through agents sequentially. Internal-only (would amplify
   # external requests into N peer calls).
   spec(name = "collaborate",
-       description = "multi-agent orchestration (action=fan_out|pipeline). " &
-                     "fan_out: same task to N agents in parallel; pipeline: " &
-                     "sequential A→B→C with each stage seeing the prior output. " &
-                     "Goes through the delegate primitive — peers run their " &
-                     "own tools and trust gate.",
+       description = "multi-agent orchestration (action=fan_out|pipeline|" &
+                     "consensus|route). fan_out: same task to N agents in " &
+                     "parallel. pipeline: sequential A→B→C with stage_timeouts " &
+                     "+ on_error=abort|skip|retry_once. consensus: fan_out + " &
+                     "LLM synthesis (arbiter reconciles divergent replies). " &
+                     "route: pick the best peer for a task by skills/role " &
+                     "match (DRY-RUN — does not dispatch). Goes through the " &
+                     "delegate primitive — peers run their own tools and " &
+                     "trust gate.",
        tags = @["agent", "delegation", "orchestration", "core"],
        searchKeywords = @["fan-out", "fanout", "parallel", "pipeline",
                            "orchestrate", "coordinate", "multi-agent",
                            "broadcast", "chain", "sequential", "all agents",
-                           "ensemble", "scatter-gather", "navigator"],
+                           "ensemble", "scatter-gather", "navigator",
+                           "consensus", "synthesize", "vote", "reduce",
+                           "arbiter", "route", "pick", "recommend",
+                           "best-fit", "on-error", "skip", "retry",
+                           "stage-timeout"],
        domain = "comm",
        default = true, heartbeatSafe = false, category = "comm"),
   spec(name = "forward", description = "forward messages between channels/identities",
