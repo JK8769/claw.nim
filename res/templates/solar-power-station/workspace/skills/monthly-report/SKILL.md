@@ -17,14 +17,11 @@ keywords:
   - doc
 requires:
   tools:
-    - fleet_plant_list
-    - fleet_plant_history
-    - file        # action=read — for loading cached yield CSVs
+    - fleet
+    - file
     - reply
     - reply_progress
 ---
-
-# monthly-report
 
 Workflow for producing a customer's monthly plant-performance report.
 Composes cached yield data + a content-generation service (anygen
@@ -49,7 +46,7 @@ possible; falls through to the live API for gaps.
    <customer> — pulling cached data..."
 3. For each plant, pull historical yield:
    - First try the cache (`<office>/data/yield/<plant_id>.csv`)
-   - Fill gaps via `fleet_plant_history(plant_id, from, to)`
+   - Fill gaps via `fleet action=plant_history(plant_id, from, to)`
 4. Compute key metrics:
    - **Total month yield** (kWh)
    - **Average daily yield** (kWh/day)
@@ -92,7 +89,7 @@ Three options for next step:
 
 ## Failure modes
 
-- **Cache missing days** → query `fleet_plant_history` for the
+- **Cache missing days** → query `fleet action=plant_history` for the
   gap. If the API also can't fill it, note the missing range in
   the report (don't fabricate).
 - **Generation service down** → reply with the markdown summary

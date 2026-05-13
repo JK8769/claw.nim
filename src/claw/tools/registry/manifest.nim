@@ -319,34 +319,25 @@ const AllTools*: seq[ToolSpec] = @[
   # skills (daily-yield-sync, monthly-report, alarm-response). Default off;
   # the template's `fleet-adapter` skill declares them in requires.tools so
   # agents that opt in receive the grant.
-  spec(name = "fleet_plant_list",
-       description = "List all plants across every installed inverter vendor",
+  # Multi-vendor solar fleet facade — five domain operations consolidated
+  # under one tool with action enum. Replaces fleet_plant_list /
+  # fleet_plant_now / fleet_plant_history / fleet_inverter_list /
+  # fleet_inverter_alarms. Internally fans out across whichever
+  # mcp_<vendor>_* tools were registered when each vendor MCP server
+  # loaded; vendor contract (per template's vendor/CONTRACT.md) is
+  # unchanged at the MCP layer.
+  spec(name = "fleet",
+       description = "Multi-vendor solar fleet facade " &
+                     "(action=plant_list|plant_now|plant_history|" &
+                     "inverter_list|inverter_alarms). Fans out for " &
+                     "list ops, routes per-plant ops by " &
+                     "plant→vendor cache.",
        tags = @["fleet", "solar", "domain"],
-       searchKeywords = @["plant list", "fleet", "all plants"],
-       domain = "fleet",
-       default = false, heartbeatSafe = false, category = "fleet"),
-  spec(name = "fleet_plant_now",
-       description = "Real-time state for one plant (current power, today yield, status)",
-       tags = @["fleet", "solar", "domain"],
-       searchKeywords = @["plant now", "current power", "real-time"],
-       domain = "fleet",
-       default = false, heartbeatSafe = false, category = "fleet"),
-  spec(name = "fleet_plant_history",
-       description = "Daily yield history for one plant over a date range",
-       tags = @["fleet", "solar", "domain"],
-       searchKeywords = @["plant history", "yield history", "kwh history"],
-       domain = "fleet",
-       default = false, heartbeatSafe = false, category = "fleet"),
-  spec(name = "fleet_inverter_list",
-       description = "List inverters under one plant",
-       tags = @["fleet", "solar", "domain"],
-       searchKeywords = @["inverter list", "equipment"],
-       domain = "fleet",
-       default = false, heartbeatSafe = false, category = "fleet"),
-  spec(name = "fleet_inverter_alarms",
-       description = "Active alarms on inverters under one plant",
-       tags = @["fleet", "solar", "domain"],
-       searchKeywords = @["alarm list", "alarms", "active faults"],
+       searchKeywords = @["plant list", "fleet", "all plants",
+                           "plant now", "current power", "real-time",
+                           "today yield", "plant history", "yield",
+                           "historical", "kwh", "inverter", "equipment",
+                           "devices", "alarm", "fault", "alert"],
        domain = "fleet",
        default = false, heartbeatSafe = false, category = "fleet"),
 

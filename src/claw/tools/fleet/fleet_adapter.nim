@@ -45,20 +45,25 @@ var plantVendorLock: Lock
 initLock(plantVendorLock)
 var plantVendorCache: Table[string, string]
 
-proc cachePlant(plantId, vendor: string) =
+proc cachePlant*(plantId, vendor: string) =
   if plantId.len == 0 or vendor.len == 0: return
   acquire(plantVendorLock)
   defer: release(plantVendorLock)
   plantVendorCache[plantId] = vendor
 
-proc lookupVendor(plantId: string): string =
+proc lookupVendor*(plantId: string): string =
   acquire(plantVendorLock)
   defer: release(plantVendorLock)
   if plantVendorCache.hasKey(plantId): plantVendorCache[plantId] else: ""
 
 # ── Helpers for fanout + routing ──────────────────────────────────
+# These five (cachePlant, lookupVendor, findVendorTools, dispatchToVendor,
+# routeByPlantId) are exported so `tools/fleet_unified.nim` can compose
+# them into the agent-facing `fleet` tool. The substrate stays here as
+# `fleet_adapter` per the substrate-vs-capability naming convention
+# documented in CLAUDE.md.
 
-proc findVendorTools(reg: ToolRegistry,
+proc findVendorTools*(reg: ToolRegistry,
                       contractTool: string): seq[tuple[vendor: string, tool: Tool]] =
   ## Scan the registry for tools matching `mcp_<vendor>_<contractTool>`.
   ## Returns (vendor, tool) pairs sorted by registration order.
@@ -81,8 +86,8 @@ proc findVendorTools(reg: ToolRegistry,
     let (tool, ok) = reg.get(name)
     if ok: result.add((vendor: vendor, tool: tool))
 
-proc dispatchToVendor(reg: ToolRegistry, vendor, contractTool: string,
-                      args: Table[string, JsonNode]): Future[string] {.async.} =
+proc dispatchToVendor*(reg: ToolRegistry, vendor, contractTool: string,
+                       args: Table[string, JsonNode]): Future[string] {.async.} =
   ## Locate and call the named vendor's tool. Returns the vendor's raw
   ## response. Empty string + warning log on miss.
   let vendorTools = findVendorTools(reg, contractTool)
@@ -93,8 +98,8 @@ proc dispatchToVendor(reg: ToolRegistry, vendor, contractTool: string,
          {"vendor": vendor, "contract": contractTool}.toTable)
   return """{"error":"vendor_not_installed","vendor":"""" & vendor & """","contract":"""" & contractTool & """"}"""
 
-proc routeByPlantId(reg: ToolRegistry, contractTool: string,
-                    args: Table[string, JsonNode]): Future[string] {.async.} =
+proc routeByPlantId*(reg: ToolRegistry, contractTool: string,
+                     args: Table[string, JsonNode]): Future[string] {.async.} =
   ## Per-plant routing: look up plant_id in the cache; if missing, prime
   ## the cache by calling plant_list; then dispatch to the resolved vendor.
   if not args.hasKey("plant_id"):
@@ -119,141 +124,3 @@ proc routeByPlantId(reg: ToolRegistry, contractTool: string,
       except CatchableError as e:
         warnCF("fleet_adapter", "vendor plant_list failed during cold-start cache",
                {"vendor": vt.vendor, "error": e.msg}.toTable)
-    vendor = lookupVendor(plantId)
-  if vendor.len == 0:
-    return """{"error":"plant_not_found","plant_id":"""" & plantId & """"}"""
-  return await dispatchToVendor(reg, vendor, contractTool, args)
-
-# ── Tool implementations ──────────────────────────────────────────
-
-const PlantListSpec* = spec(
-  name = "fleet_plant_list",
-  description = "List all plants across every installed inverter vendor. Returns array of Plant objects, each tagged with its vendor for routing. Multi-vendor capable.",
-  tags = @["fleet", "solar", "domain"],
-  searchKeywords = @["plant list", "fleet", "all plants", "list plants"],
-  domain = "fleet",
-  default = false, heartbeatSafe = false, category = "fleet",
-)
-
-const PlantNowSpec* = spec(
-  name = "fleet_plant_now",
-  description = "Real-time state for one plant (current power, today's yield, status). Routes to the correct vendor automatically via plant→vendor mapping.",
-  tags = @["fleet", "solar", "domain"],
-  searchKeywords = @["plant now", "current power", "real-time", "today yield"],
-  domain = "fleet",
-  default = false, heartbeatSafe = false, category = "fleet",
-)
-
-const PlantHistorySpec* = spec(
-  name = "fleet_plant_history",
-  description = "Daily yield history for one plant over a date range. Returns array of YieldPoint records with data_quality flags.",
-  tags = @["fleet", "solar", "domain"],
-  searchKeywords = @["plant history", "yield", "historical", "kwh"],
-  domain = "fleet",
-  default = false, heartbeatSafe = false, category = "fleet",
-)
-
-const InverterListSpec* = spec(
-  name = "fleet_inverter_list",
-  description = "List inverters under one plant. Returns array of Inverter records with status.",
-  tags = @["fleet", "solar", "domain"],
-  searchKeywords = @["inverter", "equipment", "devices"],
-  domain = "fleet",
-  default = false, heartbeatSafe = false, category = "fleet",
-)
-
-const InverterAlarmsSpec* = spec(
-  name = "fleet_inverter_alarms",
-  description = "Active alarms on inverters under one plant. Returns array of Alarm records with severity classification.",
-  tags = @["fleet", "solar", "domain"],
-  searchKeywords = @["alarm", "fault", "alert", "alarm list"],
-  domain = "fleet",
-  default = false, heartbeatSafe = false, category = "fleet",
-)
-
-type
-  FleetPlantListTool* = ref object of Tool
-    reg: ToolRegistry
-  FleetPlantNowTool* = ref object of Tool
-    reg: ToolRegistry
-  FleetPlantHistoryTool* = ref object of Tool
-    reg: ToolRegistry
-  FleetInverterListTool* = ref object of Tool
-    reg: ToolRegistry
-  FleetInverterAlarmsTool* = ref object of Tool
-    reg: ToolRegistry
-
-proc newFleetPlantListTool*(reg: ToolRegistry): FleetPlantListTool = FleetPlantListTool(reg: reg)
-proc newFleetPlantNowTool*(reg: ToolRegistry): FleetPlantNowTool = FleetPlantNowTool(reg: reg)
-proc newFleetPlantHistoryTool*(reg: ToolRegistry): FleetPlantHistoryTool = FleetPlantHistoryTool(reg: reg)
-proc newFleetInverterListTool*(reg: ToolRegistry): FleetInverterListTool = FleetInverterListTool(reg: reg)
-proc newFleetInverterAlarmsTool*(reg: ToolRegistry): FleetInverterAlarmsTool = FleetInverterAlarmsTool(reg: reg)
-
-# fleet_plant_list — fan out across vendors, merge arrays
-method name*(t: FleetPlantListTool): string = "fleet_plant_list"
-method description*(t: FleetPlantListTool): string = PlantListSpec.description
-method parameters*(t: FleetPlantListTool): Table[string, JsonNode] =
-  {"type": %"object", "properties": %*{}, "required": %*[]}.toTable
-
-method execute*(t: FleetPlantListTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  let vendors = findVendorTools(t.reg, "plant_list")
-  if vendors.len == 0: return "[]"
-  var merged = newJArray()
-  for v in vendors:
-    try:
-      let respStr = await v.tool.execute(initTable[string, JsonNode]())
-      let resp = parseJson(respStr)
-      if resp.kind == JArray:
-        for plant in resp:
-          if plant.kind == JObject and plant.hasKey("id"):
-            let pid = plant["id"].getStr()
-            let pvendor = if plant.hasKey("vendor"): plant["vendor"].getStr() else: v.vendor
-            cachePlant(pid, pvendor)
-          merged.add(plant)
-      elif resp.kind == JObject and resp.hasKey("error"):
-        warnCF("fleet_adapter", "vendor plant_list returned error",
-               {"vendor": v.vendor, "error": resp["error"].getStr()}.toTable)
-    except CatchableError as e:
-      warnCF("fleet_adapter", "vendor plant_list raised",
-             {"vendor": v.vendor, "error": e.msg}.toTable)
-  return $merged
-
-# Per-plant tools — route by plant_id
-method name*(t: FleetPlantNowTool): string = "fleet_plant_now"
-method description*(t: FleetPlantNowTool): string = PlantNowSpec.description
-method parameters*(t: FleetPlantNowTool): Table[string, JsonNode] =
-  {"type": %"object",
-   "properties": %*{"plant_id": {"type": "string", "description": "The plant's vendor-prefixed ID, e.g. SG-12345"}},
-   "required": %*["plant_id"]}.toTable
-method execute*(t: FleetPlantNowTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  return await routeByPlantId(t.reg, "plant_now", args)
-
-method name*(t: FleetPlantHistoryTool): string = "fleet_plant_history"
-method description*(t: FleetPlantHistoryTool): string = PlantHistorySpec.description
-method parameters*(t: FleetPlantHistoryTool): Table[string, JsonNode] =
-  {"type": %"object",
-   "properties": %*{
-     "plant_id": {"type": "string", "description": "Vendor-prefixed plant ID"},
-     "from": {"type": "string", "format": "date", "description": "ISO-8601 start date inclusive"},
-     "to": {"type": "string", "format": "date", "description": "ISO-8601 end date inclusive"}},
-   "required": %*["plant_id", "from", "to"]}.toTable
-method execute*(t: FleetPlantHistoryTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  return await routeByPlantId(t.reg, "plant_history", args)
-
-method name*(t: FleetInverterListTool): string = "fleet_inverter_list"
-method description*(t: FleetInverterListTool): string = InverterListSpec.description
-method parameters*(t: FleetInverterListTool): Table[string, JsonNode] =
-  {"type": %"object",
-   "properties": %*{"plant_id": {"type": "string", "description": "Vendor-prefixed plant ID"}},
-   "required": %*["plant_id"]}.toTable
-method execute*(t: FleetInverterListTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  return await routeByPlantId(t.reg, "inverter_list", args)
-
-method name*(t: FleetInverterAlarmsTool): string = "fleet_inverter_alarms"
-method description*(t: FleetInverterAlarmsTool): string = InverterAlarmsSpec.description
-method parameters*(t: FleetInverterAlarmsTool): Table[string, JsonNode] =
-  {"type": %"object",
-   "properties": %*{"plant_id": {"type": "string", "description": "Vendor-prefixed plant ID"}},
-   "required": %*["plant_id"]}.toTable
-method execute*(t: FleetInverterAlarmsTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  return await routeByPlantId(t.reg, "inverter_alarms", args)

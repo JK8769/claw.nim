@@ -17,12 +17,9 @@ keywords:
   - history
 requires:
   tools:
-    - fleet_plant_list
-    - fleet_plant_history
+    - fleet
     - memory
 ---
-
-# daily-yield-sync
 
 Workflow for pulling each plant's daily yield and caching it locally.
 Reduces vendor-API load and makes historical queries faster
@@ -38,13 +35,13 @@ Reduces vendor-API load and makes historical queries faster
 
 ## Workflow
 
-1. Call `fleet_plant_list()` — get all plants with timezones.
+1. Call `fleet action=plant_list()` — get all plants with timezones.
 2. For each plant, determine the date range to sync:
    - If cache exists at `<office>/data/yield/<plant_id>.csv`:
      from `last_synced_date + 1` to `today - 1`
    - If no cache: from `Plant.install_date` (or a sensible
      start) to `today - 1` (initial backfill)
-3. Call `fleet_plant_history(plant_id, from, to)` per plant.
+3. Call `fleet action=plant_history(plant_id, from, to)` per plant.
 4. Validate the response against the YieldPoint schema. Pay
    attention to `data_quality`:
    - `final` → cache it
@@ -86,7 +83,7 @@ Reduces vendor-API load and makes historical queries faster
 ## Anti-patterns
 
 - Don't call `mcp_<vendor>_plant_history` directly — use
-  `fleet_plant_history`. The fleet adapter handles vendor routing
+  `fleet action=plant_history`. The fleet adapter handles vendor routing
   and gives you cross-vendor uniformity.
 - Don't sync today's data — it's still provisional. Wait until
   settlement (typically next day's morning local).

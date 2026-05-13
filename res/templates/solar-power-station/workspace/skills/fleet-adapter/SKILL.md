@@ -18,14 +18,8 @@ keywords:
   - multi-vendor
 requires:
   tools:
-    - fleet_plant_list
-    - fleet_plant_now
-    - fleet_plant_history
-    - fleet_inverter_list
-    - fleet_inverter_alarms
+    - fleet
 ---
-
-# fleet-adapter
 
 The vendor-agnostic facade. Sits between agent-side workflow skills
 (daily-yield-sync, monthly-report, alarm-response) and per-vendor
@@ -42,20 +36,20 @@ contract every vendor implementation must satisfy
 
 | Tool | Behavior |
 |---|---|
-| `fleet_plant_list()` | Fan out to every installed vendor's `<vendor>_plant_list`; merge results into one array; each plant tagged with `vendor` for routing. |
-| `fleet_plant_now(plant_id)` | Look up plant→vendor mapping; dispatch to `<vendor>_plant_now(plant_id)`. |
-| `fleet_plant_history(plant_id, from, to)` | Same routing; vendor's history call. |
-| `fleet_inverter_list(plant_id)` | Same routing. |
-| `fleet_inverter_alarms(plant_id)` | Same routing. |
+| `fleet action=plant_list()` | Fan out to every installed vendor's `<vendor>_plant_list`; merge results into one array; each plant tagged with `vendor` for routing. |
+| `fleet action=plant_now(plant_id)` | Look up plant→vendor mapping; dispatch to `<vendor>_plant_now(plant_id)`. |
+| `fleet action=plant_history(plant_id, from, to)` | Same routing; vendor's history call. |
+| `fleet action=inverter_list(plant_id)` | Same routing. |
+| `fleet action=inverter_alarms(plant_id)` | Same routing. |
 
 ## Plant → vendor routing
 
 Lazy-populated in-memory cache:
 
-1. First `fleet_plant_list()` call fans out across vendors and
+1. First `fleet action=plant_list()` call fans out across vendors and
    stamps `plant_id → vendor` for every returned plant.
 2. Subsequent per-plant calls consult the cache. Miss → call
-   `fleet_plant_list` transparently to populate, then retry.
+   `fleet action=plant_list` transparently to populate, then retry.
 3. Plant IDs are vendor-prefixed per the contract (`SG-`, `HW-`,
    `GW-`, …), so the lookup is unambiguous.
 

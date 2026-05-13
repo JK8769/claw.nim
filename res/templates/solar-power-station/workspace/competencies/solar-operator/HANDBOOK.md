@@ -98,10 +98,10 @@ When a question requires plant data:
    `PlantNow.timestamp` field reports the vendor's actual sample
    time — use that, not the wall clock.
 4. **Pick the right tool**:
-   - Fleet-level current → `fleet_plant_list` + per-plant `fleet_plant_now`
-   - Historical yield → `fleet_plant_history(plant_id, from, to)`
-   - Inverter-level detail → `fleet_inverter_list(plant_id)`
-   - Active alarms → `fleet_inverter_alarms(plant_id)`
+   - Fleet-level current → `fleet action=plant_list` + per-plant `fleet action=plant_now`
+   - Historical yield → `fleet action=plant_history(plant_id, from, to)`
+   - Inverter-level detail → `fleet action=inverter_list(plant_id)`
+   - Active alarms → `fleet action=inverter_alarms(plant_id)`
    - Vendor-specific extras (e.g. battery SOC for hybrid plants,
      per-MPPT detail, irradiance sensors) → fall through to the
      vendor's namespaced tool: `mcp_<vendor>_<extra-tool>`
@@ -172,7 +172,7 @@ work, or vice versa. Examples:
   Both must be loaded.
 - *"What's the average capacity factor this month?"* — solar
   alone. No modeling needed; just fetch and aggregate via
-  `fleet_plant_history`.
+  `fleet action=plant_history`.
 - *"Should we add a battery to plant X?"* — solar gives the load
   shape and current curtailment patterns; data-analyst gives the
   economic methodology; technical-communication gives the report

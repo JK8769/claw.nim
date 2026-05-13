@@ -18,11 +18,9 @@ keywords:
   - 新用户
 requires:
   tools:
-    - social   # action=invite (mint) + action=query (Known Entities check)
+    - social
     - reply
 ---
-
-# customer-onboarding
 
 Workflow for verifying a customer's status and minting an invite
 if needed. Encodes the anti-fabrication discipline as concrete
