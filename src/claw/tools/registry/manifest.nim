@@ -78,13 +78,31 @@ const AllTools*: seq[ToolSpec] = @[
                      "driven format selection (text vs card) with no hardcoded " &
                      "vendor branches. Reply accepts optional progress=[items] " &
                      "+ interim=true for plan-state checkpoints. For " &
-                     "persistent / async messaging, see mail.",
+                     "persistent / async messaging, see email.",
        tags = @["comm", "chat", "messaging", "core"], domain = "comm",
        searchKeywords = @["send message", "chat send", "chat reply",
                           "chat forward", "talk", "respond", "message",
                           "answer", "reply", "forward", "progress",
                           "interim", "checkpoint"],
        default = true, heartbeatSafe = true, externalAllowed = true,
+       category = "comm"),
+  # `email` is chat's persistent / async counterpart — same capability-
+  # driven design, addressed at email-kind channels (SMTP / IMAP /
+  # third-party). Default off until an email vendor is enabled; sends
+  # return a clear "no email channel configured" error in the meantime.
+  spec(name = "email",
+       description = "persistent / async messaging — channel-agnostic " &
+                     "protocol verbs (action=send|reply|forward). Subject " &
+                     "+ thread-id semantics; capability-driven format " &
+                     "(plain vs HTML). Routes via social with kind=mail. " &
+                     "For real-time conversation, see chat. For inter-agent " &
+                     "peer notifications (local file queue), see mail.",
+       tags = @["comm", "email", "messaging", "core"], domain = "comm",
+       searchKeywords = @["email", "smtp", "imap", "send mail",
+                          "email reply", "email forward", "subject",
+                          "thread", "attachment", "postmark", "sendgrid",
+                          "ses", "persistent", "archive"],
+       default = false, heartbeatSafe = false, externalAllowed = false,
        category = "comm"),
   spec(name = "mail",
        description = "inter-agent mail (action=send to peers; action=archive your own processed inbox)",

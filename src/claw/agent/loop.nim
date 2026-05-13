@@ -20,7 +20,7 @@ import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
-import ../tools/comm/[mail_unified, chat_unified, delegate, lark, pushover]
+import ../tools/comm/[mail_unified, chat_unified, email_unified, delegate, lark, pushover]
 import ../tools/channel_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
@@ -3102,6 +3102,18 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   chatTool.setTags(@["comm", "chat", "messaging", "core"])
   chatTool.setSearchHint("send reply forward channel-agnostic chat")
   toolsRegistry.register(chatTool)
+
+  # `email` is chat's persistent / async counterpart — same capability-
+  # driven design, addressed at email-kind channels (SMTP / IMAP / third-
+  # party providers). Returns a clear "no email channel configured" error
+  # until an operator enables a vendor; the protocol shape is in place
+  # so callers can plan against it. Default off — only useful once a
+  # vendor is wired.
+  let emailTool = newEmailTool()
+  emailTool.setSendCallback(callback)
+  emailTool.setTags(@["comm", "email", "messaging", "core"])
+  emailTool.setSearchHint("send reply forward email persistent async")
+  toolsRegistry.register(emailTool)
 
   let larkTool = newLarkCliTool()
   if larkTool.larkCliBin.len > 0:
