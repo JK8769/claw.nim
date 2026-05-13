@@ -1480,6 +1480,32 @@ proc readFoundationRegistry(): JsonNode =
     except: return newJObject()
   return newJObject()
 
+proc readDistributionRegistry(): JsonNode =
+  ## Read res/distribution/registry.json — declares cross-template
+  ## distribution-tier skills with their install sources. SSoT for
+  ## "what's a known distribution skill and where do I get it?".
+  let path = getCurrentDir() / "res" / "distribution" / "registry.json"
+  if fileExists(path):
+    try: return parseJson(readFile(path))
+    except: return newJObject()
+  return newJObject()
+
+proc lookupDistributionSource(name: string): tuple[found: bool, source: string] =
+  ## Consult res/distribution/registry.json for a skill's install source.
+  ## Returns (true, "bundled") for inline-shipped skills, (true, "github:…")
+  ## for github-sourced skills, (false, "") when the name isn't registered.
+  ## Used by installSkill to honor the registry — a bare-name skill in
+  ## BASE.nims that matches a registered distribution skill picks up its
+  ## source (clones from github when the registry says so) instead of
+  ## falling through to "no bundled skill found".
+  let reg = readDistributionRegistry()
+  let impls = reg{"implementations"}
+  if impls == nil or impls.kind != JObject: return (false, "")
+  if not impls.hasKey(name): return (false, "")
+  let entry = impls[name]
+  let src = entry{"source"}.getStr("")
+  return (true, src)
+
 proc foundationSkillNames(): seq[string] =
   ## Names of foundation-tier skills declared in res/foundation.json. These
   ## mirror into every company's foundation/skills/ on `co create`/`co update`.
@@ -1528,6 +1554,58 @@ proc readSkillVersionFromDir(skillDir: string): string =
     let stripped = raw.strip()
     if stripped.startsWith("version:"):
       return stripped[8..^1].strip().strip(chars = {'"', '\''})
+
+proc tryAutoCompileSkill(dest, leafName: string) =
+  ## Compile <dest>/src/<leafName>.nim → <dest>/bin/<leafName> when the
+  ## skill ships a Nim source. No-op when:
+  ##   • src/ is missing (skill has no compilable source — README-only,
+  ##     pre-built binary, etc.)
+  ##   • bin/<leafName> already exists (pre-built; respect it)
+  ##   • framework src path can't be resolved (shouldn't happen in normal
+  ##     `claw co update` since clawdsl.nim is in src/claw/, but defensive)
+  ##
+  ## Mirrors the auto-compile in claw.nim's `claw skill install` path
+  ## so the install workflow is turnkey for either entry point. Logs
+  ## a friendly fallback (the manual nim c command) on failure rather
+  ## than aborting the rest of the install.
+  let srcDir = dest / "src"
+  if not dirExists(srcDir): return
+  # Find the .nim source file (one expected; first wins if multiple)
+  var srcFile = ""
+  for kind, path in walkDir(srcDir):
+    if kind == pcFile and path.endsWith(".nim"):
+      srcFile = path; break
+  if srcFile.len == 0: return
+  let binDir = dest / "bin"
+  let binPath = binDir / leafName
+  if fileExists(binPath):
+    echo "  ✓ bin/" & leafName & " already present; skipping auto-compile."
+    return
+  # Locate framework src/ via currentSourcePath — same trick the
+  # provider_registry.findDistributionResource uses. clawdsl.nim sits at
+  # <root>/src/claw/clawdsl.nim → up 3 = <root>/src.
+  let here = currentSourcePath()
+  if here.len == 0: return
+  let frameworkSrc = here.parentDir.parentDir
+  if not dirExists(frameworkSrc / "claw"):
+    echo "  ! Auto-compile skipped — framework src/ not found at " &
+         frameworkSrc & ". Build manually: nim c -o:" & binPath & " " & srcFile
+    return
+  mkDir binDir
+  let cmd = "nim c --hints:off --threads:on --mm:orc -d:release -d:ssl " &
+            "--path:" & quoteShell(frameworkSrc / "claw") & " " &
+            "--path:" & quoteShell(frameworkSrc) & " " &
+            "-o:" & quoteShell(binPath) & " " & quoteShell(srcFile)
+  echo "  → Auto-compiling " & srcFile.lastPathPart & " → bin/" & leafName
+  # NimScript's `exec` raises OSError when the command's exit code is
+  # nonzero. Catch the failure so we don't abort the install — log the
+  # manual retry command and let the operator try again after fixing.
+  try:
+    exec(cmd)
+    echo "  ✓ Compiled bin/" & leafName
+  except OSError as e:
+    echo "  ! Auto-compile failed: " & e.msg
+    echo "    Retry manually: " & cmd
 
 proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]) =
   ## Install a declared Tier 2 skill from ClawDSL into workspace/skills/.
@@ -1584,6 +1662,33 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
           break
       if dirExists(bundledLocal): break
 
+  # Consult res/distribution/registry.json. For github:-sourced entries,
+  # this picks up the source automatically when the operator wrote a bare
+  # name (e.g. `skill "anygen"` → clones from
+  # github:AnyGenIO/anygen-suite-skill). For bundled entries, this
+  # validates the dir was actually found (catches typos like
+  # `skill "lark-sweet"` early with a clear "did you mean lark-suite"
+  # hint instead of a generic "no bundled skill found" later).
+  # NimScript disallows assigning to a value-typed proc param, so we
+  # work with `effectiveSource` from here on rather than mutating sk.
+  var effectiveSource = sk.source
+  if effectiveSource == "":
+    let (found, regSrc) = lookupDistributionSource(leafName)
+    if found:
+      if regSrc == "bundled":
+        # Registry claims it ships inline. If the dir-scan above failed,
+        # the registry + filesystem disagree — flag it loudly.
+        if not dirExists(bundledLocal):
+          echo "  ! Distribution registry says '" & leafName & "' is " &
+               "source=bundled but the directory wasn't found at " &
+               "res/distribution/skills/" & leafName & "/. Catalog drift " &
+               "or typo? Skipping install."
+          return
+      elif regSrc.len > 0:
+        # github:… or other source scheme — picked up by the existing
+        # source-handling block below.
+        effectiveSource = regSrc
+
   # If already installed, preserve the existing copy by default so an
   # existing company isn't silently broken by a newer bundled version.
   # Only replace when CLAW_SYNC_SKILLS=1 is set (used by `claw skill sync`).
@@ -1592,7 +1697,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
     let bundledSkillMd = bundledLocal / "SKILL.md"
     let syncRequested = getEnv("CLAW_SYNC_SKILLS") == "1"
     if fileExists(destSkillMd) and fileExists(bundledSkillMd) and
-       sk.source == "" and dirExists(bundledLocal):
+       effectiveSource == "" and dirExists(bundledLocal):
       let a = readFile(destSkillMd)
       let b = readFile(bundledSkillMd)
       let destVer = readSkillVersionFromDir(dest)
@@ -1615,7 +1720,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
     return
 
   # Try source (tier=lab bundled OR another company via claw:)
-  if sk.source == "" and dirExists(bundledLocal):
+  if effectiveSource == "" and dirExists(bundledLocal):
     cpDir bundledLocal, dest
     let installedVer = readSkillVersionFromDir(dest)
     let srcLabel = if sk.name.startsWith("claw:"): "from " & sk.name
@@ -1626,15 +1731,16 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
     else:
       echo "  + Installed " & srcLabel & ": " & leafName &
            (if installedVer.len > 0: " (v" & installedVer & ")" else: "")
+    tryAutoCompileSkill(dest, leafName)
     return
 
   # URL / github: source (git clone). Supports:
   #   https://... | http://... | git@... | *.git   — direct git URLs
   #   github:owner/repo                             — GitHub shortcut
   #   github:owner/repo/subpath                     — subdir of mono-repo
-  if sk.source != "":
+  if effectiveSource != "":
     # Expand github: shortcut → https URL + optional subpath
-    var cloneUrl = sk.source
+    var cloneUrl = effectiveSource
     var subpath = ""
     if cloneUrl.startsWith("github:"):
       let body = cloneUrl["github:".len .. ^1]
@@ -1647,7 +1753,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
       cloneUrl.startsWith("http://") or cloneUrl.startsWith("https://") or
       cloneUrl.startsWith("git@") or cloneUrl.endsWith(".git")
     if isGitUrl:
-      echo "  + Cloning skill '" & leafName & "' from " & sk.source
+      echo "  + Cloning skill '" & leafName & "' from " & effectiveSource
       if subpath.len > 0:
         # Clone to temp, extract subpath, move to dest
         let tmp = "/tmp/claw-skill-clone-" & leafName
@@ -1662,6 +1768,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
              " >/dev/null 2>&1 || echo '    ! clone failed'"
         # Strip the inner .git to avoid nesting a repo inside the company's repo
         exec "rm -rf " & dest & "/.git"
+      tryAutoCompileSkill(dest, leafName)
       return
 
   # Fallback: empty scaffold
