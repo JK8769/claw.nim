@@ -1929,22 +1929,57 @@ proc scaffoldWorkspace(spec: ClawSpec, workspace: string) =
   # so operator-authored fields (heartbeat[], custom keys) survive
   # `claw co update`. DSL-controlled fields (name/description/skills/
   # summary) always reflect the current DSL; everything else is
-  # preserved. has_handbook is derived fresh from actual file
+  # preserved. On first install, both COMPETENCY.json (heartbeat[] etc.)
+  # and HANDBOOK.md are seeded from a template-shipped definition of
+  # the same name (res/templates/*/workspace/competencies/<name>/) when
+  # one exists — operators get rich defaults without restating duties
+  # in BASE.nims. has_handbook is derived fresh from actual file
   # presence each call.
+  proc findTemplateCompetency(name: string): tuple[json, handbook: string] =
+    ## Scan res/templates/*/workspace/competencies/<name>/ for a
+    ## template-shipped competency definition. Returns ("", "") when
+    ## not found.
+    result = (json: "", handbook: "")
+    var templateRoot = getCurrentDir() / "res" / "templates"
+    if not dirExists(templateRoot):
+      var cur = getCurrentDir()
+      for _ in 0..6:
+        let up = cur.parentDir()
+        if up == cur: break
+        cur = up
+        let candidate = cur / "res" / "templates"
+        if dirExists(candidate):
+          templateRoot = candidate; break
+    if not dirExists(templateRoot): return
+    for tplKind, tplPath in walkDir(templateRoot):
+      if tplKind != pcDir: continue
+      let cdir = tplPath / "workspace" / "competencies" / name
+      if not dirExists(cdir): continue
+      let j = cdir / "COMPETENCY.json"
+      let h = cdir / "HANDBOOK.md"
+      result.json = if fileExists(j): j else: ""
+      result.handbook = if fileExists(h): h else: ""
+      if result.json.len > 0 or result.handbook.len > 0: return
+
   var compCount = 0
   for c in spec.competencies:
     let cdir = workspace / "competencies" / c.name
     mkDir cdir
     let compPath = cdir / "COMPETENCY.json"
+    let handbook = cdir / "HANDBOOK.md"
+
+    # Resolve template seed once per competency (cheap walkDir).
+    let seed = findTemplateCompetency(c.name)
 
     # HANDBOOK.md (preserve user edits; only write on first scaffold).
-    # Done before composing JSON so has_handbook reflects post-scaffold
-    # truth rather than pre-scaffold absence.
-    let handbook = cdir / "HANDBOOK.md"
+    # Order: inline DSL content > template-shipped HANDBOOK.md > none.
     if not fileExists(handbook):
       let body = resolveContent(c.content, distRoot)
       if body.len > 0:
         writeFile(handbook, body)
+      elif seed.handbook.len > 0:
+        try: writeFile(handbook, readFile(seed.handbook))
+        except CatchableError: discard
 
     # Read existing JSON if present so we can preserve operator-
     # authored fields (heartbeat[], custom extensions). DSL-controlled
@@ -1961,6 +1996,14 @@ proc scaffoldWorkspace(spec: ClawSpec, workspace: string) =
       except CatchableError:
         # File exists but isn't valid JSON — start fresh rather than
         # crash. Operator can recover the old content from git if needed.
+        compJson = newJObject()
+    elif seed.json.len > 0:
+      # First install with a template seed — pick up heartbeat[] etc.
+      try:
+        compJson = parseJson(readFile(seed.json))
+        if compJson.kind != JObject:
+          compJson = newJObject()
+      except CatchableError:
         compJson = newJObject()
     else:
       compJson = newJObject()
