@@ -30,9 +30,9 @@
 ## TODO (v2): multimodal read — handle PDF (use anthropic-skills:pdf
 ## pipeline or shell out to `pdftotext`) and image (return inline as
 ## base64 with mime-type for vision-capable LLMs). Today, action=read
-## treats every file as plain UTF-8 text — same behavior as the legacy
-## `read_file` tool. Until multimodal lands, callers should use
-## `image_analyze` for images and the PDF skill for PDFs.
+## treats every file as plain UTF-8 text. Until multimodal lands,
+## callers should use `capability action=invoke tag=vision input=<path>`
+## for images and the PDF skill for PDFs.
 
 import std/[os, json, asyncdispatch, tables, strutils]
 import ./types

@@ -972,10 +972,10 @@ proc doInvoke(t: CapabilityTool, args: Table[string, JsonNode]): Future[string] 
   }
 
   # 6. Make the HTTP call. Use stdlib httpclient to match the existing
-  # tool-layer convention (image_analyze, http_request, pushover) rather
-  # than pulling in curly's master/spawn machinery. The User-Agent
-  # "curl/8.7.1" bypasses Cloudflare's WAF on OpenCode Go — without it,
-  # requests come back as 403 challenge pages.
+  # tool-layer convention (http_request, pushover) rather than pulling
+  # in curly's master/spawn machinery. The User-Agent "curl/8.7.1"
+  # bypasses Cloudflare's WAF on OpenCode Go — without it, requests
+  # come back as 403 challenge pages.
   let url = apiBase & "/chat/completions"
   let headers = newHttpHeaders({
     "Content-Type": "application/json",

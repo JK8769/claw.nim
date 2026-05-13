@@ -2913,11 +2913,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # office) can't see the tombstone.
   regTagged(newTodoTool(officeDir), ["agent", "core"], "manage your todo queue (defer/done) and time-scheduled TODOs (schedule/done_note)")
   # `knowledge` is the ship in the memory/knowledge/skill trio — timeless
-  # facts (vs memory's raw past, skill's procedural how-to). Five actions:
-  # consolidate | lookup | list | rank | top. Replaces consolidate_knowledge
-  # (action=consolidate is the same verb; lookup/list/rank/top are new).
-  # Ranks are agent-decided (1-10 with reason); aggregate displayed once
-  # ≥ 2 votes.
+  # facts (vs memory's raw past, skill's procedural how-to). Actions:
+  # consolidate | lookup | list | rank | top. Ranks are agent-decided
+  # (1-10 with reason); aggregate displayed once ≥ 2 votes.
   regTagged(newKnowledgeTool(officeDir, agentName),
             ["agent", "core", "knowledge", "wiki"],
             "knowledge wiki: consolidate write append timeless facts; lookup read; rank agent-judgment 1-10; top sort by aggregate")
@@ -2969,14 +2967,6 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newGitTool(workspace, cfg.agents.security.allowed_paths, officeDir), ["git", "devops", "vcs"], "git version control operations")
   # (pushover folded into channels/pushover.nim — agents reach it via `chat send vendor=pushover`)
   regTagged(newScreenshotTool(workspace), ["visual", "utility"], "capture screenshots of display")
-  # image_info folded into `fs action=info` — when path is an image
-  # file, the response now includes format + dimensions automatically.
-  # The detection helpers stay in tools/visual/image_info.nim.
-  # image_analyze deleted — use `capability invoke tag=vision input=<path>
-  # prompt="..."` instead. Capability-routed dispatch picks any vision-
-  # capable model (Ollama+gemma4 local, etc.) without the agent's primary
-  # model needing native multimodal support.
-
   let allowedDomainsStr = getEnv("BROWSER_ALLOWED_DOMAINS", "")
   var allowedBrowserDomains: seq[string] = @[]
   if allowedDomainsStr.len > 0:

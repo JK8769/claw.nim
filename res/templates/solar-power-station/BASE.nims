@@ -74,7 +74,7 @@ competency "technical-communication":
   description "Communication discipline for long-running technical tasks: Phase 0 intake, progress checkpoints, plan announcements, structured result formatting, async-tool handoff."
 
 competency "thinker":
-  description "The agent's meta-cognitive practice — tends memory + knowledge + heart together. Heartbeat duties: snapshot wiki, surface knowledge promotion candidates, weekly reflection on partner experiences (with stripEntityIdentifiers backstop), monthly journal consolidation, quarterly visibility audit. Replaces the former 'knowledge-keeper' (which only covered the wiki); now covers all three cognitive stores as one practice."
+  description "The agent's meta-cognitive practice — tends memory + knowledge + heart together. Heartbeat duties: snapshot wiki, surface knowledge promotion candidates, weekly reflection on partner experiences (with stripEntityIdentifiers backstop), monthly journal consolidation, quarterly visibility audit."
 
 # ── Solar adapter (L1 — vendor-neutral facade) ───────────────
 # Exposes the `solar` tool that fans out across installed inverter

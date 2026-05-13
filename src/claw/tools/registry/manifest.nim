@@ -184,11 +184,10 @@ const AllTools*: seq[ToolSpec] = @[
        description = "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds (action=verify_project)",
        tags = @["agent", "core", "workstation"], domain = "agent",
        default = true, heartbeatSafe = true, category = "self-management"),
-  # `knowledge` — the ship in memory/knowledge/skill trio. Replaces
-  # consolidate_knowledge (which was one-action: just promote insight).
-  # New surface: consolidate (write/append) | lookup (read) | list |
-  # rank (agent judgment 1-10 with reason) | top (sort by avg). Ranks
-  # are OPTIONAL — facts surface in lookups regardless; rank refines order.
+  # `knowledge` — the ship in memory/knowledge/skill trio. Surface:
+  # consolidate (write/append) | lookup (read) | list | rank (agent
+  # judgment 1-10 with reason) | top (sort by avg). Ranks are OPTIONAL —
+  # facts surface in lookups regardless; rank refines order.
   spec(name = "knowledge",
        description = "cross-project semantic memory wiki — timeless facts. " &
                      "Actions: consolidate (write/append) | lookup (read + " &
@@ -355,10 +354,6 @@ const AllTools*: seq[ToolSpec] = @[
        searchKeywords = @["capture", "screen", "display", "snap", "picture of screen"],
        domain = "visual",
        default = false, heartbeatSafe = false, category = "visual"),
-  # image_info folded into `fs action=info` — when path is an image
-  # file, the response now includes format + dimensions automatically.
-  # image_analyze deleted — use `capability invoke tag=vision input=<path>
-  # prompt="..."` (capability-routed dispatch to a vision-capable model).
 
   # Hardware
   spec(name = "hardware",

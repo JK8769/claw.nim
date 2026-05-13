@@ -8,13 +8,12 @@
 ## Each fact lives at `<office>/knowledge/<topic>.md`. Optional YAML
 ## frontmatter at the top carries metadata (created, ranks, deprecated
 ## flag); entries below the frontmatter are append-only timestamped
-## blocks (preserves the format from the former `consolidate_knowledge`
-## tool — existing wikis read cleanly, no migration needed).
+## blocks. Files without frontmatter parse cleanly as defaults — no
+## migration needed for existing wikis.
 ##
 ## Actions:
 ##
 ##   consolidate  — write a new fact / append to an existing topic
-##                  (the former consolidate_knowledge tool's only verb)
 ##   lookup       — read a topic's body + metadata + rank summary
 ##   list         — enumerate topics in this agent's wiki
 ##   rank         — express judgment on a fact (1-10 with reason). One
@@ -32,10 +31,11 @@
 ## Ranks are OPTIONAL — facts surface in lookups regardless. Ranking
 ## refines order when present, no friction when absent.
 
-import std/[asyncdispatch, json, tables, strutils, times, os, options, algorithm]
+import std/[asyncdispatch, json, tables, strutils, times, os, algorithm]
 import ./types
 import ./spec
 import ../logger
+import ../agent/memory  # stripEntityIdentifiers
 
 const ToolSpec* = spec(
   name = "knowledge",
@@ -186,8 +186,8 @@ proc readFile2(path: string): string =
 
 proc parseFrontmatter(raw: string): tuple[meta: TopicMeta, body: string] =
   ## Returns (meta, body). If no frontmatter present, meta is default
-  ## and body is the entire raw text — preserves back-compat with wikis
-  ## written by the former consolidate_knowledge tool.
+  ## and body is the entire raw text — files written without frontmatter
+  ## parse cleanly.
   result = (meta: TopicMeta(), body: raw)
   if not raw.startsWith("---\n"): return
   let endIdx = raw.find("\n---\n", 4)
@@ -198,12 +198,29 @@ proc parseFrontmatter(raw: string): tuple[meta: TopicMeta, body: string] =
   type Section = enum secNone, secRanks, secLinks
   var section = secNone
   proc parseInline(t: string): seq[(string, string)] =
-    ## "{key: \"v\", k2: 5, ...}" → seq of (key, value)
+    ## "{key: \"v\", k2: 5, ...}" → seq of (key, value). Splits on
+    ## commas at the top level only — commas inside "..." quoted
+    ## values are preserved (so a rank reason like 'core, pivotal'
+    ## round-trips correctly).
     let inner = t.find('{')
     let close = t.rfind('}')
     if inner < 0 or close <= inner: return
     let kv = t[inner + 1 ..< close]
-    for pair in kv.split(','):
+    var pairs: seq[string]
+    var cur = ""
+    var inQ = false
+    var prev = '\0'
+    for ch in kv:
+      if ch == '"' and prev != '\\':
+        inQ = not inQ
+        cur.add(ch)
+      elif ch == ',' and not inQ:
+        pairs.add(cur); cur = ""
+      else:
+        cur.add(ch)
+      prev = ch
+    if cur.len > 0: pairs.add(cur)
+    for pair in pairs:
       let p = pair.strip()
       let colon = p.find(':')
       if colon <= 0: continue
@@ -211,6 +228,7 @@ proc parseFrontmatter(raw: string): tuple[meta: TopicMeta, body: string] =
       var v = p[colon + 1 .. ^1].strip()
       if v.startsWith("\"") and v.endsWith("\"") and v.len >= 2:
         v = v[1 ..< v.len - 1]
+        v = v.replace("\\\"", "\"").replace("\\\\", "\\")
       result.add((k, v))
   for line in header.splitLines:
     let t = line.strip()
@@ -329,7 +347,7 @@ proc doConsolidate(t: KnowledgeTool, args: Table[string, JsonNode]): string =
   if t.workspace.len == 0:
     return "Error: tool not bound to an office workspace"
   let topic = args["topic"].getStr().strip()
-  let insight = args["insight"].getStr().strip()
+  let insight = stripEntityIdentifiers(args["insight"].getStr().strip())
   if topic.len == 0: return "Error: 'topic' must not be empty"
   if insight.len < 10: return "Error: 'insight' must be at least 10 chars"
   if not isKebabSafe(topic):
@@ -359,8 +377,7 @@ proc doConsolidate(t: KnowledgeTool, args: Table[string, JsonNode]): string =
            ".md`. Lookup later via `knowledge lookup topic=" & topic & "`."
 
   # Existing topic — preserve frontmatter (if any) and append a new
-  # entry to the body. The format below the frontmatter stays exactly
-  # what the former consolidate_knowledge wrote (back-compat).
+  # entry to the body.
   let raw = readFile2(path)
   let (meta, body) = parseFrontmatter(raw)
   var newBody = body
@@ -557,7 +574,7 @@ proc doUpdate(t: KnowledgeTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("insight"): return "Error: 'insight' is required"
   if t.workspace.len == 0: return "Error: tool not bound to an office workspace"
   let topic = args["topic"].getStr().strip()
-  let insight = args["insight"].getStr().strip()
+  let insight = stripEntityIdentifiers(args["insight"].getStr().strip())
   if insight.len < 10: return "Error: 'insight' must be at least 10 chars"
   if not isKebabSafe(topic):
     return "Error: 'topic' must be kebab-case. Got: '" & topic & "'"

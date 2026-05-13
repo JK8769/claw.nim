@@ -34,7 +34,7 @@
 ##   recallSelf       → self.jsonl filtered by visibility × trust
 ##   getMemoryContext → merges both for system-prompt injection
 
-import std/[os, json, times, strutils, algorithm, tables]
+import std/[os, json, times, strutils, algorithm, tables, re]
 
 type
   MemoryVisibility* = enum
@@ -131,8 +131,6 @@ proc downgradeForTrust*(requested: MemoryVisibility, trustLevel: int): MemoryVis
 # This is the structural backstop. The semantic strip belongs in the
 # agent's reflection prompt: "summarize without naming partners; refer
 # to them generically." That part is the `thinker` competency's job.
-
-import std/re
 
 let entityStripPatterns = [
   (re"nc:\d+", "[entity]"),
@@ -472,10 +470,6 @@ proc recallHeart*(ms: MemoryStore, query: string,
       path: path
     ))
     if result.len >= limit: return
-
-# (recallKnowledge removed — the knowledge wiki is the `knowledge` tool's
-#  domain, accessed via `knowledge lookup` / `knowledge top`. Memory is
-#  for raw past events only — different epistemic category.)
 
 proc recallSelfHits*(ms: MemoryStore, trustLevel: int, query: string,
                      fromTs, toTs: float, limit: int): seq[MemoryHit] =

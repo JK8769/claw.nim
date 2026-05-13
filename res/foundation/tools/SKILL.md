@@ -104,7 +104,7 @@ You don't always know the right tool name. Search by what you want to DO:
 | run a shell command | `shell`, `bash`, `run`, `execute` | `exec` |
 | commit code | `commit`, `push`, `branch`, `diff` | `git` |
 | extract from JSON | `json`, `parse`, `filter`, `query` | `json_query` |
-| describe an image | `describe image`, `vision`, `ocr` | `image_analyze` |
+| describe an image | `describe image`, `vision`, `ocr` | `capability` action=invoke tag=vision |
 | verify a claim | `verify`, `prove`, `evidence` | `memory` action=verify or `workstation` action=verify_project |
 
 If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try a different intent angle. If `find_tools` still returns no useful results, the capability genuinely doesn't exist — proceed to delegate or forge.

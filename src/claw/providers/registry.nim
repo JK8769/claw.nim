@@ -185,7 +185,7 @@ proc normalizeName(s: string): string =
   ## Provider name lookup normalization: lowercase + space→hyphen.
   ## Lets `"opencode-go"` (slug form, as operators commonly type) match
   ## `"OpenCode Go"` (display form, as it appears in providers.json).
-  ## Same rule the DSL uses (see `normalizeProviderKey` in clawdsl.nim).
+  ## Same rule the DSL uses (see `normalizeKey` in clawdsl.nim).
   result = newStringOfCap(s.len)
   for c in s:
     if c == ' ': result.add('-')

@@ -423,6 +423,12 @@ template agent*(agentName: string, body: untyped) =
 
 # ── DSL: Channel ──────────────────────────────────────────────────
 
+proc normalizeKey*(name: string): string =
+  ## Single rule for catalog ↔ DSL name matching. Used wherever
+  ## BASE.nims may use a different casing/spacing than a JSON catalog
+  ## (providers, channels, distribution skills).
+  name.toLowerAscii.replace(" ", "-")
+
 proc companionSkillsForChannel*(chKind: string): seq[string] =
   ## Read res/channels.json for the named channel kind's `companion_skills`
   ## field. Returns the list of vendor-suite skills the framework should
@@ -436,8 +442,12 @@ proc companionSkillsForChannel*(chKind: string): seq[string] =
     let cat = parseJson(readFile(path))
     if not cat.hasKey("types"): return
     let types = cat["types"]
-    if not types.hasKey(chKind): return
-    let entry = types[chKind]
+    let key = normalizeKey(chKind)
+    var entry: JsonNode = nil
+    for k, v in types.pairs:
+      if normalizeKey(k) == key:
+        entry = v; break
+    if entry == nil: return
     if not entry.hasKey("companion_skills"): return
     let arr = entry["companion_skills"]
     if arr.kind != JArray: return
@@ -881,19 +891,17 @@ proc hasProfile(name: string): bool =
 ##
 ## Name normalization: providers.json uses display names like "OpenCode Go"
 ## while BASE.nims tends to use slug form like `provider "opencode-go":`.
-## We lowercase + space-to-hyphen on both sides for the match.
-
-proc normalizeProviderKey(name: string): string =
-  name.toLowerAscii.replace(" ", "-")
+## `normalizeKey` (defined above) lowercases + space-to-hyphen on both
+## sides for the match.
 
 proc getProviderDefault(name: string): provider_registry.ProviderDef =
   ## Look up provider metadata from the framework's res/providers.json (cached
   ## by `provider_registry.builtinProviders`). Returns an empty ProviderDef
   ## (all fields blank) if the name doesn't match any known provider — caller
   ## must check `.apiBase.len > 0` etc. before using a field.
-  let key = normalizeProviderKey(name)
+  let key = normalizeKey(name)
   for p in provider_registry.builtinProviders():
-    if normalizeProviderKey(p.name) == key: return p
+    if normalizeKey(p.name) == key: return p
   return provider_registry.ProviderDef()
 
 # ── BASE.json Builder ─────────────────────────────────────────────
@@ -1414,7 +1422,7 @@ proc buildProviders(spec: ClawSpec): JsonNode =
   result = newJObject()
   for p in spec.providers:
     let d = getProviderDefault(p.name)
-    let key = normalizeProviderKey(p.name)
+    let key = normalizeKey(p.name)
     # Fill apiBase from registry default if omitted
     var apiBase = if p.apiBase.len > 0: p.apiBase else: d.apiBase
     # Fill apiKey from the registry-declared envKey if omitted. Lets
@@ -1501,10 +1509,12 @@ proc lookupDistributionSource(name: string): tuple[found: bool, source: string] 
   let reg = readDistributionRegistry()
   let impls = reg{"implementations"}
   if impls == nil or impls.kind != JObject: return (false, "")
-  if not impls.hasKey(name): return (false, "")
-  let entry = impls[name]
-  let src = entry{"source"}.getStr("")
-  return (true, src)
+  let key = normalizeKey(name)
+  for k, v in impls.pairs:
+    if normalizeKey(k) == key:
+      let src = v{"source"}.getStr("")
+      return (true, src)
+  return (false, "")
 
 proc foundationSkillNames(): seq[string] =
   ## Names of foundation-tier skills declared in res/foundation.json. These
