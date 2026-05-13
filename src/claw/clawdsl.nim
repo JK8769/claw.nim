@@ -1667,8 +1667,9 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
                       "channels" / "skills",
                       "distribution" / "skills"]
     for sub in searchDirs:
-      bundledLocal = getCurrentDir() / "res" / sub / leafName
-      if dirExists(bundledLocal): break
+      let primary = getCurrentDir() / "res" / sub / leafName
+      if dirExists(primary):
+        bundledLocal = primary; break
       var cur = getCurrentDir()
       for _ in 0..6:
         let up = cur.parentDir()
@@ -1678,7 +1679,7 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
         if dirExists(candidate):
           bundledLocal = candidate
           break
-      if dirExists(bundledLocal): break
+      if bundledLocal.len > 0: break
 
     # Fourth fallback: scan templates' vendor/<class>/<leaf>/ for
     # template-bundled equipment vendors. Each template ships its own
@@ -1821,7 +1822,12 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
   # Fallback: empty scaffold
   mkDir dest
   echo "  + Created empty skill directory: " & leafName
-  echo "    ! No bundled skill found at " & bundledLocal
+  if bundledLocal.len > 0:
+    echo "    ! No bundled skill found at " & bundledLocal
+  else:
+    echo "    ! No bundled skill found for '" & leafName &
+         "' (searched res/foundation/, res/channels/skills/, " &
+         "res/distribution/skills/, and res/templates/*/vendor/*/)"
 
 proc distributionRoot(): string =
   ## Find the claw distribution root by walking up from CWD looking for
