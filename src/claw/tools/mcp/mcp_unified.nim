@@ -40,7 +40,7 @@ method description*(t: UnifiedMcpTool): string =
   "  persist       — Promote a forged tool to persistent library (requires name, optional version)\n" &
   "  purge         — Unregister & remove an MCP server (requires name, optional delete_source)\n" &
   "  persist_skill — Save a skill to persistent directory (requires skill_name + source_path)\n\n" &
-  "Read the forge_nim_expert skill before forging."
+  "Read the `tools` foundation skill (forge sections) before forging."
 
 method parameters*(t: UnifiedMcpTool): Table[string, JsonNode] =
   {

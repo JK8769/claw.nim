@@ -212,9 +212,24 @@ The first `##` line becomes the tool description. Lines starting `## - paramName
 - Forged binaries live in `<officeDir>/workstation/mcp/<name>/bin/<name>` — Tier 3 artifact
 - Source kept at `<officeDir>/workstation/mcp/<name>/src/<name>.nim`
 - Registration persists across sessions (auto-loaded on gateway startup)
-- Purge anytime with `mcp action=purge name=<name>`
 - Tools remain scoped to YOUR workstation — other agents can't invoke them
 - When confident, request graduation for human review
+
+### Build vs. Uninstall vs. Permanent Delete
+
+Three distinct lifecycle ops; the difference matters for safety:
+
+| Op | Effect on registration | Effect on `bin/` | Effect on `src/` |
+|---|---|---|---|
+| `mcp action=forge` | (re-)registers, stops + restarts the server | replaces with new build | preserved (new code overwrites if you `code:` arg) |
+| `mcp action=purge` | unregisters, stops the server | removes binary | **PRESERVES source** (safe "stop") |
+| `mcp action=purge delete_source=true` | unregisters | removes binary | **DELETES source dir** (use with care) |
+
+**Atomic builds:** if the new compile fails, no files are promoted — the old version stays active and your workstation stays clean. Failed temp artifacts are auto-cleaned. Only successful builds replace the running tool.
+
+### Building from disk source
+
+The `code:` arg is OPTIONAL. If you've edited the source file directly at `workstation/mcp/<name>/src/<name>.nim` (e.g., via `file action=write`), call `mcp action=forge name=<name>` with no `code:` — the existing source on disk is the build target. Same atomic-build guarantees.
 
 ## Common pattern: forge → learn
 

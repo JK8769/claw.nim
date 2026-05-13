@@ -17,7 +17,7 @@ proc newForgeTool*(registry: ToolRegistry, workspace: string): ForgeTool =
   )
 
 method name*(t: ForgeTool): string = "forge_mcp_tool"
-method description*(t: ForgeTool): string = "Create a new MCP tool at runtime. Provide COMPLETE Nim code using: import mcp; let server = mcpServer(\"name\", \"1.0.0\"): mcpTool: proc tool_name(arg: string): string = ## desc \\n ## - arg: desc \\n return \"result\"; when isMainModule: let transport = newStdioTransport(); transport.serve(server). Read the forge_nim_expert skill FIRST."
+method description*(t: ForgeTool): string = "Create a new MCP tool at runtime. Provide COMPLETE Nim code using: import mcp; let server = mcpServer(\"name\", \"1.0.0\"): mcpTool: proc tool_name(arg: string): string = ## desc \\n ## - arg: desc \\n return \"result\"; when isMainModule: let transport = newStdioTransport(); transport.serve(server). Read the `tools` foundation skill (forge sections) FIRST."
 method parameters*(t: ForgeTool): Table[string, JsonNode] =
   {
     "type": %"object",
