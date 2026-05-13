@@ -124,9 +124,9 @@ const AllTools*: seq[ToolSpec] = @[
        default = true, heartbeatSafe = true, category = "messaging"),
   spec(name = "delegate",
        description = "delegate tasks to other named agents (sync or deferred)",
-       tags = @["agent", "delegation"], domain = "comm",
+       tags = @["agent", "delegation"], domain = "relationships",
        default = true, heartbeatSafe = true, externalAllowed = true,
-       category = "comm"),
+       category = "relationships"),
   # The navigator of the social/delegate/collaborate trio. Multi-agent
   # orchestration on top of `delegate`: fan tasks out in parallel or
   # pipeline through agents sequentially. Internal-only (would amplify
@@ -150,8 +150,8 @@ const AllTools*: seq[ToolSpec] = @[
                            "arbiter", "route", "pick", "recommend",
                            "best-fit", "on-error", "skip", "retry",
                            "stage-timeout"],
-       domain = "comm",
-       default = true, heartbeatSafe = false, category = "comm"),
+       domain = "relationships",
+       default = true, heartbeatSafe = false, category = "relationships"),
   # (forward folded into `chat action=forward`)
 
   # Self-management (the verify-triangle agent tools)
@@ -235,9 +235,9 @@ const AllTools*: seq[ToolSpec] = @[
                            "route", "discover", "unreachable",
                            "preferred channel", "address book",
                            "how to reach", "reach recipient"],
-       domain = "social",
+       domain = "relationships",
        default = true, heartbeatSafe = false, externalAllowed = true,
-       category = "social"),
+       category = "relationships"),
 
   # Time / scheduling / housekeeping
   spec(name = "clock", description = "get current date and time",
@@ -343,10 +343,8 @@ const AllTools*: seq[ToolSpec] = @[
        description = "Feishu/Lark docs sheets calendar tasks via lark-cli",
        tags = @["feishu", "lark", "docs", "calendar", "platform"], domain = "comm",
        default = false, heartbeatSafe = false, category = "vendor"),
-  spec(name = "pushover",
-       description = "send push notifications via Pushover",
-       tags = @["messaging", "notification"], domain = "comm",
-       default = false, heartbeatSafe = false, category = "vendor"),
+  # (pushover folded into channels/pushover.nim — agents reach it via
+  #  `chat send vendor=pushover` like any other channel vendor)
   spec(name = "feishu_add_app",
        description = "register new feishu/lark app (id, secret, route to agent) — SuperAdmin only",
        tags = @["admin", "channels", "feishu"], domain = "admin",

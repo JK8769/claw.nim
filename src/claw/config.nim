@@ -150,6 +150,11 @@ type
     original_client*: bool
     telegram_push_chat_id*: Option[string]
 
+  PushoverConfig* = object
+    enabled*: bool
+    token*: string         ## PUSHOVER_TOKEN — your Pushover app's API token
+    allow_from*: seq[string]
+
   ChannelsConfig* = object
     whatsapp*: WhatsAppConfig
     telegram*: TelegramConfig
@@ -159,6 +164,7 @@ type
     qq*: QQConfig
     dingtalk*: DingTalkConfig
     nmobile*: NMobileConfig
+    pushover*: PushoverConfig
 
 
   GatewayConfig* = object
@@ -464,7 +470,8 @@ proc defaultConfig*(): Config =
         message_ttl_hours: 24,
         num_sub_clients: 4,
         original_client: false
-      )
+      ),
+      pushover: PushoverConfig(enabled: false, token: "${PUSHOVER_TOKEN}")
     ),
     gateway: GatewayConfig(host: "0.0.0.0", port: 18790),
     tools: ToolsConfig(

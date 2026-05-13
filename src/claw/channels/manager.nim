@@ -1,6 +1,6 @@
 import std/[asyncdispatch, tables, locks, strutils]
 import base as channel_base
-import telegram, discord, whatsapp, dingtalk, maixcam, feishu, qq, nmobile, zen
+import telegram, discord, whatsapp, dingtalk, maixcam, feishu, qq, nmobile, zen, pushover
 import ../bus, ../bus_types, ../config, ../logger
 
 type
@@ -44,6 +44,9 @@ proc initChannels*(m: Manager) =
 
   if m.config.channels.nmobile.enabled:
     m.channels["nmobile"] = newNMobileChannel(m.config, m.bus)
+
+  if m.config.channels.pushover.enabled and m.config.channels.pushover.token != "":
+    m.channels["pushover"] = newPushoverChannel(m.config.channels.pushover, m.bus)
 
   # Zen channel — always attempt connection (auto-discovery, no config needed)
   m.channels["zen"] = newZenChannel(m.config, m.bus)

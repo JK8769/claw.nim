@@ -20,7 +20,7 @@ import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
-import ../tools/comm/[mail_unified, chat_unified, delegate, lark, pushover]
+import ../tools/comm/[mail_unified, chat_unified, delegate, lark]
 import ../tools/channel_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
@@ -2944,7 +2944,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
   # --- Dev tools ---
   regTagged(newGitTool(workspace, cfg.agents.security.allowed_paths, officeDir), ["git", "devops", "vcs"], "git version control operations")
-  regTagged(newPushoverTool(workspace), ["messaging", "notification"], "send push notifications via Pushover")
+  # (pushover folded into channels/pushover.nim — agents reach it via `chat send vendor=pushover`)
   regTagged(newScreenshotTool(workspace), ["visual", "utility"], "capture screenshots of display")
   regTagged(newImageInfoTool(), ["visual", "data"], "get image dimensions and metadata")
   regTagged(newImageAnalyzeTool(), ["visual", "vision", "image"], "analyze image content using vision model")

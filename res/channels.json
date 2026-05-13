@@ -142,6 +142,22 @@
       }
     },
 
+    "pushover": {
+      "description": "Pushover push notifications — outbound-only mobile alerts. Per-recipient user_key stored on each entity's identifiers (key 'pushover'); single app token per company.",
+      "credential_type": "api-token",
+      "auth": [
+        {"field": "token", "env": "PUSHOVER_TOKEN", "required": true,
+         "hint": "Pushover app API token (registered at pushover.net/apps)."}
+      ],
+      "capabilities": {
+        "text": true, "image": false, "voice": false, "video": false,
+        "file": false, "group": false, "threads": false
+      },
+      "chat_kind_detection": {
+        "note": "Always DM — push notifications go to a single user_key. No inbound (server → device only)."
+      }
+    },
+
     "maixcam": {
       "description": "MaixCam IoT device — camera + speaker peer for local agent interactions.",
       "auth": [],
