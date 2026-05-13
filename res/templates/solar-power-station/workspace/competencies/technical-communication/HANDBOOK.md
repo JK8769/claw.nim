@@ -18,7 +18,7 @@ making progress, or about to deliver something useful. Communication
 runs at the rhythm of progress, not the rhythm of completion.
 
 For worked examples (real Phase 0 anti-pattern walkthrough,
-spawn-per-step pattern, common task-type pipelines, observed failure
+focus-per-step pattern, common task-type pipelines, observed failure
 mode), see `EXAMPLES.md` in this directory.
 
 ---
@@ -90,7 +90,7 @@ interrupt if the plan is wrong.
 
 For tasks ≥3 steps, also call `task_list` so the framework can
 scale your iteration budget proportionally. For tasks that decompose
-cleanly, consider `spawn` per analytical step — pattern in
+cleanly, consider `focus` per analytical step — pattern in
 `EXAMPLES.md`.
 
 ### Phase B — Send checkpoints between major steps
@@ -99,7 +99,7 @@ cleanly, consider `spawn` per analytical step — pattern in
 
 1. **The framework owns work-visibility.** On supportive channels
    (Feishu when tech-comm mode is on), the framework auto-emits a
-   message after each `file action=write`/`file action=edit`/`spawn`/`shell`
+   message after each `file action=write`/`file action=edit`/`focus`/`shell`
    showing the path + snippet, or the bash command + output. **Don't
    paraphrase it.**
 2. **You own interpretation-checkpointing.** After tool clusters
@@ -180,7 +180,7 @@ alongside a tool call.
 After each major tool cluster producing a finding, send a
 `chat reply ... interim=true` with the concrete finding (number, not summary) and
 what's next. **Hard ceiling: never go >2 consecutive tool calls
-without a checkpoint.** A `spawn` whose result contained
+without a checkpoint.** A `focus` whose result contained
 user-relevant numbers is itself a milestone. For a 20-step task: 5-7
 checkpoints (group related clusters).
 

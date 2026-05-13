@@ -2192,7 +2192,7 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
              "` with **" & al.agentName & "**.\n\n" &
              "The loop ends at its next iteration or tool-dispatch " &
              "boundary (usually within a few seconds; up to ~30s if " &
-             "stuck waiting on a slow `spawn`/`shell`). Conversation " &
+             "stuck waiting on a slow `focus`/`exec`). Conversation " &
              "history is preserved — your next prompt continues from " &
              "wherever the agent stopped. To wipe history too, " &
              "follow up with `/session reset`."

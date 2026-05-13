@@ -2326,16 +2326,16 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
   # replaced was drift-prone (we hit it 3+ times in one day).
   let defaultTools = manifest.defaultToolNames()
 
-  # Auto-granted when the company declares ≥1 focus_mode. Without `spawn`
+  # Auto-granted when the company declares ≥1 focus_mode. Without `focus`
   # the focus_modes are unreachable — there's no path from an LLM tool
   # call to the SubagentManager. The failure mode is silent (the LLM
   # confidently hallucinates a "subagent ran" response without the tool
   # actually firing), which is hard to diagnose. Auto-granting closes
   # that gap. Operators who want a specific agent excluded can
-  # `deny "spawn"` on that agent.
-  let autoGrantSpawn = s.focus_modes.len > 0
-  if autoGrantSpawn:
-    echo "  + Auto-granting `spawn` to all agents (" & $s.focus_modes.len &
+  # `deny "focus"` on that agent.
+  let autoGrantFocus = s.focus_modes.len > 0
+  if autoGrantFocus:
+    echo "  + Auto-granting `focus` to all agents (" & $s.focus_modes.len &
          " focus_mode(s) declared)"
 
   # Build a name → competency lookup for fast resolution
@@ -2373,7 +2373,7 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
     let a = s.agents[i]
     # Every agent gets defaults (even without uses), minus denies
     var tools: seq[string] = @defaultTools
-    if autoGrantSpawn: tools.add("spawn")
+    if autoGrantFocus: tools.add("focus")
     var deps: seq[string]
     var envs: seq[string]
     var unknown: seq[string]

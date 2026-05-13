@@ -19,7 +19,7 @@ import ../tools/fs_unified
 import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
-import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, find]
+import ../tools/agent/[focus, subagent, memory_unified, todo_unified, workstation_unified, find]
 import ../tools/knowledge_unified
 import ../tools/comm/[mail_unified, chat_unified, delegate, lark]
 import ../tools/channel_unified
@@ -28,7 +28,7 @@ import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
 import ../tools/dev/git
-import ../tools/sched/cron
+import ../tools/sched/schedule
 # (admin/* tools folded into other tools:
 #   set_api_key   → provider action=set_key
 #   feishu_add_app→ channel action=add_app vendor=feishu
@@ -526,7 +526,7 @@ proc formatVisibilityMessage*(toolName: string,
         sb.add(fileSnippet(path, newStr,
                             shortCap = 20, mediumCap = 30, longCap = 20))
     return sb
-  of "spawn":
+  of "focus":
     if not args.hasKey("task"): return ""
     let task = args["task"].getStr()
     if task.len == 0: return ""
@@ -2910,7 +2910,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # pass officeDir not workspace, otherwise the tool writes to the
   # company root and the heartbeat dispatcher (which reads from the
   # office) can't see the tombstone.
-  regTagged(newTodoTool(officeDir), ["agent", "core"], "manage your todo queue (defer/done) and time-scheduled TODOs (schedule/done_note)")
+  regTagged(newTodoTool(officeDir), ["agent", "core"], "untimed batch queue (defer/done); use schedule for time-anchored work")
   # `knowledge` is the ship in the memory/knowledge/skill trio — timeless
   # facts (vs memory's raw past, skill's procedural how-to). Actions:
   # consolidate | lookup | list | rank | top. Ranks are agent-decided
@@ -2987,7 +2987,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       max(1, cfg.agents.defaults.max_tool_iterations),
     focus_modes = cfg.focus_modes,
     namedAgents = cfg.agents.named)
-  regTagged(newSpawnTool(subagentManager), ["agent", "automation"], "spawn autonomous sub-agents for tasks")
+  regTagged(newFocusTool(subagentManager), ["agent", "automation"], "concentrate on a subtask with a constrained tool surface (intra-agent)")
 
   # --- Hardware (unified) ---
   regTagged(newUnifiedHardwareTool(cfg.peripherals.boards), ["hardware", "sensors", "i2c", "spi"], "I2C SPI board info memory read write hardware peripherals")
@@ -3353,7 +3353,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   else:
     al.agentId = agentName  # Fallback to name if no graph
 
-  # Register CronTool using the loop instance for execution
+  # Register ScheduleTool using the loop instance for execution
   if cronService != nil:
     let cronExecutor = proc(content, sessionKey, channel, chatID: string): Future[string] {.async.} =
       let msg = InboundMessage(
@@ -3366,7 +3366,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       )
       return await al.processMessage(msg)
     
-    regTagged(newCronTool(cronService, cronExecutor, msgBus), ["scheduling", "automation", "cron"], "schedule recurring tasks with cron expressions")
+    regTagged(newScheduleTool(cronService, cronExecutor, msgBus, officeDir), ["scheduling", "automation", "cron"], "time-anchored work — cron jobs and notes.org calendar TODOs")
 
   # Apply per-agent ClawDSL scoping (from cfg.agents.named)
   for na in cfg.agents.named:

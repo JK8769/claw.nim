@@ -205,9 +205,10 @@ type
 
   FocusMode* = object
     ## Focus-mode declaration loaded from BASE.json. Same canonical
-    ## name as the DSL keyword (`focus_mode "Plan":`) and the spawn
-    ## tool parameter (`focus_mode: "Plan"`) — one word, one concept,
-    ## one place each consumer reads it from.
+    ## name as the DSL keyword (`focus_mode "Plan":`) and the `focus`
+    ## tool parameter (`mode: "Plan"`, with `focus_mode` as legacy
+    ## alias) — one word, one concept, one place each consumer reads
+    ## it from.
     name*: string
     description*: string
     uses*: seq[string]
