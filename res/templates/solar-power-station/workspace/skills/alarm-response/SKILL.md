@@ -19,8 +19,9 @@ keywords:
 requires:
   tools:
     - solar
-    - reply
-    - reply_progress
+    - chat
+    - reply  # legacy; chat reply ... interim=true progress=[…] is the
+             # capability-driven replacement (works on every channel).
     - delegate
     - memory
 ---

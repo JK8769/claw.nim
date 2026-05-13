@@ -13,7 +13,9 @@
 ##                       `vendor=Y` overrides the routing pick.
 ##   action=reply     — answer the current inbound message (uses the
 ##                       inbound's channel + chat_id from tool context;
-##                       no recipient lookup needed)
+##                       no recipient lookup needed). Accepts optional
+##                       `progress=[items]` for plan-state checkpoints
+##                       and `interim=true` when more updates are coming.
 ##   action=forward   — forward content to a recipient (vendor + address
 ##                       resolved like `send`)
 ##
@@ -22,6 +24,14 @@
 ## would lose, the chat tool promotes to card. The vendor's channel impl
 ## handles the actual rendering (CardKit JSON, telegram_inline blocks,
 ## discord embed) — chat just declares the format intent in metadata.
+##
+## Progress rendering is also capability-driven: for every channel,
+## chat prepends a plain-text checklist to the message body (works
+## everywhere). For card-capable channels, chat additionally stamps
+## metadata["progress"] so the vendor renderer can promote the
+## checklist to a richer plan-state card when it knows how. Agent
+## calls a single `chat reply text=… progress=[…]` regardless of
+## destination channel — the unified adaptor handles the rest.
 
 import std/[json, asyncdispatch, tables, options, strutils]
 import ../types
@@ -47,6 +57,17 @@ const ToolSpec* = spec(
 )
 
 type
+  TaskItemStatus* = enum
+    tisPending       = "pending"
+    tisInProgress    = "in_progress"
+    tisClaimedDone   = "claimed_done"
+    tisVerifiedDone  = "verified_done"
+
+  TaskItem* = object
+    content*:      string
+    status*:       TaskItemStatus
+    verification*: string  ## Required when status=verified_done
+
   ChatTool* = ref object of ContextualTool
     sendCallback*: types.SendCallback
       ## Wired by the gateway after construction. Same signature as
@@ -63,7 +84,10 @@ method name*(t: ChatTool): string = "chat"
 method description*(t: ChatTool): string =
   "Real-time messaging (channel-agnostic protocol verbs):\n" &
   "  send     — to=nc:X text=... [vendor=Y override]\n" &
-  "  reply    — text=...  (uses current inbound's channel + chat_id)\n" &
+  "  reply    — text=... [progress=[items]] [interim=true]\n" &
+  "             (uses current inbound's channel + chat_id; progress is\n" &
+  "             plan-state checkpoints rendered as text checklist on\n" &
+  "             every channel + a card on card-capable channels)\n" &
   "  forward  — to=nc:X text=... (relay content to another recipient)\n\n" &
   "Format is selected by consulting `channel capabilities` for the " &
   "destination vendor — long or rich content auto-promotes to the " &
@@ -103,6 +127,33 @@ method parameters*(t: ChatTool): Table[string, JsonNode] =
         "enum": ["text", "card", "file"],
         "description": "send/forward — explicit format override. By default " &
                        "chat picks text or card based on capabilities + content."
+      },
+      "progress": {
+        "type": "array",
+        "description": "reply only — plan-state checkpoint items. Each item: " &
+                       "{content, status, verification?}. Status enum: " &
+                       "pending, in_progress, claimed_done, verified_done. " &
+                       "Rendered as plain text checklist on every channel; " &
+                       "card-capable channels can promote to a richer widget. " &
+                       "verified_done items must include a verification field.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "content":      { "type": "string" },
+            "status":       { "type": "string",
+                              "enum": ["pending", "in_progress",
+                                       "claimed_done", "verified_done"] },
+            "verification": { "type": "string" }
+          },
+          "required": ["content", "status"]
+        }
+      },
+      "interim": {
+        "type": "boolean",
+        "description": "reply only — true when more updates are coming (this " &
+                       "is a status checkpoint, not a final answer). Default " &
+                       "false (terminal reply, ends the turn). Maps to the " &
+                       "old `reply action=progress` semantics."
       }
     },
     "required": %["action", "text"]
@@ -193,11 +244,57 @@ proc selectFormat(content: string, caps: channel_base.ChannelCapabilities,
   if cardable and (isLong or isRich): return "card"
   "text"
 
+# ── progress rendering (universal text + opt-in card metadata) ──────
+
+proc parseProgress(node: JsonNode): seq[TaskItem] =
+  ## Defensive parse — items missing required fields are skipped (chat
+  ## tool should never crash on a malformed progress payload; the worst
+  ## case is rendering fewer items than the agent intended).
+  if node.isNil or node.kind != JArray: return @[]
+  for it in node:
+    if it.kind != JObject: continue
+    if not it.hasKey("content") or not it.hasKey("status"): continue
+    let s = it["status"].getStr()
+    var status: TaskItemStatus
+    try:    status = parseEnum[TaskItemStatus](s)
+    except: continue
+    var item = TaskItem(
+      content: it["content"].getStr(),
+      status:  status,
+      verification: if it.hasKey("verification"): it["verification"].getStr() else: ""
+    )
+    if status == tisVerifiedDone and item.verification.len == 0:
+      # verified_done without evidence is a discipline violation; downgrade
+      # rather than silently accept it, so the renderer surfaces the gap.
+      item.status = tisClaimedDone
+    result.add(item)
+
+proc renderProgressText(items: seq[TaskItem]): string =
+  ## Universal plain-text checklist. Works on every channel.
+  if items.len == 0: return ""
+  var lines: seq[string] = @["Plan:"]
+  for it in items:
+    let glyph = case it.status
+                of tisVerifiedDone: "✓"
+                of tisClaimedDone:  "✓?"
+                of tisInProgress:   "→"
+                of tisPending:      "○"
+    var line = "  " & glyph & " " & it.content
+    if it.status == tisVerifiedDone and it.verification.len > 0:
+      line.add(" (verified: " & it.verification & ")")
+    elif it.status == tisClaimedDone:
+      line.add(" (claimed; no verification)")
+    lines.add(line)
+  lines.join("\n")
+
 # ── action handlers ─────────────────────────────────────────────────
 
 proc doReply(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   ## Use the inbound message's channel + chat_id from tool context.
   ## No recipient lookup. Format selection still consults capabilities.
+  ## Optional progress=[items] is rendered as a universal text checklist
+  ## prepended to the body; card-capable channels see the structured
+  ## payload in metadata["progress_json"] for opt-in richer rendering.
   if t.sendCallback == nil:
     return "Error: chat tool has no send callback bound (gateway wiring)."
   if t.channel.len == 0 or t.chatID.len == 0:
@@ -206,18 +303,37 @@ proc doReply(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async
   if text.len == 0:
     return "Error: 'text' must be non-empty."
   let asOverride = if args.hasKey("as"): args["as"].getStr() else: ""
+  let interim = args.hasKey("interim") and args["interim"].getBool(false)
 
   var metadata = initTable[string, string]()
+
+  # Progress checklist (universal — render once, prepend to text)
+  var bodyText = text
+  if args.hasKey("progress"):
+    let items = parseProgress(args["progress"])
+    if items.len > 0:
+      let checklist = renderProgressText(items)
+      bodyText = checklist & "\n\n" & text
+      # Card-capable channels can opt in to a richer rendering by reading
+      # this metadata; channels that don't recognize it ignore it (no harm).
+      var arr = newJArray()
+      for it in items:
+        arr.add(%*{"content": it.content, "status": $it.status,
+                   "verification": it.verification})
+      metadata["progress_json"] = $arr
+
   let capsOpt = getChannelCaps(t.channel)
   let format = if capsOpt.isSome:
-                 selectFormat(text, capsOpt.get, asOverride)
+                 selectFormat(bodyText, capsOpt.get, asOverride)
                else: (if asOverride.len > 0: asOverride else: "text")
   if format != "text": metadata["format"] = format
+  if interim:          metadata["interim"] = "true"
 
   try:
-    await t.sendCallback(t.channel, t.chatID, text, t.agentName,
+    await t.sendCallback(t.channel, t.chatID, bodyText, t.agentName,
                          t.replyToMessageID, t.appID, metadata)
-    return "Replied via " & t.channel & " (format=" & format & ")"
+    let kind = if interim: "interim" else: "final"
+    return "Replied via " & t.channel & " (" & kind & ", format=" & format & ")"
   except CatchableError as e:
     return "Error sending reply: " & e.msg
 

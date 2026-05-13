@@ -19,7 +19,8 @@ keywords:
 requires:
   tools:
     - social
-    - reply
+    - chat
+    - reply  # legacy; will be removed once chat fully replaces it
 ---
 
 Workflow for verifying a customer's status and minting an invite

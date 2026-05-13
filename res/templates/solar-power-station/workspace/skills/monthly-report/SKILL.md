@@ -19,8 +19,9 @@ requires:
   tools:
     - solar
     - file
-    - reply
-    - reply_progress
+    - chat
+    - reply  # legacy; chat reply ... interim=true progress=[…] replaces
+             # both reply.action=final and reply_progress in one verb.
 ---
 
 Workflow for producing a customer's monthly plant-performance report.
@@ -42,8 +43,9 @@ possible; falls through to the live API for gaps.
 1. Identify the customer and their `plant_ids` from the cortex
    graph (`social action=query` or `social action=who id=nc:N`)
    or the operator's prompt.
-2. Send `reply_progress`: "Generating <month> report for
-   <customer> — pulling cached data..."
+2. Send `chat reply text="Generating <month> report for <customer>
+   — pulling cached data..." interim=true` (capability-driven: rich
+   plan-state card on Feishu/Telegram, plain checklist elsewhere).
 3. For each plant, pull historical yield:
    - First try the cache (`<office>/data/yield/<plant_id>.csv`)
    - Fill gaps via `solar action=plant_history(plant_id, from, to)`
@@ -54,8 +56,8 @@ possible; falls through to the live API for gaps.
    - **Performance ratio** if irradiance data available
    - **Best day / worst day** with dates
    - **YoY comparison** if previous-year data available
-5. Send `reply_progress`: "Data assembled — submitting to
-   generation service..."
+5. Send `chat reply text="Data assembled — submitting to generation
+   service..." interim=true`.
 6. Submit to the available content-generation service (anygen or
    equivalent) with the metrics as input. This is an **async tool**
    — surface the `task_id` per TC-9 (technical-communication's

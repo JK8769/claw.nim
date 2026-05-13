@@ -1,5 +1,15 @@
 # Technical Communication
 
+> **Tool-surface migration (2026-05):** `chat` is now the channel-
+> agnostic protocol layer. Wherever this handbook says `reply`, the
+> equivalent is `chat action=reply text=…`. Wherever it says
+> `reply_progress`, the equivalent is `chat action=reply text=…
+> interim=true progress=[…]`. Both `reply` and `chat` are wired during
+> the migration window — chat is preferred for new code; the discipline
+> below applies identically to either tool surface. The conceptual
+> rules (when to checkpoint, how to phrase, plan-state shape) don't
+> change.
+
 This competency teaches agents to communicate progress on long-running
 work the way a senior teammate would: announce the plan, check in at
 milestones, deliver structured findings, end with explicit next steps.
