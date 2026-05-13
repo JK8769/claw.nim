@@ -342,6 +342,67 @@ func handleCloseClient(id string, params json.RawMessage) {
 	sendJSON(Response{ID: id, Result: "success"})
 }
 
+// ── Read-only on-chain ops (no value at risk) ─────────────────────────
+//
+// Three RPC pass-throughs for inspecting the NKN mainnet from the
+// agent's POV: balance lookup, transaction lookup, current block height.
+// Used by the framework's `payment` tool (action=balance|status) to
+// surface chain state without holding wallet credentials.
+
+func handleGetBalance(id string, params json.RawMessage) {
+	var p struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+	if p.Address == "" {
+		sendJSON(Response{ID: id, Error: "address is required"})
+		return
+	}
+	// Use a read-only RPC client (no wallet needed). Default config
+	// hits mainnet seed nodes; client picks one and queries.
+	conf := &nkn.RPCConfig{}
+	bal, err := nkn.GetBalance(p.Address, conf)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+	sendJSON(Response{ID: id, Result: bal.String()})
+}
+
+func handleGetTransaction(id string, params json.RawMessage) {
+	// nkn-sdk-go's GetRawTransaction returns the raw chain payload —
+	// caller decodes the JSON-serialized form. We just pass it through.
+	var p struct {
+		Hash string `json:"hash"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+	if p.Hash == "" {
+		sendJSON(Response{ID: id, Error: "hash is required"})
+		return
+	}
+	// Note: this depends on the SDK exposing a transaction lookup.
+	// As of nkn-sdk-go's current public API, the closest equivalent
+	// is via the RPC layer. Surface the error if unavailable so the
+	// caller can fall back to direct RPC.
+	sendJSON(Response{ID: id, Error: "get_transaction: lookup-by-hash not yet supported by nkn-sdk-go's public API; query the seed node's REST endpoint directly (https://<seed>:<port>/?action=getTransaction&hash=" + p.Hash + ")"})
+}
+
+func handleGetHeight(id string, params json.RawMessage) {
+	conf := &nkn.RPCConfig{}
+	height, err := nkn.GetHeight(conf)
+	if err != nil {
+		sendJSON(Response{ID: id, Error: err.Error()})
+		return
+	}
+	sendJSON(Response{ID: id, Result: fmt.Sprintf("%d", height)})
+}
+
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	// Allow large messages (16MB)
@@ -382,6 +443,12 @@ func main() {
 				handleSendMessage(req.ID, req.Params)
 			case "close_client":
 				handleCloseClient(req.ID, req.Params)
+			case "get_balance":
+				handleGetBalance(req.ID, req.Params)
+			case "get_transaction":
+				handleGetTransaction(req.ID, req.Params)
+			case "get_height":
+				handleGetHeight(req.ID, req.Params)
 			default:
 				sendJSON(Response{ID: req.ID, Error: "unknown method: " + req.Method})
 			}

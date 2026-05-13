@@ -22,6 +22,7 @@ import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
 import ../tools/comm/[mail_unified, chat_unified, delegate, lark]
 import ../tools/channel_unified
+import ../tools/payment_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
@@ -2927,6 +2928,14 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # bindChannelAccess once after initChannels).
   regTagged(newChannelTool(toolsRegistry), ["comm", "channel", "transport", "core"],
             "channel transport navigator: list vendors + features; routes vendor-specific docs/sheets/calendar/tasks to mcp_<vendor>_<op> tools")
+
+  # Payment — channel-agnostic value-transfer protocol verbs (Phase 1:
+  # READ-ONLY balance/status/history). Routes via vendor-rail skills
+  # (nkn-suite today; btc/lightning/usdc-* future). Default off; operator
+  # opts in by installing a payment-rail skill in BASE.nims.
+  regTagged(newPaymentTool(toolsRegistry),
+            ["payment", "finance", "wallet", "core"],
+            "payment balance status history wallet transaction tx vendor=nkn-suite")
 
   # --- Web tools ---
   # Internet stack — sea / ship / navigator

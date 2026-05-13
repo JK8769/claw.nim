@@ -344,6 +344,24 @@ const AllTools*: seq[ToolSpec] = @[
   #  for agents will land via `channel` vendor-action dispatch.)
   # (pushover folded into channels/pushover.nim — agents reach it via
   #  `chat send vendor=pushover` like any other channel vendor)
+
+  # Payment — value-transfer protocol verbs. Phase 1: read-only
+  # (balance, status, history). Vendor rails are payment-suite skills
+  # (nkn-suite today, btc/lightning/usdc-* future). Send / transfer
+  # actions deferred until the approval-flow design lands.
+  spec(name = "payment",
+       description = "value transfer (Phase 1: READ-ONLY — balance, " &
+                     "status, history). Routes via vendor rails " &
+                     "(nkn-suite today; btc/lightning/usdc-* future). " &
+                     "Send/transfer ops require an approval flow that " &
+                     "isn't shipped yet.",
+       tags = @["payment", "finance", "wallet", "core"],
+       searchKeywords = @["payment", "balance", "wallet", "transaction",
+                          "tx", "status", "history", "nkn", "btc",
+                          "lightning", "usdc", "money", "value"],
+       domain = "payment",
+       default = false, heartbeatSafe = false, externalAllowed = false,
+       category = "finance"),
   spec(name = "feishu_add_app",
        description = "register new feishu/lark app (id, secret, route to agent) — SuperAdmin only",
        tags = @["admin", "channels", "feishu"], domain = "admin",
