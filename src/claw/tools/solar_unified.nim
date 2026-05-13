@@ -41,7 +41,7 @@
 ##     # The fleet_adapter module still hosts the registry-scan / cache /
 ##     # routing helpers, but the five virtual-tool wrappers are gone.
 ##     # If the helpers stay in fleet_adapter, keep the import — the
-##     # FleetTool below imports them from that module.
+##     # SolarTool below imports them from that module.
 ##
 ##   DELETE (lines 3006–3021, the entire fleet block):
 ##     # Fleet adapter — vendor-agnostic facade for multi-vendor solar deployments.
@@ -70,7 +70,7 @@
 ##     # each vendor MCP server. Default off; the solar-power-station
 ##     # template's fleet-adapter skill declares it in requires.tools so
 ##     # agents that opt in receive the grant.
-##     regTagged(newFleetTool(toolsRegistry),
+##     regTagged(newSolarTool(toolsRegistry),
 ##       ["fleet", "solar", "domain"],
 ##       "fleet facade: list plants real-time state history inverters alarms across vendors")
 ##
@@ -79,50 +79,50 @@
 ##   DELETE (lines 322–351, the five fleet_* spec entries):
 ##     spec(name = "fleet_plant_list",
 ##          description = "List all plants across every installed inverter vendor",
-##          tags = @["fleet", "solar", "domain"],
+##          tags = @["solar", "fleet", "domain"],
 ##          searchKeywords = @["plant list", "fleet", "all plants"],
-##          domain = "fleet",
-##          default = false, heartbeatSafe = false, category = "fleet"),
+##          domain = "solar",
+##          default = false, heartbeatSafe = false, category = "solar"),
 ##     spec(name = "fleet_plant_now",
 ##          description = "Real-time state for one plant (current power, today yield, status)",
-##          tags = @["fleet", "solar", "domain"],
+##          tags = @["solar", "fleet", "domain"],
 ##          searchKeywords = @["plant now", "current power", "real-time"],
-##          domain = "fleet",
-##          default = false, heartbeatSafe = false, category = "fleet"),
+##          domain = "solar",
+##          default = false, heartbeatSafe = false, category = "solar"),
 ##     spec(name = "fleet_plant_history",
 ##          description = "Daily yield history for one plant over a date range",
-##          tags = @["fleet", "solar", "domain"],
+##          tags = @["solar", "fleet", "domain"],
 ##          searchKeywords = @["plant history", "yield history", "kwh history"],
-##          domain = "fleet",
-##          default = false, heartbeatSafe = false, category = "fleet"),
+##          domain = "solar",
+##          default = false, heartbeatSafe = false, category = "solar"),
 ##     spec(name = "fleet_inverter_list",
 ##          description = "List inverters under one plant",
-##          tags = @["fleet", "solar", "domain"],
+##          tags = @["solar", "fleet", "domain"],
 ##          searchKeywords = @["inverter list", "equipment"],
-##          domain = "fleet",
-##          default = false, heartbeatSafe = false, category = "fleet"),
+##          domain = "solar",
+##          default = false, heartbeatSafe = false, category = "solar"),
 ##     spec(name = "fleet_inverter_alarms",
 ##          description = "Active alarms on inverters under one plant",
-##          tags = @["fleet", "solar", "domain"],
+##          tags = @["solar", "fleet", "domain"],
 ##          searchKeywords = @["alarm list", "alarms", "active faults"],
-##          domain = "fleet",
-##          default = false, heartbeatSafe = false, category = "fleet"),
+##          domain = "solar",
+##          default = false, heartbeatSafe = false, category = "solar"),
 ##
 ##   ADD (single block, in place of the deleted block):
-##     spec(name = "fleet",
-##          description = "Multi-vendor solar fleet facade " &
+##     spec(name = "solar",
+##          description = "Solar power station fleet — multi-vendor facade " &
 ##                        "(action=plant_list|plant_now|plant_history|" &
 ##                        "inverter_list|inverter_alarms). Fans out for " &
 ##                        "list ops, routes per-plant ops by " &
 ##                        "plant→vendor cache.",
-##          tags = @["fleet", "solar", "domain"],
+##          tags = @["solar", "fleet", "domain"],
 ##          searchKeywords = @["plant list", "fleet", "all plants",
 ##                              "plant now", "current power", "real-time",
 ##                              "today yield", "plant history", "yield",
 ##                              "historical", "kwh", "inverter", "equipment",
 ##                              "devices", "alarm", "fault", "alert"],
-##          domain = "fleet",
-##          default = false, heartbeatSafe = false, category = "fleet"),
+##          domain = "solar",
+##          default = false, heartbeatSafe = false, category = "solar"),
 
 import std/[json, asyncdispatch, tables]
 import ./types
@@ -135,36 +135,36 @@ import ../logger  # warnCF — used in doPlantList's fan-out error paths.
                   # export marker; they're currently module-private.
 
 const ToolSpec* = spec(
-  name = "fleet",
-  description = "Multi-vendor solar fleet facade " &
+  name = "solar",
+  description = "Solar power station fleet — multi-vendor facade " &
                 "(action=plant_list|plant_now|plant_history|" &
                 "inverter_list|inverter_alarms). Fans out for list ops, " &
                 "routes per-plant ops by plant→vendor cache.",
-  tags = @["fleet", "solar", "domain"],
+  tags = @["solar", "fleet", "domain"],
   searchKeywords = @["plant list", "fleet", "all plants",
                       "plant now", "current power", "real-time",
                       "today yield", "plant history", "yield",
                       "historical", "kwh", "inverter", "equipment",
                       "devices", "alarm", "fault", "alert"],
-  domain = "fleet",
+  domain = "solar",
   default = false,
   heartbeatSafe = false,
-  category = "fleet",
+  category = "solar",
 )
 
 type
-  FleetTool* = ref object of Tool
+  SolarTool* = ref object of Tool
     reg*: ToolRegistry  ## live tool registry — scanned per-call to find
                         ## `mcp_<vendor>_<contract-tool>` entries (registered
                         ## when the vendor MCP servers loaded at boot)
 
-proc newFleetTool*(reg: ToolRegistry): FleetTool =
-  FleetTool(reg: reg)
+proc newSolarTool*(reg: ToolRegistry): SolarTool =
+  SolarTool(reg: reg)
 
-method name*(t: FleetTool): string = "fleet"
+method name*(t: SolarTool): string = "solar"
 
-method description*(t: FleetTool): string =
-  "Multi-vendor solar fleet facade. Fans out across every installed " &
+method description*(t: SolarTool): string =
+  "Solar power station fleet — multi-vendor facade. Fans out across every installed " &
   "inverter-vendor MCP server for list operations, and routes per-plant " &
   "operations to the right vendor automatically via an in-memory plant→vendor " &
   "cache (primed on the first plant_list call).\n\n" &
@@ -181,7 +181,7 @@ method description*(t: FleetTool): string =
   "  inverter_alarms  — active alarms on inverters under one plant; returns " &
   "array of Alarm records with severity classification. Required: plant_id."
 
-method parameters*(t: FleetTool): Table[string, JsonNode] =
+method parameters*(t: SolarTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
@@ -226,8 +226,8 @@ method parameters*(t: FleetTool): Table[string, JsonNode] =
 # action=plant_list — fan out across every vendor and merge the arrays.
 # ---------------------------------------------------------------------------
 
-proc doPlantList(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from FleetPlantListTool.execute. Scans the registry for every
+proc doPlantList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
+  ## Verbatim from the legacy fleet_plant_list tool. Scans the registry for every
   ## `mcp_<vendor>_plant_list`, calls each, primes the plant→vendor cache from
   ## the per-Plant `vendor` field (or falls back to the discovered vendor
   ## name), and merges the results into a single JSON array.
@@ -276,8 +276,8 @@ proc forwardArgsAsPlantId(args: Table[string, JsonNode],
 # action=plant_now — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
-proc doPlantNow(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from FleetPlantNowTool.execute — routes via routeByPlantId.
+proc doPlantNow(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
+  ## Verbatim from the legacy fleet_plant_now tool — routes via routeByPlantId.
   let forwarded = forwardArgsAsPlantId(args, "id")
   return await routeByPlantId(t.reg, "plant_now", forwarded)
 
@@ -285,8 +285,8 @@ proc doPlantNow(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.a
 # action=plant_history — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
-proc doPlantHistory(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from FleetPlantHistoryTool.execute — routes via routeByPlantId.
+proc doPlantHistory(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
+  ## Verbatim from the legacy fleet_plant_history tool — routes via routeByPlantId.
   ## from / to date args ride along untouched in the args table.
   let forwarded = forwardArgsAsPlantId(args, "id")
   return await routeByPlantId(t.reg, "plant_history", forwarded)
@@ -295,23 +295,23 @@ proc doPlantHistory(t: FleetTool, args: Table[string, JsonNode]): Future[string]
 # action=inverter_list — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
-proc doInverterList(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from FleetInverterListTool.execute — routes via routeByPlantId.
+proc doInverterList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
+  ## Verbatim from the legacy fleet_inverter_list tool — routes via routeByPlantId.
   return await routeByPlantId(t.reg, "inverter_list", args)
 
 # ---------------------------------------------------------------------------
 # action=inverter_alarms — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
-proc doInverterAlarms(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from FleetInverterAlarmsTool.execute — routes via routeByPlantId.
+proc doInverterAlarms(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
+  ## Verbatim from the legacy fleet_inverter_alarms tool — routes via routeByPlantId.
   return await routeByPlantId(t.reg, "inverter_alarms", args)
 
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
 
-method execute*(t: FleetTool, args: Table[string, JsonNode]): Future[string] {.async.} =
+method execute*(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("action"):
     return "Error: 'action' is required " &
            "(plant_list | plant_now | plant_history | inverter_list | inverter_alarms)"

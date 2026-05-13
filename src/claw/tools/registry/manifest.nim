@@ -319,27 +319,31 @@ const AllTools*: seq[ToolSpec] = @[
   # skills (daily-yield-sync, monthly-report, alarm-response). Default off;
   # the template's `fleet-adapter` skill declares them in requires.tools so
   # agents that opt in receive the grant.
-  # Multi-vendor solar fleet facade — five domain operations consolidated
-  # under one tool with action enum. Replaces fleet_plant_list /
+  # Solar — multi-vendor solar fleet facade. Five domain operations
+  # consolidated under one tool with action enum. Replaces fleet_plant_list /
   # fleet_plant_now / fleet_plant_history / fleet_inverter_list /
   # fleet_inverter_alarms. Internally fans out across whichever
   # mcp_<vendor>_* tools were registered when each vendor MCP server
   # loaded; vendor contract (per template's vendor/CONTRACT.md) is
   # unchanged at the MCP layer.
-  spec(name = "fleet",
-       description = "Multi-vendor solar fleet facade " &
+  # Substrate-vs-capability naming: implementation pattern stays
+  # `fleet_adapter.nim` (it IS a fleet adapter); agent surface is
+  # `solar` (what it ENABLES — solar fleet operations).
+  spec(name = "solar",
+       description = "Solar power station fleet — multi-vendor facade " &
                      "(action=plant_list|plant_now|plant_history|" &
                      "inverter_list|inverter_alarms). Fans out for " &
                      "list ops, routes per-plant ops by " &
                      "plant→vendor cache.",
-       tags = @["fleet", "solar", "domain"],
-       searchKeywords = @["plant list", "fleet", "all plants",
+       tags = @["solar", "fleet", "domain"],
+       searchKeywords = @["plant list", "all plants", "fleet",
                            "plant now", "current power", "real-time",
                            "today yield", "plant history", "yield",
                            "historical", "kwh", "inverter", "equipment",
-                           "devices", "alarm", "fault", "alert"],
-       domain = "fleet",
-       default = false, heartbeatSafe = false, category = "fleet"),
+                           "devices", "alarm", "fault", "alert",
+                           "photovoltaic", "pv", "solar"],
+       domain = "solar",
+       default = false, heartbeatSafe = false, category = "solar"),
 
   # Skill management (heavy — install mutates system; learn requires workstation)
   spec(name = "skill",

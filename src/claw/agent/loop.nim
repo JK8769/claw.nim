@@ -14,7 +14,7 @@ import ../schema
 import ../tools/registry as tools_registry
 import ../tools/base as tools_base
 import ../tools/loop_detector
-import ../tools/fleet_unified
+import ../tools/solar_unified
 import ../tools/fs_unified
 import ../tools/file_unified
 import ../tools/finder_unified
@@ -3003,17 +3003,20 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # ContextBuilder for its guest-rename path.)
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
 
-  # Fleet adapter — vendor-agnostic facade for multi-vendor solar
-  # deployments. One unified `fleet` tool with five actions
-  # (plant_list / plant_now / plant_history / inverter_list /
-  # inverter_alarms). Internally fans out across whichever
-  # mcp_<vendor>_* tools were registered when the gateway loaded
-  # each vendor MCP server. Default off; the solar-power-station
-  # template's fleet-adapter skill declares it in requires.tools so
-  # agents that opt in receive the grant.
-  regTagged(newFleetTool(toolsRegistry),
-    ["fleet", "solar", "domain"],
-    "fleet facade: list plants real-time state history inverters alarms across vendors")
+  # Solar — vendor-agnostic facade for multi-vendor solar power
+  # stations. One unified `solar` tool with five actions (plant_list /
+  # plant_now / plant_history / inverter_list / inverter_alarms).
+  # Internally fans out across whichever mcp_<vendor>_* tools were
+  # registered when the gateway loaded each vendor MCP server. The
+  # implementation pattern is "fleet adapter" (substrate name kept in
+  # tools/fleet/fleet_adapter.nim per the substrate-vs-capability
+  # naming rule); the agent-facing CAPABILITY is solar operations.
+  # Default off; the solar-power-station template's fleet-adapter
+  # skill declares it in requires.tools so agents that opt in receive
+  # the grant.
+  regTagged(newSolarTool(toolsRegistry),
+    ["solar", "fleet", "domain"],
+    "solar power station fleet: list plants real-time state history inverters alarms across vendors")
 
   let installer = newSkillInstaller(officeDir)
 

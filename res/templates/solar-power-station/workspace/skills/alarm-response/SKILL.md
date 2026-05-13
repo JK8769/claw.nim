@@ -1,7 +1,7 @@
 ---
 name: alarm-response
 version: 1.0.0
-description: "Classify active plant alarms by severity, group by plant for operator efficiency, escalate critical ones immediately. Workflow over fleet action=inverter_alarms + delegate."
+description: "Classify active plant alarms by severity, group by plant for operator efficiency, escalate critical ones immediately. Workflow over solar action=inverter_alarms + delegate."
 loading: lazy
 operations:
   - scan
@@ -18,7 +18,7 @@ keywords:
   - critical
 requires:
   tools:
-    - fleet
+    - solar
     - reply
     - reply_progress
     - delegate
@@ -33,15 +33,15 @@ grouped for operator efficiency, escalated when critical.
 - **Scheduled**: heartbeat-driven, e.g. every hour during daylight.
 - **On-demand**: when the operator asks "any alarms?" or a
   customer reports an issue.
-- **Reactive**: when a `fleet action=plant_now` call returns
+- **Reactive**: when a `solar action=plant_now` call returns
   `alarms_count > 0` and the agent decides to investigate.
 
 ## Workflow
 
-1. Call `fleet action=plant_list()` — get all plants with their current
+1. Call `solar action=plant_list()` — get all plants with their current
    `alarms_count`. Filter to plants where count > 0.
 2. For each plant with active alarms, call
-   `fleet action=inverter_alarms(plant_id)` to get alarm details.
+   `solar action=inverter_alarms(plant_id)` to get alarm details.
 3. **Classify each alarm**:
    - **Critical**: plant offline, fault preventing production,
      fire/safety code. Escalate immediately.
