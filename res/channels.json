@@ -50,7 +50,8 @@
         "dm_when": "starts with ou_",
         "group_when": "starts with oc_"
       },
-      "requires": ["lark-cli"]
+      "requires": ["lark-cli"],
+      "companion_skills": ["lark-suite"]
     },
 
     "whatsapp": {
@@ -139,7 +140,8 @@
       },
       "chat_kind_detection": {
         "note": "Always DM. Group sessions would need a separate multicast mechanism."
-      }
+      },
+      "companion_skills": ["nkn-suite"]
     },
 
     "pushover": {

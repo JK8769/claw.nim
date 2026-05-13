@@ -423,6 +423,30 @@ template agent*(agentName: string, body: untyped) =
 
 # ── DSL: Channel ──────────────────────────────────────────────────
 
+proc companionSkillsForChannel*(chKind: string): seq[string] =
+  ## Read res/channels.json for the named channel kind's `companion_skills`
+  ## field. Returns the list of vendor-suite skills the framework should
+  ## auto-install when this channel is declared. NimScript-safe: uses
+  ## `findDistributionResource` (same path-resolver as providers.json)
+  ## and bare `parseJson` (allowed in the NimScript sandbox).
+  result = @[]
+  let path = provider_registry.findDistributionResource("res/channels.json")
+  if path.len == 0 or not fileExists(path): return
+  try:
+    let cat = parseJson(readFile(path))
+    if not cat.hasKey("types"): return
+    let types = cat["types"]
+    if not types.hasKey(chKind): return
+    let entry = types[chKind]
+    if not entry.hasKey("companion_skills"): return
+    let arr = entry["companion_skills"]
+    if arr.kind != JArray: return
+    for s in arr:
+      if s.kind == JString and s.getStr().len > 0:
+        result.add(s.getStr())
+  except CatchableError:
+    discard  # malformed catalog → silently no-op (no auto-install)
+
 template channel*(chKind: string, body: untyped) =
   block:
     var ch = ClawChannel(kind: chKind)
@@ -473,6 +497,15 @@ template channel*(chKind: string, body: untyped) =
       for id in ids: ch.fields.add((key: "allowFrom", val: id))
     body
     spec.channels.add(ch)
+    # Auto-install companion skills declared in res/channels.json. The
+    # MESSAGING side of a vendor (this channel) and the PRODUCTIVITY/
+    # CHAIN-INSPECTION side (a vendor-suite skill) are conceptually one
+    # vendor; declaring `channel "feishu"` should imply having
+    # `lark-suite` available. Operators don't have to repeat the vendor
+    # name twice. Catalog (channels.json) holds the mapping; the DSL
+    # just consults it.
+    for s in companionSkillsForChannel(chKind):
+      skill(s)
 
 # ── DSL: Defaults ─────────────────────────────────────────────────
 
