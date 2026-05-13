@@ -163,11 +163,17 @@ const AllTools*: seq[ToolSpec] = @[
 
   # Self-management (the verify-triangle agent tools)
   spec(name = "memory",
-       description = "cross-source memory: query past experiences, reflections, conversations, heartbeats, knowledge wiki (action=store|recall|list|forget|recent|verify; scope=sender|self|sessions|heart|knowledge|all)",
+       description = "cross-source memory: past experiences, reflections, " &
+                     "conversations, heartbeats (action=store|recall|list|" &
+                     "forget|recent|verify; scope=sender|self|sessions|" &
+                     "heart|all). The 'sea' in the memory/knowledge/skill " &
+                     "trio — raw past with source attribution. For TIMELESS " &
+                     "FACTS use the knowledge tool (different epistemic category).",
        tags = @["memory", "core"],
        searchKeywords = @["remember", "recall", "history", "past", "earlier",
                            "store", "save", "note", "what did i", "when did i",
-                           "verify", "evidence", "claim", "prove"],
+                           "verify", "evidence", "claim", "prove",
+                           "experience", "reflection", "episodic"],
        domain = "agent",
        default = true, heartbeatSafe = false, category = "self-management"),
   spec(name = "todo",

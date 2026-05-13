@@ -421,38 +421,9 @@ proc recallHeart*(ms: MemoryStore, query: string,
     ))
     if result.len >= limit: return
 
-proc recallKnowledge*(ms: MemoryStore, query: string,
-                      limit: int): seq[MemoryHit] =
-  ## Grep <office>/knowledge/*.md. Knowledge files are append-mode
-  ## markdown — no per-entry timestamp, so we use the file mtime
-  ## as a coarse proxy. Returns matched files (one hit per file)
-  ## with the first matching line as excerpt.
-  result = @[]
-  let dir = ms.officeRoot() / "knowledge"
-  if not dirExists(dir): return
-  let qLow = query.toLowerAscii
-  for kind, path in walkDir(dir):
-    if kind != pcFile: continue
-    if not path.endsWith(".md"): continue
-    var content: string
-    try: content = readFile(path)
-    except CatchableError: continue
-    if not matches(content, qLow): continue
-    let topic = path.extractFilename.changeFileExt("")
-    var excerpt = ""
-    for ln in content.splitLines():
-      if matches(ln, qLow):
-        excerpt = ln.strip()
-        break
-    let ts = try: getFileInfo(path).lastWriteTime.toUnixFloat
-             except CatchableError: 0.0
-    result.add(MemoryHit(
-      source: "knowledge:" & topic,
-      ts: ts,
-      excerpt: clipExcerpt(if excerpt.len > 0: excerpt else: content),
-      path: path
-    ))
-    if result.len >= limit: return
+# (recallKnowledge removed — the knowledge wiki is the `knowledge` tool's
+#  domain, accessed via `knowledge lookup` / `knowledge top`. Memory is
+#  for raw past events only — different epistemic category.)
 
 proc recallSelfHits*(ms: MemoryStore, trustLevel: int, query: string,
                      fromTs, toTs: float, limit: int): seq[MemoryHit] =
@@ -484,13 +455,16 @@ proc recallSenderHits*(ms: MemoryStore, ncId: string, query: string,
 proc recallAll*(ms: MemoryStore, ncId: string, trustLevel: int,
                 query: string, fromTs, toTs: float,
                 limit: int): seq[MemoryHit] =
-  ## Cross-source: sessions + heart + knowledge + memory(self+sender).
+  ## Cross-source EXPERIENTIAL recall: sessions + heart + memory(self+sender).
   ## Per-store cap is `limit` so a noisy single store can't crowd out
   ## the others; final list is sorted ts-desc and capped at `limit`.
+  ##
+  ## Knowledge wiki INTENTIONALLY excluded — knowledge is the SHIP
+  ## (timeless facts), memory is the SEA (raw past). Different epistemic
+  ## category; use the `knowledge` tool for fact lookups.
   result = @[]
   result.add(ms.recallSessions(query, fromTs, toTs, limit))
   result.add(ms.recallHeart(query, fromTs, toTs, limit))
-  result.add(ms.recallKnowledge(query, limit))
   result.add(ms.recallSelfHits(trustLevel, query, fromTs, toTs, limit))
   if ncId.startsWith("nc:"):
     result.add(ms.recallSenderHits(ncId, query, fromTs, toTs, limit))

@@ -27,7 +27,7 @@ import ../../agent/memory
 
 const ToolSpec* = spec(
   name = "memory",
-  description = "cross-source memory: query past experiences, reflections, conversations, heartbeats, knowledge wiki (action=store|recall|list|forget|recent|verify; scope=sender|self|sessions|heart|knowledge|all)",
+  description = "cross-source memory: query past experiences, reflections, conversations, heartbeats (action=store|recall|list|forget|recent|verify; scope=sender|self|sessions|heart|all). For timeless facts use the `knowledge` tool — different epistemic category (memory = sea / raw past; knowledge = ship / facts).",
   tags = @["memory", "core"],
   domain = "agent",
   default = true,
@@ -58,9 +58,10 @@ proc setRequesterContext*(t: UnifiedMemoryTool, senderNcId: string,
 method name*(t: UnifiedMemoryTool): string = "memory"
 
 method description*(t: UnifiedMemoryTool): string =
-  "Cross-source memory: query past experiences, reflections, " &
-  "conversations, heartbeats, and the knowledge wiki — all from one " &
-  "tool, with source attribution.\n\n" &
+  "Cross-source memory — past experiences, reflections, conversations, " &
+  "heartbeats. The 'sea' in the memory/knowledge/skill trio (raw past, " &
+  "with source attribution). For TIMELESS FACTS use the `knowledge` " &
+  "tool — different epistemic category.\n\n" &
   "Actions:\n" &
   "  store    — write a memory entry (key + content). Pick scope.\n" &
   "  recall   — substring match. Optional from/to time bounds. " &
@@ -77,9 +78,9 @@ method description*(t: UnifiedMemoryTool): string =
   "  self             — agent's self.jsonl with visibility gates\n" &
   "  sessions         — raw conversation turns under sessions/ (recall only)\n" &
   "  heart            — heartbeat tick log (recall only)\n" &
-  "  knowledge        — semantic memory wiki under knowledge/ (recall only)\n" &
   "  all              — sweeps all of the above (recall/recent/verify)\n\n" &
-  "Not for time-based reminders — use `cron` instead."
+  "Not for time-based reminders — use `cron` instead. Not for facts — " &
+  "use `knowledge`."
 
 method parameters*(t: UnifiedMemoryTool): Table[string, JsonNode] =
   {
@@ -91,7 +92,7 @@ method parameters*(t: UnifiedMemoryTool): Table[string, JsonNode] =
       },
       "scope": {
         "type": "string",
-        "enum": ["sender", "self", "sessions", "heart", "knowledge", "all"],
+        "enum": ["sender", "self", "sessions", "heart", "all"],
         "description": "sender (default) — current partner's file. all — sweeps every store with source attribution."
       },
       "key": {"type": "string"},
@@ -258,17 +259,10 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
       return renderHits(t.store.recallHeart(query, fromTs, toTs, limit),
                         format, fmt"Heartbeat events matching '{query}'")
     of "knowledge":
-      # Soft-deprecated: prefer `knowledge lookup` for timeless-fact reads.
-      # Memory is the SEA (raw past); knowledge is the SHIP (timeless facts) —
-      # different vocabulary for different epistemic categories. Keeping
-      # this scope as an alias for back-compat; nudge callers to migrate.
-      let hits = t.store.recallKnowledge(query, limit)
-      let body = renderHits(hits, format,
-                            fmt"Knowledge wiki entries matching '{query}'")
-      return body & "\n\n[hint] memory.scope=knowledge is deprecated — " &
-             "use `knowledge lookup topic=…` for fact-by-name reads or " &
-             "`knowledge top` for highest-rated. memory.recall stays for " &
-             "episodic events ('did this happen?')."
+      return "Error: scope=knowledge removed from memory — use the " &
+             "`knowledge` tool instead. Try `knowledge lookup topic=…` " &
+             "for fact-by-name reads or `knowledge top` for highest-rated. " &
+             "Memory stays for episodic events ('did this happen?')."
     of "all":
       return renderHits(t.store.recallAll(t.senderNcId, t.trustLevel,
                                            query, fromTs, toTs, limit),
@@ -331,7 +325,7 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
       case recentScope
       of "sessions":  t.store.recallSessions(query, fromTs, 0.0, limit)
       of "heart":     t.store.recallHeart(query, fromTs, 0.0, limit)
-      of "knowledge": t.store.recallKnowledge(query, limit)  # deprecated: see knowledge tool
+      of "knowledge": @[]  # removed — see `knowledge` tool
       of "self":      t.store.recallSelfHits(t.trustLevel, query, fromTs, 0.0, limit)
       of "sender":    t.store.recallSenderHits(t.senderNcId, query, fromTs, 0.0, limit)
       else:           t.store.recallAll(t.senderNcId, t.trustLevel,
