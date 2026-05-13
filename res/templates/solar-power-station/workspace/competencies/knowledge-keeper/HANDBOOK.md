@@ -39,18 +39,34 @@ patterns.
 
 ## How to consolidate
 
-Use the `consolidate_knowledge` tool:
+Use the `knowledge` tool's `consolidate` action:
 
 ```
-consolidate_knowledge(
-  topic="inverter-api-quirks",
-  insight="Daily aggregation has a 24-48h lag. Query yesterday's data only after 09:00 local to avoid empty results.",
+knowledge action=consolidate
+  topic="inverter-api-quirks"
+  insight="Daily aggregation has a 24-48h lag. Query yesterday's data only after 09:00 local to avoid empty results."
   source="<project>, methods-notes.md (2026-05-09)"
-)
 ```
 
 The tool handles file create / append / timestamp / attribution.
 You don't write the file format manually.
+
+## Rating facts (optional but valuable)
+
+After consolidating, use `knowledge action=rank` to express judgment
+on what's important. Ranks are 1-10 with a reason; aggregate displays
+once ≥ 2 agents have voted. The wiki's quality signal comes from
+agents — not from algorithms.
+
+```
+knowledge action=rank topic="inverter-api-quirks" score=9
+  reason="every monthly-report and daily-yield-sync hits this lag"
+```
+
+Use `knowledge action=top` to see the highest-rated facts (sorted by
+average rank). `knowledge action=lookup topic=…` returns the full
+content + rank summary. `knowledge action=list` enumerates every topic
+with its current rank.
 
 ## When to promote (the trigger)
 

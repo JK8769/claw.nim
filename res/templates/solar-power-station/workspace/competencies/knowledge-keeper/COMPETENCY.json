@@ -1,6 +1,6 @@
 {
   "name": "knowledge-keeper",
-  "description": "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Distinguishes timeless facts (semantic memory) from project-specific notes, episodic events, and behavioural reflexes. Uses the consolidate_knowledge tool to promote insights from project context into the wiki; heartbeat duties auto-snapshot the wiki to git and surface promotion candidates.",
+  "description": "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Distinguishes timeless facts (semantic memory) from project-specific notes, episodic events, and behavioural reflexes. Uses the `knowledge` tool (action=consolidate) to promote insights from project context into the wiki, action=rank to express judgment on fact value (1-10), action=top to surface highest-rated; heartbeat duties auto-snapshot the wiki to git and surface promotion candidates.",
   "skills": [],
   "summary": "",
   "has_handbook": true,
@@ -36,7 +36,7 @@
       },
       "act": {
         "when": "result_not_empty",
-        "hint": "These markers in project READMEs may point to insights worth promoting to knowledge/. For each, ask: does this apply BEYOND this project? If yes — call `consolidate_knowledge(topic=..., insight=..., source=...)` to add it to your wiki. If no — leave it in the project. Don't promote project-specific data; only cross-project facts (API quirks, methodology notes, vendor gotchas, domain truths)."
+        "hint": "These markers in project READMEs may point to insights worth promoting to knowledge/. For each, ask: does this apply BEYOND this project? If yes — call `knowledge action=consolidate topic=… insight=… source=…` to add it to your wiki. If no — leave it in the project. Don't promote project-specific data; only cross-project facts (API quirks, methodology notes, vendor gotchas, domain truths). Once consolidated, optionally rank with `knowledge action=rank topic=… score=N reason=…` so the most-important facts surface in `knowledge action=top`."
       }
     },
     {
@@ -50,7 +50,7 @@
       },
       "act": {
         "when": "result_not_empty",
-        "hint": "These projects were archived in the last 7 days. Project graveyards are a goldmine for retrospective insight. For each: scan the README and any retrospective notes. Anything that's a durable lesson (not project-specific) should land in knowledge/ via consolidate_knowledge. The project body itself stays in archive/; only the cross-project insights get promoted."
+        "hint": "These projects were archived in the last 7 days. Project graveyards are a goldmine for retrospective insight. For each: scan the README and any retrospective notes. Anything that's a durable lesson (not project-specific) should land in knowledge/ via `knowledge action=consolidate`. The project body itself stays in archive/; only the cross-project insights get promoted."
       }
     }
   ]

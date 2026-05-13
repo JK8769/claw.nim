@@ -19,7 +19,8 @@ import ../tools/fs_unified
 import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
-import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
+import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, find]
+import ../tools/knowledge_unified
 import ../tools/comm/[mail_unified, chat_unified, delegate, lark]
 import ../tools/channel_unified
 import ../tools/payment_unified
@@ -2911,7 +2912,15 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # company root and the heartbeat dispatcher (which reads from the
   # office) can't see the tombstone.
   regTagged(newTodoTool(officeDir), ["agent", "core"], "manage your todo queue (defer/done) and time-scheduled TODOs (schedule/done_note)")
-  regTagged(newConsolidateKnowledgeTool(officeDir, agentName), ["agent", "core"], "promote a cross-project insight into your knowledge wiki at knowledge/<topic>.md")
+  # `knowledge` is the ship in the memory/knowledge/skill trio — timeless
+  # facts (vs memory's raw past, skill's procedural how-to). Five actions:
+  # consolidate | lookup | list | rank | top. Replaces consolidate_knowledge
+  # (action=consolidate is the same verb; lookup/list/rank/top are new).
+  # Ranks are agent-decided (1-10 with reason); aggregate displayed once
+  # ≥ 2 votes.
+  regTagged(newKnowledgeTool(officeDir, agentName),
+            ["agent", "core", "knowledge", "wiki"],
+            "knowledge wiki: consolidate write append timeless facts; lookup read; rank agent-judgment 1-10; top sort by aggregate")
   # `mail` is the unified persistent / async messaging tool. Three
   # transport kinds: internal (file queue between agents), email
   # (SMTP/IMAP/Postmark/etc — needs an email-kind channel enabled),

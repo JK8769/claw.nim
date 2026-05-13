@@ -178,9 +178,22 @@ const AllTools*: seq[ToolSpec] = @[
        description = "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds (action=verify_project)",
        tags = @["agent", "core", "workstation"], domain = "agent",
        default = true, heartbeatSafe = true, category = "self-management"),
-  spec(name = "consolidate_knowledge",
-       description = "promote a cross-project insight into your knowledge wiki at knowledge/<topic>.md",
-       tags = @["agent", "core"], domain = "agent",
+  # `knowledge` — the ship in memory/knowledge/skill trio. Replaces
+  # consolidate_knowledge (which was one-action: just promote insight).
+  # New surface: consolidate (write/append) | lookup (read) | list |
+  # rank (agent judgment 1-10 with reason) | top (sort by avg). Ranks
+  # are OPTIONAL — facts surface in lookups regardless; rank refines order.
+  spec(name = "knowledge",
+       description = "cross-project semantic memory wiki — timeless facts. " &
+                     "Actions: consolidate | lookup | list | rank | top. " &
+                     "Ranks are agent-decided (1-10 with reason); aggregate " &
+                     "displayed once ≥ 2 votes. Vocabulary discipline: this " &
+                     "is for 'is this true?' — for 'did this happen?' use memory.",
+       tags = @["agent", "core", "knowledge", "wiki"],
+       searchKeywords = @["knowledge", "wiki", "fact", "lookup",
+                          "consolidate", "promote insight", "rank",
+                          "score", "topic", "semantic memory"],
+       domain = "agent",
        default = true, heartbeatSafe = true, category = "self-management"),
   spec(name = "spawn",
        description = "spawn autonomous sub-agents for tasks (focus_modes)",
