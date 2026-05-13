@@ -23,9 +23,12 @@
 ##      so cold-start routing can fall back to prefix-matching against
 ##      known installed vendors as a backup.
 
-import std/[asyncdispatch, json, tables, strutils, locks]
+import std/[asyncdispatch, json, tables, locks]
 import ../types, ../registry
+import ../vendor_dispatch
 import ../../logger
+export findVendorTools, dispatchToVendor  # back-compat for callers that
+                                          # imported these from solar_adapter
 
 # ── Plant → vendor mapping (in-memory, populated lazily) ──────────
 
@@ -49,41 +52,6 @@ proc lookupVendor*(plantId: string): string =
 # routeByPlantId) so `tools/solar_unified.nim` can compose them into the
 # agent-facing `solar` tool. Substrate stays here as `solar_adapter` per
 # the substrate-vs-capability naming rule.
-
-proc findVendorTools*(reg: ToolRegistry,
-                      contractTool: string): seq[tuple[vendor: string, tool: Tool]] =
-  ## Scan the registry for tools matching `mcp_<vendor>_<contractTool>`.
-  ## Returns (vendor, tool) pairs sorted by registration order.
-  ## The contract tool name (e.g. "plant_list") is matched as a suffix on
-  ## the registered tool name. Vendor name is whatever sits between
-  ## `mcp_` and `_<contractTool>`.
-  result = @[]
-  let suffix = "_" & contractTool
-  for name in reg.list():
-    if not name.startsWith("mcp_"): continue
-    if not name.endsWith(suffix): continue
-    # Extract vendor: strip mcp_ prefix and _<contractTool> suffix
-    let inner = name[4 ..< name.len - suffix.len]
-    # Inner may still have a server-prefix component (e.g. mcp_sungrow_sungrow_plant_list
-    # if the MCP server prefixes its own tools). For the fleet adapter, treat
-    # the leftmost segment as the vendor name.
-    let underscoreIdx = inner.find('_')
-    let vendor = if underscoreIdx > 0: inner[0 ..< underscoreIdx] else: inner
-    if vendor.len == 0: continue
-    let (tool, ok) = reg.get(name)
-    if ok: result.add((vendor: vendor, tool: tool))
-
-proc dispatchToVendor*(reg: ToolRegistry, vendor, contractTool: string,
-                       args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Locate and call the named vendor's tool. Returns the vendor's raw
-  ## response. Empty string + warning log on miss.
-  let vendorTools = findVendorTools(reg, contractTool)
-  for vt in vendorTools:
-    if vt.vendor == vendor:
-      return await vt.tool.execute(args)
-  warnCF("solar_adapter", "vendor not installed for contract tool",
-         {"vendor": vendor, "contract": contractTool}.toTable)
-  return """{"error":"vendor_not_installed","vendor":"""" & vendor & """","contract":"""" & contractTool & """"}"""
 
 proc routeByPlantId*(reg: ToolRegistry, contractTool: string,
                      args: Table[string, JsonNode]): Future[string] {.async.} =

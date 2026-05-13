@@ -2925,8 +2925,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # card kind, file/voice/react/edit/delete/threading, formatting). The
   # tool reaches the live manager via channels/access (gateway calls
   # bindChannelAccess once after initChannels).
-  regTagged(newChannelTool(), ["comm", "channel", "transport", "core"],
-            "channel transport navigator: list vendors and their features (text/card/file/voice/react/edit/threading)")
+  regTagged(newChannelTool(toolsRegistry), ["comm", "channel", "transport", "core"],
+            "channel transport navigator: list vendors + features; routes vendor-specific docs/sheets/calendar/tasks to mcp_<vendor>_<op> tools")
 
   # --- Web tools ---
   # Internet stack — sea / ship / navigator
