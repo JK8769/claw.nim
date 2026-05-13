@@ -90,7 +90,8 @@ method parameters*(t: KnowledgeTool): Table[string, JsonNode] =
     "properties": %*{
       "action": {
         "type": "string",
-        "enum": ["consolidate", "lookup", "list", "rank", "top"],
+        "enum": ["consolidate", "lookup", "list", "rank", "top",
+                 "update", "deprecate", "link"],
         "description": "Operation to perform"
       },
       "topic": {
@@ -130,6 +131,11 @@ method parameters*(t: KnowledgeTool): Table[string, JsonNode] =
         "type": "integer",
         "minimum": 1,
         "description": "top (optional) — max topics to return. Default 10."
+      },
+      "to": {
+        "type": "string",
+        "description": "link — target topic slug. Combined with `topic` " &
+                       "(the source), records: from `topic` → to `to`."
       }
     },
     "required": %["action"]
@@ -155,9 +161,19 @@ type
     reason*: string     ## why
     at*: string         ## ISO timestamp
 
+  Link* = object
+    to*: string         ## target topic slug
+    reason*: string     ## why these are linked
+    by*: string         ## agent label that linked them
+
   TopicMeta* = object
-    created*: string    ## ISO date when first consolidated
-    ranks*: seq[Rank]   ## per-agent votes (one per nc:id; later replaces earlier)
+    created*: string         ## ISO date when first consolidated
+    ranks*: seq[Rank]        ## per-agent votes (one per nc:id; later replaces)
+    links*: seq[Link]        ## cross-references to other topics
+    deprecated*: bool        ## true when superseded / no longer accurate
+    deprecated_at*: string   ## ISO date marked
+    deprecated_by*: string   ## agent who marked it
+    deprecated_reason*: string  ## why (link to replacement, or root cause)
 
 # ── YAML-ish frontmatter parser (hand-rolled — only the shape we need) ──
 # We don't pull in a full YAML lib for this; the format is intentionally
@@ -179,41 +195,74 @@ proc parseFrontmatter(raw: string): tuple[meta: TopicMeta, body: string] =
   let header = raw[4 ..< endIdx]
   let body = raw[endIdx + 5 ..< raw.len]
   result.meta = TopicMeta()
-  var inRanks = false
+  type Section = enum secNone, secRanks, secLinks
+  var section = secNone
+  proc parseInline(t: string): seq[(string, string)] =
+    ## "{key: \"v\", k2: 5, ...}" → seq of (key, value)
+    let inner = t.find('{')
+    let close = t.rfind('}')
+    if inner < 0 or close <= inner: return
+    let kv = t[inner + 1 ..< close]
+    for pair in kv.split(','):
+      let p = pair.strip()
+      let colon = p.find(':')
+      if colon <= 0: continue
+      let k = p[0 ..< colon].strip()
+      var v = p[colon + 1 .. ^1].strip()
+      if v.startsWith("\"") and v.endsWith("\"") and v.len >= 2:
+        v = v[1 ..< v.len - 1]
+      result.add((k, v))
   for line in header.splitLines:
     let t = line.strip()
     if t.startsWith("created:"):
       result.meta.created = t["created:".len .. ^1].strip()
-      inRanks = false
+      section = secNone
+    elif t.startsWith("deprecated:"):
+      let v = t["deprecated:".len .. ^1].strip().toLowerAscii()
+      result.meta.deprecated = v in ["true", "yes", "1"]
+      section = secNone
+    elif t.startsWith("deprecated_at:"):
+      result.meta.deprecated_at = t["deprecated_at:".len .. ^1].strip()
+      section = secNone
+    elif t.startsWith("deprecated_by:"):
+      result.meta.deprecated_by = t["deprecated_by:".len .. ^1].strip()
+      section = secNone
+    elif t.startsWith("deprecated_reason:"):
+      result.meta.deprecated_reason = t["deprecated_reason:".len .. ^1].strip()
+      section = secNone
     elif t == "ranks:":
-      inRanks = true
-    elif inRanks and t.startsWith("- {"):
-      # parse "- {by: \"X\", nc: \"nc:N\", score: 9, reason: \"…\", at: \"…\"}"
-      let inner = t.find('{')
-      let close = t.rfind('}')
-      if inner < 0 or close <= inner: continue
-      let kv = t[inner + 1 ..< close]
-      var r = Rank()
-      for pair in kv.split(','):
-        let p = pair.strip()
-        let colon = p.find(':')
-        if colon <= 0: continue
-        let k = p[0 ..< colon].strip()
-        var v = p[colon + 1 .. ^1].strip()
-        if v.startsWith("\"") and v.endsWith("\"") and v.len >= 2:
-          v = v[1 ..< v.len - 1]
-        case k
-        of "by":     r.by = v
-        of "nc":     r.nc = v
-        of "score":
-          try: r.score = parseInt(v) except CatchableError: discard
-        of "reason": r.reason = v
-        of "at":     r.at = v
-        else: discard
-      if r.nc.len > 0 or r.by.len > 0:
-        result.meta.ranks.add(r)
-    elif inRanks and not t.startsWith("- "):
-      inRanks = false
+      section = secRanks
+    elif t == "links:":
+      section = secLinks
+    elif t.startsWith("- {"):
+      let pairs = parseInline(t)
+      case section
+      of secRanks:
+        var r = Rank()
+        for (k, v) in pairs:
+          case k
+          of "by":     r.by = v
+          of "nc":     r.nc = v
+          of "score":
+            try: r.score = parseInt(v) except CatchableError: discard
+          of "reason": r.reason = v
+          of "at":     r.at = v
+          else: discard
+        if r.nc.len > 0 or r.by.len > 0:
+          result.meta.ranks.add(r)
+      of secLinks:
+        var lk = Link()
+        for (k, v) in pairs:
+          case k
+          of "to":     lk.to = v
+          of "reason": lk.reason = v
+          of "by":     lk.by = v
+          else: discard
+        if lk.to.len > 0:
+          result.meta.links.add(lk)
+      else: discard
+    elif not t.startsWith("- "):
+      section = secNone
   result.body = body
 
 proc escapeYamlValue(v: string): string =
@@ -228,6 +277,14 @@ proc serializeFrontmatter(m: TopicMeta): string =
   result = "---\n"
   if m.created.len > 0:
     result.add("created: " & m.created & "\n")
+  if m.deprecated:
+    result.add("deprecated: true\n")
+    if m.deprecated_at.len > 0:
+      result.add("deprecated_at: " & m.deprecated_at & "\n")
+    if m.deprecated_by.len > 0:
+      result.add("deprecated_by: " & m.deprecated_by & "\n")
+    if m.deprecated_reason.len > 0:
+      result.add("deprecated_reason: " & m.deprecated_reason & "\n")
   if m.ranks.len > 0:
     result.add("ranks:\n")
     for r in m.ranks:
@@ -236,6 +293,12 @@ proc serializeFrontmatter(m: TopicMeta): string =
                  "\", score: " & $r.score &
                  ", reason: \"" & escapeYamlValue(r.reason) &
                  "\", at: \"" & escapeYamlValue(r.at) & "\"}\n")
+  if m.links.len > 0:
+    result.add("links:\n")
+    for lk in m.links:
+      result.add("  - {to: \"" & escapeYamlValue(lk.to) &
+                 "\", reason: \"" & escapeYamlValue(lk.reason) &
+                 "\", by: \"" & escapeYamlValue(lk.by) & "\"}\n")
   result.add("---\n\n")
 
 proc rankSummary(meta: TopicMeta): tuple[avg: float, count: int, displayed: bool] =
@@ -333,6 +396,10 @@ proc doLookup(t: KnowledgeTool, args: Table[string, JsonNode]): string =
   let (meta, body) = parseFrontmatter(raw)
   let summary = rankSummary(meta)
   var header = "# " & topic & "\n"
+  if meta.deprecated:
+    header.add("⚠️  DEPRECATED on " & meta.deprecated_at & " by " &
+               meta.deprecated_by & ". Reason: " & meta.deprecated_reason &
+               "\n   (Content preserved below for provenance.)\n")
   if meta.created.len > 0: header.add("Created: " & meta.created & "\n")
   if summary.displayed:
     header.add("Rank: " & formatFloat(summary.avg, ffDecimal, 1) &
@@ -344,6 +411,12 @@ proc doLookup(t: KnowledgeTool, args: Table[string, JsonNode]): string =
   else:
     header.add("Rank: unrated (use `knowledge rank topic=" & topic &
                " score=N` to add your judgment)\n")
+  if meta.links.len > 0:
+    header.add("Related: ")
+    var refs: seq[string]
+    for lk in meta.links:
+      refs.add(lk.to & (if lk.reason.len > 0: " (" & lk.reason & ")" else: ""))
+    header.add(refs.join(", ") & "\n")
   header.add("\n")
   return header & body.strip()
 
@@ -472,11 +545,126 @@ proc doTop(t: KnowledgeTool, args: Table[string, JsonNode]): string =
     lines.add("Unrated (" & $unrated.len & "): " & unrated.join(", "))
   lines.join("\n")
 
+# ── update: append a refinement entry tagged as UPDATE ──────────────
+
+proc doUpdate(t: KnowledgeTool, args: Table[string, JsonNode]): string =
+  ## Like consolidate but explicitly marks the new entry as a refinement
+  ## of prior content (preserves the prior in the file's append-only
+  ## history; lookup readers see the most-recent UPDATE entry first).
+  ## Used when a fact gets sharper / more accurate / more nuanced and
+  ## you want the wiki to reflect that without erasing what came before.
+  if not args.hasKey("topic"): return "Error: 'topic' is required"
+  if not args.hasKey("insight"): return "Error: 'insight' is required"
+  if t.workspace.len == 0: return "Error: tool not bound to an office workspace"
+  let topic = args["topic"].getStr().strip()
+  let insight = args["insight"].getStr().strip()
+  if insight.len < 10: return "Error: 'insight' must be at least 10 chars"
+  if not isKebabSafe(topic):
+    return "Error: 'topic' must be kebab-case. Got: '" & topic & "'"
+  let path = t.workspace / "knowledge" / topic & ".md"
+  if not fileExists(path):
+    return "Error: no knowledge entry for '" & topic &
+           "'. Use `consolidate` to create it first."
+  let source = if args.hasKey("source"): args["source"].getStr().strip() else: ""
+  let raw = readFile2(path)
+  var (meta, body) = parseFrontmatter(raw)
+  let now = now().format("yyyy-MM-dd HH:mm")
+  let agentLabel = if t.agentLabel.len > 0: t.agentLabel else: "agent"
+  if not body.endsWith("\n"): body.add("\n")
+  body.add("## " & now & " (UPDATE by " & agentLabel & ")\n\n")
+  body.add(insight & "\n")
+  if source.len > 0: body.add("\n**Source**: " & source & "\n")
+  body.add("\n")
+  let composed = serializeFrontmatter(meta) & body
+  try: writeFile(path, composed)
+  except CatchableError as e:
+    return "Error: failed to write update: " & e.msg
+  return "Refinement appended to `knowledge/" & topic & ".md` (tagged " &
+         "UPDATE; prior entries preserved). Lookup shows the most recent " &
+         "context first."
+
+# ── deprecate: mark stale via frontmatter flag ──────────────────────
+
+proc doDeprecate(t: KnowledgeTool, args: Table[string, JsonNode]): string =
+  ## Mark a fact stale without erasing it. Lookups display a deprecation
+  ## banner; lists annotate the topic. Provenance preserved (when, who,
+  ## why) in the frontmatter. Use when a fact turns out wrong, gets
+  ## superseded by a newer fact, or applies only to a now-obsolete
+  ## context.
+  if not args.hasKey("topic"): return "Error: 'topic' is required"
+  if t.workspace.len == 0: return "Error: tool not bound to an office workspace"
+  let topic = args["topic"].getStr().strip()
+  let path = t.workspace / "knowledge" / topic & ".md"
+  if not fileExists(path):
+    return "Error: no knowledge entry for '" & topic & "'."
+  let reason = if args.hasKey("reason"): args["reason"].getStr().strip() else: ""
+  if reason.len == 0:
+    return "Error: 'reason' is required for deprecate (why is this stale? " &
+           "What replaces it? — preserves provenance)."
+  let raw = readFile2(path)
+  var (meta, body) = parseFrontmatter(raw)
+  let now = now().format("yyyy-MM-dd HH:mm")
+  let agentLabel = if t.agentLabel.len > 0: t.agentLabel else: "agent"
+  meta.deprecated = true
+  meta.deprecated_at = now
+  meta.deprecated_by = agentLabel
+  meta.deprecated_reason = reason
+  let composed = serializeFrontmatter(meta) & body
+  try: writeFile(path, composed)
+  except CatchableError as e:
+    return "Error: failed to mark deprecated: " & e.msg
+  return "Marked `" & topic & "` deprecated. Reason: " & reason &
+         ". (Content preserved; lookups will show the deprecation banner.)"
+
+# ── link: cross-reference two topics ────────────────────────────────
+
+proc doLink(t: KnowledgeTool, args: Table[string, JsonNode]): string =
+  ## Record a directed cross-reference from `topic` to `to`. Builds the
+  ## citation graph (one per future PageRank-style scoring; for now,
+  ## displayed in lookup as 'Related topics'). Reason explains the
+  ## connection — operators reading the link can decide if it still
+  ## holds when content changes.
+  if not args.hasKey("topic"): return "Error: 'topic' is required (the source)"
+  if not args.hasKey("to"): return "Error: 'to' is required (the target topic)"
+  if t.workspace.len == 0: return "Error: tool not bound to an office workspace"
+  let topic = args["topic"].getStr().strip()
+  let target = args["to"].getStr().strip()
+  if topic == target:
+    return "Error: cannot link a topic to itself."
+  if not isKebabSafe(topic) or not isKebabSafe(target):
+    return "Error: both topics must be kebab-case slugs."
+  let path = t.workspace / "knowledge" / topic & ".md"
+  if not fileExists(path):
+    return "Error: source topic '" & topic & "' doesn't exist."
+  let targetPath = t.workspace / "knowledge" / target & ".md"
+  if not fileExists(targetPath):
+    return "Error: target topic '" & target & "' doesn't exist. Consolidate it first."
+  let reason = if args.hasKey("reason"): args["reason"].getStr().strip() else: ""
+  let raw = readFile2(path)
+  var (meta, body) = parseFrontmatter(raw)
+  let agentLabel = if t.agentLabel.len > 0: t.agentLabel else: "agent"
+  # Idempotent: if same (topic→target) link exists, replace it; else add.
+  var found = false
+  for i, lk in meta.links:
+    if lk.to == target:
+      meta.links[i] = Link(to: target, reason: reason, by: agentLabel)
+      found = true; break
+  if not found:
+    meta.links.add(Link(to: target, reason: reason, by: agentLabel))
+  let composed = serializeFrontmatter(meta) & body
+  try: writeFile(path, composed)
+  except CatchableError as e:
+    return "Error: failed to record link: " & e.msg
+  let action = if found: "Updated" else: "Recorded"
+  return action & " link: `" & topic & "` → `" & target & "`" &
+         (if reason.len > 0: " (" & reason & ")" else: "") & "."
+
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: KnowledgeTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("action"):
-    return "Error: 'action' is required (consolidate | lookup | list | rank | top)"
+    return "Error: 'action' is required (consolidate | lookup | list | " &
+           "rank | top | update | deprecate | link)"
   let action = args["action"].getStr().toLowerAscii()
   case action
   of "consolidate": return doConsolidate(t, args)
@@ -484,6 +672,10 @@ method execute*(t: KnowledgeTool, args: Table[string, JsonNode]): Future[string]
   of "list":        return doList(t)
   of "rank":        return doRank(t, args)
   of "top":         return doTop(t, args)
+  of "update":      return doUpdate(t, args)
+  of "deprecate":   return doDeprecate(t, args)
+  of "link":        return doLink(t, args)
   else:
     return "Error: Unknown action '" & action &
-           "'. Use: consolidate | lookup | list | rank | top"
+           "'. Use: consolidate | lookup | list | rank | top | " &
+           "update | deprecate | link"

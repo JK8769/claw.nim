@@ -258,8 +258,17 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
       return renderHits(t.store.recallHeart(query, fromTs, toTs, limit),
                         format, fmt"Heartbeat events matching '{query}'")
     of "knowledge":
-      return renderHits(t.store.recallKnowledge(query, limit),
-                        format, fmt"Knowledge wiki entries matching '{query}'")
+      # Soft-deprecated: prefer `knowledge lookup` for timeless-fact reads.
+      # Memory is the SEA (raw past); knowledge is the SHIP (timeless facts) —
+      # different vocabulary for different epistemic categories. Keeping
+      # this scope as an alias for back-compat; nudge callers to migrate.
+      let hits = t.store.recallKnowledge(query, limit)
+      let body = renderHits(hits, format,
+                            fmt"Knowledge wiki entries matching '{query}'")
+      return body & "\n\n[hint] memory.scope=knowledge is deprecated — " &
+             "use `knowledge lookup topic=…` for fact-by-name reads or " &
+             "`knowledge top` for highest-rated. memory.recall stays for " &
+             "episodic events ('did this happen?')."
     of "all":
       return renderHits(t.store.recallAll(t.senderNcId, t.trustLevel,
                                            query, fromTs, toTs, limit),
@@ -322,7 +331,7 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
       case recentScope
       of "sessions":  t.store.recallSessions(query, fromTs, 0.0, limit)
       of "heart":     t.store.recallHeart(query, fromTs, 0.0, limit)
-      of "knowledge": t.store.recallKnowledge(query, limit)
+      of "knowledge": t.store.recallKnowledge(query, limit)  # deprecated: see knowledge tool
       of "self":      t.store.recallSelfHits(t.trustLevel, query, fromTs, 0.0, limit)
       of "sender":    t.store.recallSenderHits(t.senderNcId, query, fromTs, 0.0, limit)
       else:           t.store.recallAll(t.senderNcId, t.trustLevel,

@@ -185,14 +185,21 @@ const AllTools*: seq[ToolSpec] = @[
   # are OPTIONAL — facts surface in lookups regardless; rank refines order.
   spec(name = "knowledge",
        description = "cross-project semantic memory wiki — timeless facts. " &
-                     "Actions: consolidate | lookup | list | rank | top. " &
-                     "Ranks are agent-decided (1-10 with reason); aggregate " &
-                     "displayed once ≥ 2 votes. Vocabulary discipline: this " &
-                     "is for 'is this true?' — for 'did this happen?' use memory.",
+                     "Actions: consolidate (write/append) | lookup (read + " &
+                     "rank summary + deprecation banner + related topics) | " &
+                     "list (enumerate) | rank (1-10 agent judgment with " &
+                     "reason) | top (sort by avg) | update (append refinement " &
+                     "tagged UPDATE) | deprecate (mark stale with reason; " &
+                     "content preserved) | link (cross-reference topics). " &
+                     "Vocabulary discipline: this is for 'is this true?' — " &
+                     "for 'did this happen?' use memory. Ranks are " &
+                     "agent-decided; aggregate displayed once ≥ 2 votes.",
        tags = @["agent", "core", "knowledge", "wiki"],
        searchKeywords = @["knowledge", "wiki", "fact", "lookup",
                           "consolidate", "promote insight", "rank",
-                          "score", "topic", "semantic memory"],
+                          "score", "topic", "semantic memory",
+                          "update", "deprecate", "link", "related",
+                          "cross-reference", "supersede"],
        domain = "agent",
        default = true, heartbeatSafe = true, category = "self-management"),
   spec(name = "spawn",
