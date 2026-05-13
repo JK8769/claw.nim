@@ -11,6 +11,15 @@
         "deps": [{"package": "nim", "manager": "system"}],
         "env": []
       }
+    },
+    "forge_nim_expert": {
+      "path": "res/foundation/forge_nim_expert",
+      "description": "How to use forge_mcp_tool to create runtime MCP tools in Nim. Read this BEFORE calling forge_mcp_tool — gets the macro shape, server-instance pattern, and stdio transport boilerplate right on the first try.",
+      "requires": {
+        "tools": ["mcp"],
+        "deps": [{"package": "nim", "manager": "system"}],
+        "env": []
+      }
     }
   }
 }
