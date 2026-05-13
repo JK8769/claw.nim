@@ -78,7 +78,7 @@ const AllTools*: seq[ToolSpec] = @[
                      "driven format selection (text vs card) with no hardcoded " &
                      "vendor branches. Reply accepts optional progress=[items] " &
                      "+ interim=true for plan-state checkpoints. For " &
-                     "persistent / async messaging, see email.",
+                     "persistent / async / shipment messaging, see mail.",
        tags = @["comm", "chat", "messaging", "core"], domain = "comm",
        searchKeywords = @["send message", "chat send", "chat reply",
                           "chat forward", "talk", "respond", "message",
