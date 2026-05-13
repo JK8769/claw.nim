@@ -257,11 +257,15 @@ const AllTools*: seq[ToolSpec] = @[
   # "which models can do X?" — used internally to feature-gate
   # (e.g., vision check before serving an image).
   spec(name = "provider",
-       description = "LLM providers (the 'sea'): list/verify/info (action=list|verify|info). Read-only — keys stay on disk.",
+       description = "LLM providers (the 'sea'): list / verify / info / " &
+                     "set_key (action=list|verify|info|set_key). list/verify/" &
+                     "info are read-only diagnostics; set_key writes a new " &
+                     "API key to ~/.claw/.env (folded in from set_api_key).",
        tags = @["admin", "providers", "diagnostics", "core"],
        searchKeywords = @["llm", "api", "key", "endpoint", "openai",
                            "anthropic", "deepseek", "ollama", "auth",
-                           "verify", "credentials"],
+                           "verify", "credentials", "set api key",
+                           "configure provider", "save key"],
        domain = "admin",
        default = true, heartbeatSafe = false, category = "admin"),
   spec(name = "model",
@@ -318,19 +322,10 @@ const AllTools*: seq[ToolSpec] = @[
        searchKeywords = @["capture", "screen", "display", "snap", "picture of screen"],
        domain = "visual",
        default = false, heartbeatSafe = false, category = "visual"),
-  spec(name = "image_info",
-       description = "get image dimensions and metadata",
-       tags = @["visual", "data"],
-       searchKeywords = @["dimensions", "metadata", "exif", "width", "height", "format"],
-       domain = "visual",
-       default = false, heartbeatSafe = false, category = "visual"),
-  spec(name = "image_analyze",
-       description = "analyze image content using vision model",
-       tags = @["visual", "vision", "image"],
-       searchKeywords = @["describe image", "what is in", "photo", "picture",
-                           "vision", "ocr", "see", "interpret image"],
-       domain = "visual",
-       default = false, heartbeatSafe = false, category = "visual"),
+  # image_info folded into `fs action=info` — when path is an image
+  # file, the response now includes format + dimensions automatically.
+  # image_analyze deleted — use `capability invoke tag=vision input=<path>
+  # prompt="..."` (capability-routed dispatch to a vision-capable model).
 
   # Hardware
   spec(name = "hardware",
@@ -417,11 +412,8 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["orchestration", "automation"], domain = "task",
        default = false, heartbeatSafe = false, category = "tasks"),
 
-  # Admin / config
-  spec(name = "set_api_key",
-       description = "configure API keys and secrets",
-       tags = @["admin", "config"], domain = "admin",
-       default = false, heartbeatSafe = false, category = "admin"),
+  # (set_api_key folded into `provider action=set_key name=… api_key=…`
+  #  — provider IS the LLM-credentials manager; key-setting belongs there.)
 ]
 
 # ── Derivation procs (used by clawdsl + registry to replace const lists) ──

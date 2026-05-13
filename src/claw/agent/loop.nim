@@ -28,12 +28,15 @@ import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
 import ../tools/dev/git
 import ../tools/sched/cron
-import ../tools/admin/[config_tools, feishu_add_app]
+import ../tools/admin/feishu_add_app
+# (config_tools/set_api_key folded into provider action=set_key)
 import ../tools/provider_unified
 import ../tools/model_unified
 import ../tools/capability_unified
 import ../tools/social_unified
-import ../tools/visual/[screenshot, image_info, image_analyze]
+import ../tools/visual/screenshot
+# image_info.nim retained as a helper module (imageMetaForFile is
+# imported by fs_unified.nim for the image-aware fs info extension).
 import ../tools/hardware/hardware_unified
 import ../tools/mcp/mcp_unified
 import ../tools/skill/skill_unified
@@ -2955,8 +2958,13 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newGitTool(workspace, cfg.agents.security.allowed_paths, officeDir), ["git", "devops", "vcs"], "git version control operations")
   # (pushover folded into channels/pushover.nim — agents reach it via `chat send vendor=pushover`)
   regTagged(newScreenshotTool(workspace), ["visual", "utility"], "capture screenshots of display")
-  regTagged(newImageInfoTool(), ["visual", "data"], "get image dimensions and metadata")
-  regTagged(newImageAnalyzeTool(), ["visual", "vision", "image"], "analyze image content using vision model")
+  # image_info folded into `fs action=info` — when path is an image
+  # file, the response now includes format + dimensions automatically.
+  # The detection helpers stay in tools/visual/image_info.nim.
+  # image_analyze deleted — use `capability invoke tag=vision input=<path>
+  # prompt="..."` instead. Capability-routed dispatch picks any vision-
+  # capable model (Ollama+gemma4 local, etc.) without the agent's primary
+  # model needing native multimodal support.
 
   let allowedDomainsStr = getEnv("BROWSER_ALLOWED_DOMAINS", "")
   var allowedBrowserDomains: seq[string] = @[]
@@ -3004,7 +3012,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # learn_skill: author a workstation SKILL.md from structured inputs (enforces invariants).
   # Only exposed to agents with workstation:true — see the auto-add below near the ClawDSL scope block.
   # Skill management — install registry/GitHub skills + author workstation Tier-3 skills (skill_unified)
-  regTagged(newSetApiKeyTool(getConfigPath()), ["admin", "config"], "configure API keys and secrets")
+  # set_api_key folded into `provider action=set_key name=<x> api_key=<y>`
+  # — provider IS the LLM-credentials manager; key-setting belongs there.
   # Provider / model / capability — the sea / ship / navigator trio for
   # the LLM stack. Replaces provider_auth + model_list with three unified
   # tools sharing the framework catalog as substrate:

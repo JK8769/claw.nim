@@ -1,37 +1,13 @@
-import std/[json, tables, os, asyncdispatch, strutils, options]
-import ../types
-import ../spec
+## image_info — image-metadata helpers used by `fs action=info`.
+##
+## Formerly an agent-facing tool; folded into the fs surface (`fs info`
+## now auto-detects image files and includes format + dimensions when
+## the path is one). The detection logic stays here as exported procs;
+## fs_unified imports them.
 
-const ToolSpec* = spec(
-  name = "image_info",
-  description = "get image dimensions and metadata",
-  tags = @["visual", "data"],
-  domain = "visual",
-  default = false,
-  heartbeatSafe = false,
-  category = "visual",
-)
+import std/[os, options]
 
-const MAX_IMAGE_BYTES: uint64 = 5_242_880
-
-type
-  ImageInfoTool* = ref object of Tool
-
-proc newImageInfoTool*(): ImageInfoTool =
-  ImageInfoTool()
-
-method name*(t: ImageInfoTool): string = "image_info"
-
-method description*(t: ImageInfoTool): string = "Read image file metadata (format, dimensions, size)."
-
-method parameters*(t: ImageInfoTool): Table[string, JsonNode] =
-  {
-    "type": %"object",
-    "properties": %*{
-      "path": {"type": "string", "description": "Path to the image file"}
-    },
-    "required": %*["path"]
-  }.toTable
+const MAX_IMAGE_BYTES*: uint64 = 5_242_880
 
 proc detectFormat*(bytes: seq[byte] | openArray[byte]): string =
   if bytes.len < 4: return "unknown"
@@ -73,7 +49,7 @@ proc extractDimensions*(bytes: seq[byte] | openArray[byte], format: string): Opt
       let w = (uint32(bytes[16]) shl 24) or (uint32(bytes[17]) shl 16) or (uint32(bytes[18]) shl 8) or uint32(bytes[19])
       let h = (uint32(bytes[20]) shl 24) or (uint32(bytes[21]) shl 16) or (uint32(bytes[22]) shl 8) or uint32(bytes[23])
       return some((w, h))
-  
+
   if format == "gif":
     if bytes.len >= 10:
       let w = uint32(bytes[6]) or (uint32(bytes[7]) shl 8)
@@ -83,7 +59,6 @@ proc extractDimensions*(bytes: seq[byte] | openArray[byte], format: string): Opt
   if format == "bmp":
     if bytes.len >= 26:
       let w = uint32(bytes[18]) or (uint32(bytes[19]) shl 8) or (uint32(bytes[20]) shl 16) or (uint32(bytes[21]) shl 24)
-      # Height can be negative in BMP, so we need to process it as signed 32-bit then abs
       var hRaw: int32 = cast[int32](uint32(bytes[22]) or (uint32(bytes[23]) shl 8) or (uint32(bytes[24]) shl 16) or (uint32(bytes[25]) shl 24))
       let h = if hRaw < 0: uint32(-hRaw) else: uint32(hRaw)
       return some((w, h))
@@ -93,36 +68,24 @@ proc extractDimensions*(bytes: seq[byte] | openArray[byte], format: string): Opt
 
   return none((uint32, uint32))
 
-method execute*(t: ImageInfoTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  let path = if args.hasKey("path"): args["path"].getStr() else: ""
-  if path == "": return "Error: Missing 'path' parameter"
-
-  let absPath = if isAbsolute(path): path else: getCurrentDir() / path
-  if not fileExists(absPath):
-    return "Error: File not found: " & path
-
+proc imageMetaForFile*(absPath: string): tuple[format: string, dims: Option[(uint32, uint32)]] =
+  ## Read first 128 bytes of the file at absPath and detect image
+  ## format + dimensions. Returns (format="unknown", dims=none) for
+  ## non-image files, files too large, or read failures — caller can
+  ## treat any of those as "not an image" without needing to distinguish.
+  result = (format: "unknown", dims: none((uint32, uint32)))
+  if not fileExists(absPath): return
   let size = cast[uint64](getFileSize(absPath))
-  if size > MAX_IMAGE_BYTES:
-    return "Error: Image too large: " & $size & " bytes (max " & $MAX_IMAGE_BYTES & " bytes)"
-
+  if size > MAX_IMAGE_BYTES: return  # too large; bail without partial read
   try:
     var f = open(absPath)
     defer: f.close()
-    
     var headerStr = newString(128)
     let bytesRead = f.readChars(headerStr.toOpenArray(0, 127))
-    
     var bytes = newSeq[byte](bytesRead)
     for i in 0..<bytesRead: bytes[i] = headerStr[i].byte
-
-    let format = detectFormat(bytes)
-    let dims = extractDimensions(bytes, format)
-
-    var output = "File: " & absPath & "\nFormat: " & format & "\nSize: " & $size & " bytes"
-    if dims.isSome:
-      let (w, h) = dims.get
-      output &= "\nDimensions: " & $w & "x" & $h
-    
-    return output
-  except Exception as e:
-    return "Error reading metadata: " & e.msg
+    let fmt = detectFormat(bytes)
+    let d = extractDimensions(bytes, fmt)
+    return (format: fmt, dims: d)
+  except CatchableError:
+    return

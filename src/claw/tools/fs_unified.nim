@@ -28,11 +28,13 @@
 ## append_file}.nim` quintet; see registration in `agent/loop.nim` next to
 ## the exec + clock block.
 
-import std/[os, json, asyncdispatch, tables, strutils, times]
+import std/[os, json, asyncdispatch, tables, strutils, times, options]
 import ./types
 import ./spec
 import ./path_security
 import ./iam_policies
+import ./visual/image_info  # imageMetaForFile — fs info auto-detects
+                             # image files and includes format + dims
 
 const ToolSpec* = spec(
   name = "fs",
@@ -199,6 +201,15 @@ proc doInfo(t: FsTool, args: Table[string, JsonNode]): string =
     lines.add("atime: " & info.lastAccessTime.format("yyyy-MM-dd HH:mm:ss"))
     lines.add("ctime: " & info.creationTime.format("yyyy-MM-dd HH:mm:ss"))
     lines.add("permissions: " & perms.strip())
+    # Image-aware extension: when the file is an image (detected by
+    # magic bytes), append format + dimensions. No-op for non-images.
+    if info.kind == pcFile or info.kind == pcLinkToFile:
+      let meta = imageMetaForFile(resolved)
+      if meta.format != "unknown":
+        lines.add("format: " & meta.format)
+        if meta.dims.isSome:
+          let (w, h) = meta.dims.get
+          lines.add("dimensions: " & $w & "x" & $h)
     return lines.join("\n")
   except Exception as e:
     return "Error: failed to stat path: " & e.msg

@@ -54,18 +54,20 @@ proc newProviderTool*(): ProviderTool = ProviderTool()
 method name*(t: ProviderTool): string = "provider"
 
 method description*(t: ProviderTool): string =
-  "LLM provider inspection (the 'sea' — the substrate you sail on). Each " &
+  "LLM provider management (the 'sea' — the substrate you sail on). Each " &
   "provider is one API endpoint this company can call (deepseek, openai, " &
-  "anthropic, ollama, …). Read-only: cannot set or change keys (ask a " &
-  "human operator to run `claw provider auth <name>` at the CLI for that). " &
-  "Scoped to this company only; the key value is never exposed to the LLM.\n\n" &
+  "anthropic, ollama, …). Scoped to this company only; existing key " &
+  "values are never exposed to the LLM.\n\n" &
   "Actions:\n" &
-  "  list   — every provider this install knows about, with masked key " &
-                "status and model count\n" &
-  "  verify — does provider X's stored key still authenticate? Returns " &
-                "pass/fail plus model count\n" &
-  "  info   — one provider's full definition (apiBase, envKey, authHeader, " &
-                "verifyPath, defaultModel, local flag, models offered)"
+  "  list    — every provider this install knows about, with masked key " &
+                 "status and model count\n" &
+  "  verify  — does provider X's stored key still authenticate? Returns " &
+                 "pass/fail plus model count\n" &
+  "  info    — one provider's full definition (apiBase, envKey, authHeader, " &
+                 "verifyPath, defaultModel, local flag, models offered)\n" &
+  "  set_key — write/append an API key to ~/.claw/.env (requires name + " &
+                 "api_key). Folded in from the former set_api_key tool — " &
+                 "provider IS the credentials manager."
 
 method parameters*(t: ProviderTool): Table[string, JsonNode] =
   {
@@ -73,14 +75,21 @@ method parameters*(t: ProviderTool): Table[string, JsonNode] =
     "properties": %*{
       "action": {
         "type": "string",
-        "enum": ["list", "verify", "info"],
+        "enum": ["list", "verify", "info", "set_key"],
         "description": "Operation to perform"
       },
       "name": {
         "type": "string",
-        "description": "verify/info only — provider name (e.g. 'deepseek', " &
+        "description": "verify/info/set_key — provider name (e.g. 'deepseek', " &
                        "'openai', 'anthropic'). Use the same name as in " &
                        "ClawDSL/BASE.nims."
+      },
+      "api_key": {
+        "type": "string",
+        "description": "set_key only — the API key value to write to .env. " &
+                       "Stored as <PROVIDER>_API_KEY (special-cased for known " &
+                       "vendor envvar names; defaults to <name>_API_KEY upper-" &
+                       "cased). Persisted to ~/.claw/.env."
       }
     },
     "required": %["action"]
@@ -217,14 +226,60 @@ proc doInfo(t: ProviderTool, args: Table[string, JsonNode]): string =
 # dispatch
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# set_key — write/update an API key to ~/.claw/.env
+# ---------------------------------------------------------------------------
+
+proc doSetKey(t: ProviderTool, args: Table[string, JsonNode]): string =
+  ## Append/update a provider's API key in ~/.claw/.env. Folded in from
+  ## the former `set_api_key` tool — provider IS the LLM-credentials
+  ## manager, so the key-setting belongs here. Special-cases known
+  ## vendor envvar names; falls back to <NAME>_API_KEY otherwise.
+  let nameArg = if args.hasKey("name"): args["name"].getStr().strip()
+                else: ""
+  let apiKey = if args.hasKey("api_key"): args["api_key"].getStr().strip()
+               else: ""
+  if nameArg.len == 0 or apiKey.len == 0:
+    return "Error: name and api_key are required for set_key"
+
+  let provider = nameArg.toUpperAscii()
+  let envVar = case provider:
+               of "OPENAI":     "OPENAI_API_KEY"
+               of "ANTHROPIC":  "ANTHROPIC_API_KEY"
+               of "GEMINI":     "GEMINI_API_KEY"
+               of "DEEPSEEK":   "DEEPSEEK_API_KEY"
+               of "OPENROUTER": "OPENROUTER_API_KEY"
+               of "GROQ":       "GROQ_API_KEY"
+               of "OPENCODE":   "NIMCLAW_OPENCODE_API_KEY"
+               else:            provider & "_API_KEY"
+
+  let envPath = expandHome("~/.claw/.env")
+  try:
+    let line = "\n" & envVar & "=" & apiKey & "\n"
+    var f: File
+    if open(f, envPath, fmAppend):
+      f.write(line)
+      f.close()
+      return "Saved " & envVar & " to " & envPath &
+             ". Restart the gateway for changes to take effect."
+    else:
+      return "Error: could not open " & envPath & " for append (permissions?)."
+  except CatchableError as e:
+    return "Error writing key to " & envPath & ": " & e.msg
+
+# ---------------------------------------------------------------------------
+# dispatch
+# ---------------------------------------------------------------------------
+
 method execute*(t: ProviderTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("action"):
-    return "Error: 'action' is required (list | verify | info)"
+    return "Error: 'action' is required (list | verify | info | set_key)"
   let action = args["action"].getStr()
   case action
-  of "list":   return doList(t)
-  of "verify": return doVerify(t, args)
-  of "info":   return doInfo(t, args)
+  of "list":    return doList(t)
+  of "verify":  return doVerify(t, args)
+  of "info":    return doInfo(t, args)
+  of "set_key": return doSetKey(t, args)
   else:
     return "Error: Unknown action '" & action &
-           "'. Use: list | verify | info"
+           "'. Use: list | verify | info | set_key"
