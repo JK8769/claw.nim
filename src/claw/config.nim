@@ -14,6 +14,13 @@ type
   NamedAgentConfig* = object
     name*: string
     api_key*: Option[string]
+    job_title*: string         ## Operator-set role label ("Customer Support",
+                               ## "Performance Analyst", "Software Engineer").
+                               ## Distinct from `role` (which is the trust
+                               ## tier — Admin/Staff/Member). Surfaced from
+                               ## the DSL `jobTitle` field so runtime tools
+                               ## (e.g. collaborate's route action) can score
+                               ## peer fitness for a task by job title match.
     provider*: string          ## DEPRECATED — see provider-config-refactor.
                                ## Derived from `models[0]`'s serving
                                ## provider; kept for back-compat readers.

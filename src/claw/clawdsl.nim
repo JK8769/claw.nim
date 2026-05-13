@@ -1230,6 +1230,13 @@ proc buildConfig(spec: ClawSpec, workspace: string): JsonNode =
     }
     if a.role != "":
       entry["role"] = %a.role
+    # Surface jobTitle to runtime config so tools like `collaborate route`
+    # can score peer fitness by job title match (e.g. "reply to customer in
+    # Chinese" → Frontdesk/"Customer Support" wins). Without this, the
+    # only role signal at runtime is the trust tier (Admin/Staff/Member),
+    # which is too coarse to distinguish peers.
+    if a.jobTitle != "":
+      entry["job_title"] = %a.jobTitle
     # Effective skills: uses ∪ practices.skills ∪ team.competencies.skills,
     # with framework tool names filtered out. Fallback to raw `uses` when
     # the resolver hasn't run yet (older code paths).

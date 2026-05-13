@@ -208,6 +208,7 @@ method description*(t: CollaborateTool): string =
     lines.add("Available peer agents (pick by exact name; pass as a JSON array):")
     for a in t.agents:
       var bits: seq[string] = @[]
+      if a.job_title.len > 0: bits.add("\"" & a.job_title & "\"")
       if a.role.isSome and a.role.get().len > 0: bits.add("role: " & a.role.get())
       if a.skills.len > 0: bits.add("skills: " & a.skills.join(", "))
       let detail = if bits.len > 0: " — " & bits.join(" · ") else: ""
@@ -1098,12 +1099,13 @@ proc scoreCandidate(t: CollaborateTool, ac: NamedAgentConfig,
   ## roleBias is added (small +/- for Admin/Member tier).
   result.name = ac.name
   result.role = if ac.role.isSome: ac.role.get() else: ""
-  # NamedAgentConfig has no `jobTitle` field at runtime (that's a
-  # ClawAgentSpec field, captured at .nims compile time and projected
-  # into BASE.json). The closest live signal we have is `role` —
-  # treat it as the runtime stand-in for jobTitle. (Future: surface
-  # jobTitle on NamedAgentConfig too if route-matching warrants it.)
-  let titleTok = tokenize(result.role)
+  # NamedAgentConfig now surfaces `job_title` (set from the DSL `jobTitle`
+  # field on the agent block). Score against jobTitle PLUS role: jobTitle
+  # is what they DO ("Customer Support", "Performance Analyst"); role is
+  # the trust tier (Admin/Staff). Both are weak-evidence keyword signals
+  # for routing. Concatenating them maximises substring/token overlap
+  # with task vocabulary.
+  let titleTok = tokenize(ac.job_title & " " & result.role)
   let skillTok = tokenize(ac.skills.join(" "))
   let practiceTok = tokenize(ac.practices.join(" "))
   let soulTok =
