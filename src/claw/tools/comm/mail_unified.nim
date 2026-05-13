@@ -44,7 +44,13 @@ proc newMailTool*(workspaceDir, officeDir: string): MailTool =
 method name*(t: MailTool): string = "mail"
 
 method description*(t: MailTool): string =
-  "Inter-agent mail.\n\n" &
+  "ASYNC inter-agent message (file-persisted). Drop a note in another " &
+  "agent's mailbox; they read it on their next heartbeat. Use when you " &
+  "want to inform a peer without blocking your own turn. For other " &
+  "comm needs:\n" &
+  "  • respond to current partner       → use `reply`\n" &
+  "  • SYNC task that returns a result  → use `delegate` (waits for reply)\n" &
+  "  • bridge guest ↔ internal staff    → use `forward`\n\n" &
   "Actions:\n" &
   "  send    — deliver a mail to another agent's mailbox " &
   "(requires recipient, subject, body)\n" &

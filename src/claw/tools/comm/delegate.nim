@@ -43,9 +43,13 @@ method description*(t: DelegateTool): string =
   ## skill name, not a hallucinated one). Include each peer's
   ## jobTitle + skills so the LLM has enough context to route.
   var lines: seq[string] = @[
-    "Delegate a sub-task to a peer agent in this company. Use when " &
-    "the task requires a tool or expertise that you don't have but a " &
-    "peer does — the peer answers, you relay."]
+    "SYNCHRONOUSLY hand a task to a peer agent and WAIT for their " &
+    "result. Use when you need someone else's expertise to complete YOUR " &
+    "current turn. For other comm needs:\n" &
+    "  • respond to current partner   → use `reply`\n" &
+    "  • async note (no return value) → use `mail`\n" &
+    "  • bridge guest ↔ internal      → use `forward`\n" &
+    "  • orchestrate MULTIPLE peers   → use `collaborate` (fan_out / pipeline)"]
   if t.agents.len > 0:
     lines.add("")
     lines.add("Available peer agents (pick by exact name):")

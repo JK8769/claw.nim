@@ -223,7 +223,12 @@ proc buildOptionsCard(prefix: string, options: seq[string]): string =
 method name*(t: ReplyTool): string = "reply"
 
 method description*(t: ReplyTool): string =
-  "Send a message to the current conversation partner.\n\n" &
+  "Send a message to the partner you're talking to RIGHT NOW (current " &
+  "channel, current conversation). Use 99% of the time for normal " &
+  "responses. For other comm needs:\n" &
+  "  • async note to a peer agent     → use `mail`\n" &
+  "  • hand a TASK to a peer agent    → use `delegate` (returns result)\n" &
+  "  • bridge guest ↔ internal staff  → use `forward`\n\n" &
   "Actions:\n" &
   "  final     — terminal reply for the turn. For long tasks: TL;DR + " &
   "key findings + decisions, plus three explicit numbered next-step " &

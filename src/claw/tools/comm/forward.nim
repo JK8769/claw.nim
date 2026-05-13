@@ -218,7 +218,14 @@ proc checkAndRecordRateLimit(t: ForwardTool, st: var ForwardState, key: string, 
 method name*(t: ForwardTool): string = "forward"
 
 method description*(t: ForwardTool): string =
-  "Forward a message between an internal user and an external user through an internal agent. This tool maintains a small routing memory so an agent can reply back to the last guest."
+  "Bridge a message between an EXTERNAL user (guest/customer) and " &
+  "INTERNAL staff. Specialized routing — most agents never need this. " &
+  "Use when you're a frontdesk-shaped agent relaying between a customer " &
+  "and a back-office colleague. Maintains a small routing memory so you " &
+  "can reply back to the last guest. For other comm needs:\n" &
+  "  • respond on current channel      → use `reply`\n" &
+  "  • async note to a peer agent      → use `mail`\n" &
+  "  • SYNC task to a peer agent       → use `delegate`"
 
 method parameters*(t: ForwardTool): Table[string, JsonNode] =
   {
