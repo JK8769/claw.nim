@@ -7,7 +7,7 @@
 ##   1. Edit this BASE.nims to customize agent personas, channels, etc.
 ##   2. Set required env vars in `.env` (see vendor/<your-vendor>/README.md)
 ##   3. Pick your inverter brand(s):
-##        skill "vendor/sungrow"      # for SunGrow inverters
+##        skill "sungrow"             # for SunGrow inverters
 ##        skill "vendor/huawei"       # for Huawei FusionSolar (when shipped)
 ##        skill "vendor/goodwe"       # for GoodWe (when shipped)
 ##      Multiple vendors can coexist — the fleet adapter routes per-plant.
@@ -92,31 +92,26 @@ skill "monthly-report"
 skill "customer-onboarding"
 skill "alarm-response"
 
-# ── Vendor implementations (one or more) ─────────────────────
-# Each vendor is its own skill at workspace/skills/vendor-<name>/.
-# The solar adapter routes per-plant queries to the right one
-# automatically. Multiple vendors can coexist. The shipped
-# `vendor-sungrow` is a contract-conformant STUB returning mock
-# data — replace its src/sungrow.nim with a real implementation
-# (see workspace/skills/vendor-sungrow/README.md) for production.
-skill "vendor-sungrow"
+# ── Equipment vendors (one or more) ──────────────────────────
+# Each equipment vendor is its own skill living at
+# vendor/equipment/<name>/ in this template (resolver scans
+# templates' vendor/<class>/ for bare-name skills). The solar
+# adapter routes per-plant queries to the right vendor automatically.
+# Multiple vendors can coexist. The shipped `sungrow` is a
+# contract-conformant STUB returning mock data — replace its
+# src/sungrow.nim with a real implementation (see
+# vendor/equipment/sungrow/README.md) for production.
+skill "sungrow"
+
+# Example multi-vendor fleet:
+#   skill "sungrow"
+#   skill "huawei"   # (when added to vendor/equipment/huawei/)
+#   skill "goodwe"   # (when added to vendor/equipment/goodwe/)
 
 # ── Distribution skills (L2 opt-in) ──────────────────────────
 # Optional skills shipped with claw distribution. Uncomment to install:
 #   skill "anygen"          # AI-powered content generation (slides, docs, diagrams)
 #   skill "doc-parse"       # Document parsing via AnyGen
-
-# ── Inverter vendors (L1 — defined in this template's vendor/) ─
-# Pick one or more inverter brands that your fleet uses.
-# See vendor/CONTRACT.md for the interface contract and vendor/README.md
-# for the list of currently-shipped implementations.
-#
-# Example single-vendor fleet:
-#   skill "vendor/sungrow"
-#
-# Example multi-vendor fleet:
-#   skill "vendor/sungrow"
-#   skill "vendor/huawei"
 
 # ── Agents ───────────────────────────────────────────────────
 # The template ships with two agents pre-wired: a customer-facing

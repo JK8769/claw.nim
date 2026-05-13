@@ -14,21 +14,9 @@
     "claw":   "claw:<source-company>/<skill-name> — pulls from a local claw company's workspace (legacy / dev-iteration path)"
   },
 
-  "implementations": {
-    "lark-suite": {
-      "description": "Lark Suite (Feishu's productivity platform — docs, sheets, calendar, tasks, drive, wiki, contacts) exposed as a vendor MCP server. Wraps lark-cli. Reached by agents through `channel docs vendor=lark-suite op=create ...` etc. The MESSAGING half of Lark/Feishu (chat, react, threading) is a separate concern, in-binary at channels/feishu.nim.",
-      "source": "bundled",
-      "status": "reference",
-      "env_required": ["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
-      "useful_for_templates": [
-        "solar-power-station",
-        "research-team",
-        "customer-support",
-        "marketing"
-      ],
-      "notes": "Bundled inline at res/distribution/skills/lark-suite/; the resolver discovers bare `skill \"lark-suite\"` names there. Agents reach individual ops via the unified `channel` tool — the vendor name in the agent call is `lark-suite` (matches skill name), distinct from the channel-vendor `feishu` (messaging)."
-    },
+  "_note_channel_companions": "lark-suite + nkn-suite moved out of distribution to res/channels/skills/. They're framework-tier (ship with the framework, not opt-in third-party). The channel companion-skill auto-install in res/channels.json's `companion_skills` field handles their install when the parent channel is declared.",
 
+  "implementations": {
     "anygen": {
       "description": "AI-powered content creation suite — slides/PPT, documents, diagrams, websites, data visualizations, research reports, storybooks, financial analysis, images. Submitter-driven (returns task_id for async fetch).",
       "source": "github:AnyGenIO/anygen-suite-skill/anygen-suite",

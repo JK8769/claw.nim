@@ -1644,10 +1644,18 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
   # Non-foundation bare names no longer have a bundled source — users must
   # use `github:`/`claw:` schemes for anything beyond the foundation set.
   if bundledLocal.len == 0:
-    # Bare-name skill resolution. Two bundled locations, foundation first
-    # (framework-essential) then distribution (cross-template opt-in
-    # productivity skills like lark-suite, anygen-when-bundled, etc.).
-    let searchDirs = ["foundation", "distribution" / "skills"]
+    # Bare-name skill resolution. Three bundled locations, in order:
+    #   foundation/        framework-essential auto-mirrored skills
+    #   channels/skills/   framework-shipped channel companion skills
+    #                      (lark-suite, nkn-suite — installed when the
+    #                       parent channel is declared, via channels.json
+    #                       companion_skills)
+    #   distribution/skills/  back-compat for any pre-existing distribution-
+    #                         tier inline skills (anygen, doc-parse use
+    #                         github sources via the registry)
+    let searchDirs = ["foundation",
+                      "channels" / "skills",
+                      "distribution" / "skills"]
     for sub in searchDirs:
       bundledLocal = getCurrentDir() / "res" / sub / leafName
       if dirExists(bundledLocal): break
@@ -1661,6 +1669,35 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
           bundledLocal = candidate
           break
       if dirExists(bundledLocal): break
+
+    # Fourth fallback: scan templates' vendor/<class>/<leaf>/ for
+    # template-bundled equipment vendors. Each template ships its own
+    # vendor implementations under vendor/<class>/<leaf>/ (e.g.
+    # solar-power-station/vendor/equipment/sungrow). Skill name in
+    # BASE.nims stays flat (`skill "sungrow"`); the resolver scans the
+    # known vendor classes to find a matching leaf.
+    if bundledLocal.len == 0:
+      var templateRoot = getCurrentDir() / "res" / "templates"
+      if not dirExists(templateRoot):
+        var cur = getCurrentDir()
+        for _ in 0..6:
+          let up = cur.parentDir()
+          if up == cur: break
+          cur = up
+          let candidate = cur / "res" / "templates"
+          if dirExists(candidate):
+            templateRoot = candidate; break
+      if dirExists(templateRoot):
+        for tplKind, tplPath in walkDir(templateRoot):
+          if tplKind != pcDir: continue
+          let vendorDir = tplPath / "vendor"
+          if not dirExists(vendorDir): continue
+          for clsKind, clsPath in walkDir(vendorDir):
+            if clsKind != pcDir: continue
+            let candidate = clsPath / leafName
+            if dirExists(candidate):
+              bundledLocal = candidate; break
+          if bundledLocal.len > 0: break
 
   # Consult res/distribution/registry.json. For github:-sourced entries,
   # this picks up the source automatically when the operator wrote a bare

@@ -49,8 +49,8 @@ installs both vendors:
 
 ```nims
 # BASE.nims
-skill "vendor/sungrow"
-skill "vendor/huawei"
+skill "sungrow"   # equipment vendor at vendor/equipment/sungrow/
+skill "huawei"    # equipment vendor at vendor/equipment/huawei/
 ```
 
 The solar adapter discovers plants from both APIs at startup,
