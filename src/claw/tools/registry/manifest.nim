@@ -106,20 +106,27 @@ const AllTools*: seq[ToolSpec] = @[
                           "usps", "dhl", "track", "archive", "MAILBOX"],
        domain = "comm",
        default = true, heartbeatSafe = true, category = "comm"),
-  # Channel — vendor-level transport navigator (read-only). chat / mail
-  # consult capabilities here for format-promotion decisions; no hardcoded
-  # vendor branches in protocol layers. Bound to live channel manager at
-  # gateway boot.
+  # Channel — vendor-level transport navigator + vendor-feature gateway
+  # + channel-admin surface. chat / mail consult capabilities here for
+  # format-promotion decisions; no hardcoded vendor branches in protocol
+  # layers. Bound to live channel manager at gateway boot.
   spec(name = "channel",
-       description = "channel transport navigator: list enabled vendors and " &
-                     "their feature matrices (action=list|capabilities). " &
-                     "Read-only. For routing to a recipient, use social. " &
-                     "For sending, use chat / mail.",
+       description = "channel transport navigator + vendor-feature gateway " &
+                     "+ admin (action=list|capabilities|docs|sheets|calendar|" &
+                     "tasks|add_app). list/capabilities are read-only. " &
+                     "docs/sheets/calendar/tasks dispatch to the named " &
+                     "vendor's mcp_<vendor>_<action>_<op> tool. add_app is " &
+                     "SuperAdmin-only — registers a new vendor app (today: " &
+                     "feishu; folded in from set_api_key + feishu_add_app). " &
+                     "For routing to a recipient, use social. For sending, " &
+                     "use chat / mail.",
        tags = @["comm", "channel", "transport", "core"], domain = "comm",
        searchKeywords = @["channel list", "channel capabilities",
                           "vendor list", "vendor features", "transport",
                           "feishu", "telegram", "discord", "nmobile",
                           "max length", "supports markdown",
+                          "add app", "register app", "channel admin",
+                          "docs", "sheets", "calendar", "tasks",
                           "supports card", "supports file"],
        default = true, heartbeatSafe = true, category = "messaging"),
   spec(name = "delegate",
@@ -357,10 +364,8 @@ const AllTools*: seq[ToolSpec] = @[
        domain = "payment",
        default = false, heartbeatSafe = false, externalAllowed = false,
        category = "finance"),
-  spec(name = "feishu_add_app",
-       description = "register new feishu/lark app (id, secret, route to agent) — SuperAdmin only",
-       tags = @["admin", "channels", "feishu"], domain = "admin",
-       default = false, heartbeatSafe = false, category = "vendor"),
+  # (feishu_add_app folded into `channel action=add_app vendor=feishu
+  #  app_id=… app_secret=… agent=…` — SuperAdmin gate preserved.)
 
   # (Customer onboarding — create_customer_invite, my_customers,
   # redeem_invite — all collapsed into the unified `social` tool above

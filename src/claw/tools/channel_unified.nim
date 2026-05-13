@@ -20,6 +20,7 @@ import ./types
 import ./spec
 import ./registry
 import ./vendor_dispatch
+import ./admin/feishu_add_app  # runFeishuAddApp — channel.add_app vendor=feishu
 import ../channels/base as channel_base
 import ../channels/access
 
@@ -40,7 +41,10 @@ const ToolSpec* = spec(
 )
 
 type
-  ChannelTool* = ref object of Tool
+  ChannelTool* = ref object of ContextualTool
+    ## ContextualTool gives us t.graph + t.logicalUserID + t.role —
+    ## needed for the SuperAdmin gate on channel admin actions like
+    ## add_app (folded in from the former feishu_add_app tool).
     reg*: ToolRegistry  ## live registry — scanned per-call to find
                          ## vendor MCP tools (`mcp_<vendor>_<op>`) for
                          ## the docs / sheets / calendar / tasks actions.
@@ -73,16 +77,19 @@ method parameters*(t: ChannelTool): Table[string, JsonNode] =
       "action": {
         "type": "string",
         "enum": ["list", "capabilities",
-                 "docs", "sheets", "calendar", "tasks"],
+                 "docs", "sheets", "calendar", "tasks",
+                 "add_app"],
         "description": "Operation to perform. list/capabilities are " &
                        "read-only. docs/sheets/calendar/tasks dispatch " &
-                       "to the named vendor's mcp_<vendor>_<action>_<op> tool."
+                       "to the named vendor's mcp_<vendor>_<action>_<op> tool. " &
+                       "add_app is admin (SuperAdmin only) — registers a new " &
+                       "vendor app with this company."
       },
       "vendor": {
         "type": "string",
         "description": "Vendor name (feishu, telegram, discord, nmobile, " &
                        "whatsapp, dingtalk, qq, maixcam, zen). Required for " &
-                       "capabilities and for all vendor-feature actions."
+                       "capabilities, vendor-feature actions, and add_app."
       },
       "op": {
         "type": "string",
@@ -95,6 +102,21 @@ method parameters*(t: ChannelTool): Table[string, JsonNode] =
         "description": "docs/sheets/calendar/tasks — args passed to the " &
                        "vendor's tool. Shape is vendor-specific; consult " &
                        "the vendor skill's README."
+      },
+      "app_id": {
+        "type": "string",
+        "description": "add_app + vendor=feishu — Feishu App ID (cli_…) from " &
+                       "the developer console."
+      },
+      "app_secret": {
+        "type": "string",
+        "description": "add_app + vendor=feishu — Feishu App Secret. Treated " &
+                       "as sensitive; never echoed back."
+      },
+      "agent": {
+        "type": "string",
+        "description": "add_app + vendor=feishu — name of the agent that " &
+                       "should receive inbound messages on this app."
       }
     },
     "required": %["action"]
@@ -169,6 +191,32 @@ proc doVendorFeature(t: ChannelTool, action: string,
       if k notin ["action", "vendor", "op", "args"]: fwd[k] = v
   return await dispatchToVendor(t.reg, vendor, contractTool, fwd)
 
+# ── add_app: vendor-aware admin (SuperAdmin gated by handler) ──────
+
+proc doAddApp(t: ChannelTool, args: Table[string, JsonNode]): string =
+  ## Register a new vendor app with this company. Vendor-specific
+  ## handler — currently only feishu is wired (folded in from the
+  ## former feishu_add_app tool). Future: telegram bot setup, discord
+  ## bot setup, etc.
+  if not args.hasKey("vendor") or args["vendor"].getStr().len == 0:
+    return "Error: vendor is required for add_app."
+  let vendor = args["vendor"].getStr().toLowerAscii()
+  case vendor
+  of "feishu":
+    let appID = if args.hasKey("app_id"): args["app_id"].getStr().strip()
+                else: ""
+    let appSecret = if args.hasKey("app_secret"): args["app_secret"].getStr().strip()
+                    else: ""
+    let agentName = if args.hasKey("agent"): args["agent"].getStr().strip()
+                    else: ""
+    if appID.len == 0 or appSecret.len == 0 or agentName.len == 0:
+      return "Error: add_app vendor=feishu requires app_id, app_secret, and agent."
+    return runFeishuAddApp(t.graph, t.role, t.logicalUserID,
+                            appID, appSecret, agentName)
+  else:
+    return "Error: add_app not yet wired for vendor='" & vendor & "'. " &
+           "Currently supported: feishu."
+
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: ChannelTool, args: Table[string, JsonNode]): Future[string] {.async.} =
@@ -183,5 +231,7 @@ method execute*(t: ChannelTool, args: Table[string, JsonNode]): Future[string] {
     return doCapabilities(vendor)
   of "docs", "sheets", "calendar", "tasks":
     return await doVendorFeature(t, action, args)
+  of "add_app":
+    return doAddApp(t, args)
   else:
     return """{"error":"unknown_action","action":"""" & action & """"}"""

@@ -28,8 +28,10 @@ import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
 import ../tools/dev/git
 import ../tools/sched/cron
-import ../tools/admin/feishu_add_app
-# (config_tools/set_api_key folded into provider action=set_key)
+# (admin/* tools folded into other tools:
+#   set_api_key   → provider action=set_key
+#   feishu_add_app→ channel action=add_app vendor=feishu
+#  feishu_add_app's runFeishuAddApp proc is imported by channel_unified)
 import ../tools/provider_unified
 import ../tools/model_unified
 import ../tools/capability_unified
@@ -3032,9 +3034,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newCapabilityTool(),
             ["diagnostics", "models", "capability", "core"],
             "find list has model capability tag vision tool-use reasoning")
-  # SuperAdmin-only: chat-driven Feishu app registration.
-  regTagged(newFeishuAddAppTool(), ["admin", "channels", "feishu"],
-            "register new feishu lark app id secret route agent")
+  # feishu_add_app folded into `channel action=add_app vendor=feishu
+  # app_id=cli_… app_secret=… agent=…`. Trust gate (SuperAdmin) lives
+  # in runFeishuAddApp; channel_unified's add_app handler dispatches.
   # (Customer onboarding + my-customers + graph-query + update-contact +
   # redeem-invite all collapsed into the unified `social` tool, registered
   # below near the contextBuilder creation site since `social` needs the
