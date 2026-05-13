@@ -136,6 +136,18 @@ proc newContextBuilder*(workspace: string, projectWorkspace: string, agents: seq
 proc setToolsRegistry*(cb: ContextBuilder, registry: ToolRegistry) =
   cb.tools = registry
 
+proc findTrustRole*(trust: TrustConfig, roleName: string): Option[TrustRoleConfig] =
+  ## Lookup a role's band config by name (case-insensitive). None if unset.
+  let want = roleName.toLowerAscii()
+  for r in trust.roles:
+    if r.name.toLowerAscii() == want: return some(r)
+  return none(TrustRoleConfig)
+
+proc clampTrust*(trust: int, role: TrustRoleConfig): int =
+  ## Clamp a raw trust value into a role's declared band. Used at config-
+  ## load time and whenever something tries to nudge trust within-band.
+  max(role.trustMin, min(role.trustMax, trust))
+
 proc resolveRequesterRole*(cb: ContextBuilder, userID, recipientID, channel: string): string =
   ## Companion to resolveRequesterTrust — returns the requester's role name
   ## (lower-case, matching trust-DSL role keys) for per-turn dispatch-time
@@ -199,23 +211,23 @@ proc resolveRequesterTrust*(cb: ContextBuilder, userID, recipientID, channel: st
     let ent = cb.graph.entities[entityID]
     if ent.role.toLowerAscii in ["boss", "master", "admin", "superadmin"]:
       return 100
+    # If the role is declared in the company's `trust:` block, return its
+    # band ceiling. Lets operators tune Staff/Customer/etc. trust without
+    # touching framework code.
+    let roleCfg = findTrustRole(cb.trust, ent.role)
+    if roleCfg.isSome:
+      return roleCfg.get.trustMax
+    # Internal-tier entities (AI agents like Devon, named services) get a
+    # sensible default when no role config is declared. 70 is the Staff
+    # tier — enough to store private memory + invoke knowledge/memory
+    # tools, without claiming SuperAdmin privilege.
+    if ent.kind in {ekAI, ekService}:
+      return 70
 
   # Legacy Relationship fallback
   if cb.guests.hasKey(userID):
     return cb.guests[userID].trustLevel
   return 10
-
-proc findTrustRole*(trust: TrustConfig, roleName: string): Option[TrustRoleConfig] =
-  ## Lookup a role's band config by name (case-insensitive). None if unset.
-  let want = roleName.toLowerAscii()
-  for r in trust.roles:
-    if r.name.toLowerAscii() == want: return some(r)
-  return none(TrustRoleConfig)
-
-proc clampTrust*(trust: int, role: TrustRoleConfig): int =
-  ## Clamp a raw trust value into a role's declared band. Used at config-
-  ## load time and whenever something tries to nudge trust within-band.
-  max(role.trustMin, min(role.trustMax, trust))
 
 proc teamsForAgent*(cb: ContextBuilder, agentName: string): seq[TeamInfo] =
   ## Filter cb.teams to those where the agent is a member (case-insensitive).
