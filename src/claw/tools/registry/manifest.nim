@@ -339,10 +339,9 @@ const AllTools*: seq[ToolSpec] = @[
        default = false, heartbeatSafe = false, category = "hardware"),
 
   # Vendor / channel-specific
-  spec(name = "lark_cli",
-       description = "Feishu/Lark docs sheets calendar tasks via lark-cli",
-       tags = @["feishu", "lark", "docs", "calendar", "platform"], domain = "comm",
-       default = false, heartbeatSafe = false, category = "vendor"),
+  # (lark_cli is no longer agent-facing — kept as a Nim API for the
+  #  framework's auto-emit Lark Doc upload. Feishu-unique features
+  #  for agents will land via `channel` vendor-action dispatch.)
   # (pushover folded into channels/pushover.nim — agents reach it via
   #  `chat send vendor=pushover` like any other channel vendor)
   spec(name = "feishu_add_app",

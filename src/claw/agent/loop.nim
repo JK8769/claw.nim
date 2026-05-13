@@ -3117,11 +3117,15 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   chatTool.setSearchHint("send reply forward channel-agnostic chat")
   toolsRegistry.register(chatTool)
 
+  # `larkTool` is constructed (Feishu vendor implementation surface)
+  # but NOT registered in the agent-facing tool registry. It exposes
+  # createDocViaBot as a Nim API used by the framework's auto-emit
+  # feature (large write_file results uploaded as Lark Docs). Agent-
+  # facing access to Feishu-unique features (docs / sheets / calendar /
+  # tasks) will be exposed via `channel` vendor-action dispatch when
+  # that's built — agents shouldn't see vendor implementation surface
+  # directly.
   let larkTool = newLarkCliTool()
-  if larkTool.larkCliBin.len > 0:
-    larkTool.setTags(@["feishu", "lark", "docs", "calendar", "platform"])
-    larkTool.setSearchHint("feishu lark docs sheets calendar tasks")
-    toolsRegistry.register(larkTool)
 
   # --- Discovery & meta ---
   let findToolInstance = newFindTools(toolsRegistry)
