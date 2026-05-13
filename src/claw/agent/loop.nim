@@ -43,7 +43,6 @@ import ../tools/visual/screenshot
 import ../tools/hardware/hardware_unified
 import ../tools/mcp/mcp_unified
 import ../tools/skill/skill_unified
-import ../tools/task/tasks_unified
 import ../services/scheduler as cron_service
 import ../lib/curl as curly
 import ../lib/malebolgia
@@ -3003,10 +3002,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # create_customer_invite + invite/redeem) registered after
   # contextBuilder is created — see below.
 
-  # --- Tasks & orchestration (unified) ---
-  regTagged(newNimclawTool(workspace), ["orchestration", "automation"], "assign claim submit tasks on the platform task board")
-
   # (edit + append moved into `file` tool above — actions edit/append)
+  # (the former standalone `task` tool — assign/claim/submit on the team
+  #  TASKS.md board — folded into `collaborate` as its late-binding
+  #  actions; the pool is just another shape of multi-agent coordination)
 
   # --- Admin & config ---
   regTagged(newUnifiedMcpTool(toolsRegistry, officeDir), ["admin", "mcp", "skills"], "forge persist purge MCP tool servers skills")

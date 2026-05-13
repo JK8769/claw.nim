@@ -1,14 +1,20 @@
 ## collaborate — multi-agent orchestration (the navigator) of the
-## social/delegate/collaborate trio.
+## social/delegate/collaborate quartet.
 ##
 ##   social     — the WORLD GRAPH (the sea): who exists, what they know,
 ##                trust + identifiers + roles. Read/write the relationship
 ##                map.
-##   delegate   — peer task HANDOFF (the ship): hand ONE task to ONE peer
-##                synchronously (or defer to her todo queue). Returns her
-##                reply.
-##   collaborate — multi-agent ORCHESTRATION (the navigator): chart a
-##                course across MULTIPLE delegates toward a single goal.
+##   delegate   — peer task HANDOFF (the ship): hand ONE task to ONE
+##                NAMED peer synchronously (or defer to her todo queue).
+##                Eager binding 1:1. Returns her reply.
+##   collaborate — multi-agent ORCHESTRATION (the navigator). Two binding
+##                strategies in one tool:
+##                  • EAGER (push to named): fan_out / pipeline /
+##                    consensus / route — caller picks the peers.
+##                  • LATE (post to pool):  assign / claim / submit —
+##                    caller posts to a TEAM board; whoever's
+##                    qualified pulls. State machine: To Do → In
+##                    Progress → Completed.
 ##                Same recursion as `capability action=invoke` over LLM
 ##                models: a single tool call coordinates many specialist
 ##                calls under the hood.
@@ -103,7 +109,7 @@
 ##        default = true, heartbeatSafe = false, category = "comm"),
 
 import std/[json, tables, strutils, options, asyncdispatch, strformat,
-              algorithm, sets]
+              algorithm, sets, os, times]
 import ./types
 import ./spec
 import ../config
@@ -112,12 +118,11 @@ import ./capability_unified
 
 const ToolSpec* = spec(
   name = "collaborate",
-  description = "Multi-agent orchestration — fan a task out to N peers in " &
-                "parallel, pipeline them sequentially, synthesize a single " &
-                "answer (consensus), or pick the best peer for a task " &
-                "(route, dry-run). Pipeline supports per-stage timeouts and " &
-                "on_error policy. Each step uses the delegate primitive " &
-                "under the hood.",
+  description = "Multi-agent orchestration. EAGER (push to named peers): " &
+                "fan_out | pipeline | consensus | route. LATE (post to a " &
+                "team pool board, anyone qualified pulls): assign | claim | " &
+                "submit. Eager actions use delegate under the hood; late " &
+                "actions mutate <workspace>/collaboration/<team|lab>/TASKS.md.",
   tags = @["agent", "delegation", "orchestration", "core"],
   searchKeywords = @["fan-out", "fanout", "parallel", "pipeline",
                       "orchestrate", "coordinate", "multi-agent",
@@ -125,7 +130,11 @@ const ToolSpec* = spec(
                       "ensemble", "scatter-gather", "navigator",
                       "consensus", "synthesize", "vote", "reduce",
                       "route", "pick", "recommend", "best-fit",
-                      "on-error", "skip", "retry", "stage-timeout"],
+                      "on-error", "skip", "retry", "stage-timeout",
+                      "assign", "claim", "submit", "post", "pickup",
+                      "complete", "finish", "task board", "pool",
+                      "queue", "to do", "in progress", "completed",
+                      "team board", "lab board"],
   domain = "comm",
   default = true,
   heartbeatSafe = false,  # makes N parallel LLM calls — never on the heartbeat
@@ -183,11 +192,9 @@ method description*(t: CollaborateTool): string =
   ## list.
   var lines: seq[string] = @[
     "Multi-agent orchestration — the navigator of the social/delegate/" &
-    "collaborate trio. Fan a task out to N agents in parallel, or pipeline " &
-    "through them sequentially. Each step uses delegate under the hood, " &
-    "which uses social for peer identity + trust.",
+    "collaborate quartet. Two binding strategies:",
     "",
-    "Actions:",
+    "EAGER actions (push to NAMED peers — caller picks who):",
     "  fan_out   — dispatch the SAME task to N agents in parallel; collect " &
                   "all replies (or partial set if any timeout). Use for " &
                   "diverse perspectives, parallel research, or comparing " &
@@ -202,6 +209,17 @@ method description*(t: CollaborateTool): string =
     "  route     — DRY-RUN: pick the best peer for a task by scoring " &
                   "role/skills/practices keyword overlap. Returns a " &
                   "recommendation with reasoning; you call delegate yourself.",
+    "",
+    "LATE actions (post to TEAM POOL board — anyone qualified pulls):",
+    "  assign    — append a task to the team's TASKS.md under '🔴 To Do'. " &
+                  "Requires task. Optional team (default 'default_squad') " &
+                  "or lab (overrides team).",
+    "  claim     — match a To Do item by substring and move it to " &
+                  "'🟡 In Progress' tagged with your name. Requires " &
+                  "task_query. Same team/lab options as assign.",
+    "  submit    — match an In Progress item and move it to '🟢 Completed'. " &
+                  "Requires task_query. Optional briefing writes a " &
+                  "<team>/briefings/briefing_<ts>_<agent>.md.",
   ]
   if t.agents.len > 0:
     lines.add("")
@@ -242,10 +260,14 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
     "properties": %*{
       "action": {
         "type": "string",
-        "enum": ["fan_out", "pipeline", "consensus", "route"],
+        "enum": ["fan_out", "pipeline", "consensus", "route",
+                 "assign", "claim", "submit"],
         "description": "Orchestration mode. Default 'fan_out' if omitted. " &
-                       "consensus = fan_out + LLM synthesis. route = pick " &
-                       "best peer by skills/role match (dry-run, no dispatch)."
+                       "EAGER: fan_out (parallel) | pipeline (sequential) | " &
+                       "consensus (fan_out + LLM synthesis) | route (pick " &
+                       "best peer, dry-run). LATE/POOL: assign (post to " &
+                       "team board) | claim (move To Do → In Progress) | " &
+                       "submit (In Progress → Completed)."
       },
       "agents": {
         "type": "array",
@@ -263,7 +285,8 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
         "description": "The task/prompt. fan_out & consensus: sent verbatim " &
                        "to every agent. pipeline: original goal threaded " &
                        "through each stage with prior output. route: the " &
-                       "task to score peers against. consensus calls this " &
+                       "task to score peers against. assign: the task line " &
+                       "appended to the team board. consensus calls this " &
                        "'question' but accepts 'task' as a synonym."
       },
       "question": {
@@ -329,6 +352,30 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
         "description": "route only — when true, return full ranked list " &
                        "with each candidate's score breakdown. Default false " &
                        "(top recommendation only)."
+      },
+      "team": {
+        "type": "string",
+        "description": "assign/claim/submit — which team's TASKS.md board " &
+                       "to operate on. Default 'default_squad'. Lab " &
+                       "overrides team."
+      },
+      "lab": {
+        "type": "string",
+        "description": "assign/claim/submit — operate on a lab board " &
+                       "(<workspace>/collaboration/labs/<lab>/TASKS.md) " &
+                       "instead of a team board."
+      },
+      "task_query": {
+        "type": "string",
+        "description": "claim/submit — case-insensitive substring of the " &
+                       "task line to match. First match in the relevant " &
+                       "section wins."
+      },
+      "briefing": {
+        "type": "string",
+        "description": "submit (optional) — accomplishment summary. Saved " &
+                       "as <board>/briefings/briefing_<ts>_<agent>.md when " &
+                       "the briefings dir exists."
       }
     },
     "required": %["action"]
@@ -1273,6 +1320,126 @@ proc doRoute(t: CollaborateTool, args: Table[string, JsonNode]): string =
 # dispatch
 # ---------------------------------------------------------------------------
 
+# ── Pool actions: assign / claim / submit ──────────────────────────
+#
+# Late-binding orchestration over a TASKS.md board. Caller posts
+# (assign), anyone qualified pulls (claim), submitter closes (submit).
+# Distinct from fan_out/pipeline/consensus/route — those are eager
+# binding to NAMED peers; these are post-to-pool with state machine.
+# Folded in from the former standalone `task` tool.
+
+proc getTasksPath(t: CollaborateTool, team, lab: string): string =
+  if lab != "":
+    return t.workspace / "collaboration" / "labs" / lab / "TASKS.md"
+  let teamName = if team == "": "default_squad" else: team
+  return t.workspace / "collaboration" / "teams" / teamName / "TASKS.md"
+
+proc doAssign(t: CollaborateTool, args: Table[string, JsonNode]): string =
+  let task = if args.hasKey("task"): args["task"].getStr() else: ""
+  if task == "": return "Error: 'task' is required for assign"
+  let team = if args.hasKey("team"): args["team"].getStr() else: "default_squad"
+  let lab = if args.hasKey("lab"): args["lab"].getStr() else: ""
+  let path = t.getTasksPath(team, lab)
+  if not fileExists(path): return "Error: Task board not found at " & path
+  try:
+    var lines = readFile(path).splitLines()
+    var inserted = false
+    var newLines: seq[string] = @[]
+    for line in lines:
+      newLines.add(line)
+      if line.contains("## 🔴 To Do"):
+        newLines.add("- [ ] " & task)
+        inserted = true
+    if not inserted:
+      newLines.add("\n## 🔴 To Do")
+      newLines.add("- [ ] " & task)
+    writeFile(path, newLines.join("\n"))
+    return "Task added to " & (if lab != "": lab else: team) & " board."
+  except Exception as e:
+    return "Error: " & e.msg
+
+proc doClaim(t: CollaborateTool, args: Table[string, JsonNode]): string =
+  let query = if args.hasKey("task_query"): args["task_query"].getStr().toLowerAscii() else: ""
+  if query == "": return "Error: 'task_query' is required for claim"
+  let team = if args.hasKey("team"): args["team"].getStr() else: "default_squad"
+  let lab = if args.hasKey("lab"): args["lab"].getStr() else: ""
+  let path = t.getTasksPath(team, lab)
+  if not fileExists(path): return "Error: Task board not found."
+  try:
+    var lines = readFile(path).splitLines()
+    var taskLineIdx = -1
+    var inTodo = false
+    for i, line in lines:
+      if line.contains("## 🔴 To Do"): inTodo = true
+      elif line.startsWith("##"): inTodo = false
+      if inTodo and line.toLowerAscii().contains(query) and line.contains("[ ]"):
+        taskLineIdx = i
+        break
+    if taskLineIdx == -1:
+      return "Error: Task not found in 'To Do' section or already claimed."
+    let taskText = lines[taskLineIdx].replace("- [ ]", "").strip()
+    lines.delete(taskLineIdx)
+    var inProgressIdx = -1
+    for i, line in lines:
+      if line.contains("## 🟡 In Progress"):
+        inProgressIdx = i
+        break
+    let claimedLine = "- [ ] " & taskText & " @" & t.agentName
+    if inProgressIdx != -1:
+      lines.insert(claimedLine, inProgressIdx + 1)
+    else:
+      lines.add("\n## 🟡 In Progress")
+      lines.add(claimedLine)
+    writeFile(path, lines.join("\n"))
+    return "Task claimed: '" & taskText & "'."
+  except Exception as e:
+    return "Error: " & e.msg
+
+proc doSubmit(t: CollaborateTool, args: Table[string, JsonNode]): string =
+  let query = if args.hasKey("task_query"): args["task_query"].getStr().toLowerAscii() else: ""
+  if query == "": return "Error: 'task_query' is required for submit"
+  let briefing = if args.hasKey("briefing"): args["briefing"].getStr() else: ""
+  let team = if args.hasKey("team"): args["team"].getStr() else: "default_squad"
+  let lab = if args.hasKey("lab"): args["lab"].getStr() else: ""
+  let path = t.getTasksPath(team, lab)
+  if not fileExists(path): return "Error: Task board not found."
+  try:
+    var lines = readFile(path).splitLines()
+    var taskLineIdx = -1
+    var inProgress = false
+    for i, line in lines:
+      if line.contains("## 🟡 In Progress"): inProgress = true
+      elif line.startsWith("##") and not line.contains("In Progress"): inProgress = false
+      if inProgress and line.toLowerAscii().contains(query):
+        taskLineIdx = i
+        break
+    if taskLineIdx == -1:
+      return "Error: Task not found in 'In Progress' list."
+    let taskText = lines[taskLineIdx].replace("- [ ]", "").replace("@" & t.agentName, "").strip()
+    lines.delete(taskLineIdx)
+    var completedIdx = -1
+    for i, line in lines:
+      if line.contains("## 🟢 Completed"):
+        completedIdx = i
+        break
+    let completedLine = "- [x] " & taskText
+    if completedIdx != -1:
+      lines.insert(completedLine, completedIdx + 1)
+    else:
+      lines.add("\n## 🟢 Completed")
+      lines.add(completedLine)
+    writeFile(path, lines.join("\n"))
+    if briefing != "":
+      let briefingDir = if lab != "": t.workspace / "collaboration" / "labs" / lab / "briefings"
+                        else: t.workspace / "collaboration" / "teams" / team / "briefings"
+      if dirExists(briefingDir):
+        let bPath = briefingDir / "briefing_" & now().format("yyyyMMdd'_'HHmmss") & "_" & t.agentName.toLowerAscii() & ".md"
+        writeFile(bPath, "# Briefing: " & taskText & "\n\nSubmitted by: " & t.agentName & "\n\n" & briefing)
+        return "Task completed. Briefing saved."
+    return "Task marked as completed."
+  except Exception as e:
+    return "Error: " & e.msg
+
 method execute*(t: CollaborateTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   # Lenient on missing action — defaults to fan_out. Matches social /
   # capability defaulting style; reduces friction for the LLM's first
@@ -1289,6 +1456,13 @@ method execute*(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
     return await doConsensus(t, args)
   of "route", "pick", "recommend":
     return doRoute(t, args)
+  of "assign", "post":
+    return doAssign(t, args)
+  of "claim", "pickup":
+    return doClaim(t, args)
+  of "submit", "complete", "finish":
+    return doSubmit(t, args)
   else:
     return "Error: Unknown action '" & action &
-           "'. Use: fan_out | pipeline | consensus | route"
+           "'. Eager (push to named): fan_out | pipeline | consensus | route. " &
+           "Late (post to pool): assign | claim | submit."

@@ -432,11 +432,10 @@ const AllTools*: seq[ToolSpec] = @[
        domain = "skill",
        default = false, heartbeatSafe = false, category = "skills"),
 
-  # Task board
-  spec(name = "task",
-       description = "assign claim submit tasks on the platform task board",
-       tags = @["orchestration", "automation"], domain = "task",
-       default = false, heartbeatSafe = false, category = "tasks"),
+  # (the former `task` tool — assign/claim/submit — is now `collaborate
+  #  action=assign|claim|submit` (late-binding pool form). The team
+  #  TASKS.md board is just another binding strategy for multi-agent
+  #  coordination, alongside fan_out/pipeline/consensus/route.)
 
   # (set_api_key folded into `provider action=set_key name=… api_key=…`
   #  — provider IS the LLM-credentials manager; key-setting belongs there.)
