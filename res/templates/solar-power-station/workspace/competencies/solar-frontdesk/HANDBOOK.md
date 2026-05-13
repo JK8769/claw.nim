@@ -240,14 +240,14 @@ Never guess. The customer trusts your reply.
 ## Rule 6 — long-running tasks YOU started: follow them through
 
 If you kick off a delegate task that runs >30 seconds, send a
-`reply_progress` checkpoint to the customer so they know you're
+`chat reply ... interim=true` checkpoint to the customer so they know you're
 still working. Pattern:
 
 ```
-[reply_progress] "Checking on that for you (analyst is running
+[chat reply interim=true] "Checking on that for you (analyst is running
                   an analysis, ~30 seconds)…"
 [delegate]       ...
-[reply]          <relayed answer with three next-step options>
+[chat reply]     <relayed answer with three next-step options>
 ```
 
 The customer should never wonder if you're still alive.

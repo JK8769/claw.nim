@@ -66,27 +66,25 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["utility", "core", "meta"], domain = "agent",
        default = true, heartbeatSafe = false, category = "discovery"),
 
-  # Communication (unified)
-  spec(name = "reply",
-       description = "send a message to current conversation partner (action=final|progress; verified_done items require verification field)",
-       tags = @["messaging", "core"], domain = "comm",
-       default = true, heartbeatSafe = true, externalAllowed = true,
-       category = "comm"),
-  # Chat — channel-agnostic protocol verbs (send/reply/forward). Format
-  # selection driven by `channel capabilities`, not hardcoded vendor
-  # branches. Rolling out alongside `reply` during the migration window;
-  # callers will move from `reply action=final` → `chat reply` over
-  # phases 7–8.
+  # Communication
+  # `chat` is the channel-agnostic protocol layer — send/reply/forward
+  # verbs with capability-driven format selection. Replaced the former
+  # `reply` (action=final|progress) and `forward` tools, which were
+  # vendor-aware (hardcoded Feishu branches) and split unnecessarily.
+  # Iteration-budget plan-state lives on `chat reply ... progress=[...]`.
   spec(name = "chat",
        description = "real-time conversational messaging — channel-agnostic " &
                      "protocol verbs (action=send|reply|forward). Capability-" &
                      "driven format selection (text vs card) with no hardcoded " &
-                     "vendor branches. For persistent / async messaging, see mail.",
+                     "vendor branches. Reply accepts optional progress=[items] " &
+                     "+ interim=true for plan-state checkpoints. For " &
+                     "persistent / async messaging, see mail.",
        tags = @["comm", "chat", "messaging", "core"], domain = "comm",
        searchKeywords = @["send message", "chat send", "chat reply",
                           "chat forward", "talk", "respond", "message",
-                          "answer", "reply"],
-       default = false, heartbeatSafe = false, externalAllowed = true,
+                          "answer", "reply", "forward", "progress",
+                          "interim", "checkpoint"],
+       default = true, heartbeatSafe = true, externalAllowed = true,
        category = "comm"),
   spec(name = "mail",
        description = "inter-agent mail (action=send to peers; action=archive your own processed inbox)",
@@ -138,10 +136,7 @@ const AllTools*: seq[ToolSpec] = @[
                            "stage-timeout"],
        domain = "comm",
        default = true, heartbeatSafe = false, category = "comm"),
-  spec(name = "forward", description = "forward messages between channels/identities",
-       tags = @["messaging", "core"], domain = "comm",
-       default = true, heartbeatSafe = true, externalAllowed = true,
-       category = "comm"),
+  # (forward folded into `chat action=forward`)
 
   # Self-management (the verify-triangle agent tools)
   spec(name = "memory",

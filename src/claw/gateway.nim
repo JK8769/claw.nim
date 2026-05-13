@@ -2151,10 +2151,10 @@ proc handleSystemCommand(cfg: ref Config, msg: InboundMessage, al: AgentLoop): F
                 (if eff: "on" else: "off") & "`\n\n")
         report.add("When `on` and the channel renders code blocks " &
                 "(currently Feishu), the framework auto-emits a " &
-                "`reply_progress`-style message after each non-comm " &
-                "tool call, with file paths + code snippets, bash " &
-                "commands, and output excerpts. The agent's own " &
-                "`reply_progress` for findings is then optional " &
+                "`chat reply ... interim=true`-style message after " &
+                "each non-comm tool call, with file paths + code " &
+                "snippets, bash commands, and output excerpts. The " &
+                "agent's own checkpoint for findings is then optional " &
                 "(structural visibility is owned by the framework).")
         return report
       let val = if arg == "reset": "" else: arg

@@ -1,14 +1,13 @@
 # Technical Communication
 
-> **Tool-surface migration (2026-05):** `chat` is now the channel-
-> agnostic protocol layer. Wherever this handbook says `reply`, the
-> equivalent is `chat action=reply text=…`. Wherever it says
-> `reply_progress`, the equivalent is `chat action=reply text=…
-> interim=true progress=[…]`. Both `reply` and `chat` are wired during
-> the migration window — chat is preferred for new code; the discipline
-> below applies identically to either tool surface. The conceptual
-> rules (when to checkpoint, how to phrase, plan-state shape) don't
-> change.
+> **Tool-surface (2026-05):** This handbook uses `chat reply` as the
+> canonical comm verb. `chat reply text="..."` for terminal answers;
+> `chat reply text="..." interim=true [progress=[…]]` for plan
+> announcements and interim checkpoints. Format selection (text vs
+> card) is capability-driven — the chat tool consults `channel
+> capabilities` automatically, so the same call works on every channel.
+> The legacy `reply` and `reply_progress` tools have been removed;
+> their behavior is folded into `chat reply`'s arg surface.
 
 This competency teaches agents to communicate progress on long-running
 work the way a senior teammate would: announce the plan, check in at
@@ -28,16 +27,16 @@ mode), see `EXAMPLES.md` in this directory.
 
 You MUST follow this discipline for any task taking **>3 tool calls**
 or **>30 seconds** of execution. The user CANNOT see your tool
-results — only messages you explicitly send via `reply` /
-`reply_progress`. Silent tool sequence + final wall of text = a
+results — only messages you explicitly send via `chat reply`
+(terminal or interim). Silent tool sequence + final wall of text = a
 discipline FAILURE, not a stylistic choice.
 
 **Hard rule: never go more than 2 consecutive tool calls without a
-`reply_progress` checkpoint.** If you find yourself on the 3rd tool
+`chat reply ... interim=true` checkpoint.** If you find yourself on the 3rd tool
 call in a row without an outbound message, stop and send the
 checkpoint first.
 
-OVERHEAD (use a single `reply` instead): single-tool lookups, yes/no
+OVERHEAD (use a single terminal `chat reply` instead): single-tool lookups, yes/no
 confirmations, short factual answers, routine acknowledgments.
 
 Judgment: would a human teammate send 1 update or 3-5? Match that.
@@ -71,7 +70,7 @@ expensive misdirected work.
 
 ### Phase A — Announce the plan (immediately, before tools)
 
-You MUST send a `reply_progress` BEFORE the first tool of a long
+You MUST send a `chat reply ... interim=true` BEFORE the first tool of a long
 task. Standalone call, no tool, just the plan: 1-3 sentences plus a
 numbered list of steps. A bare "let me look at that" does NOT
 satisfy this rule.
@@ -104,7 +103,7 @@ cleanly, consider `spawn` per analytical step — pattern in
    showing the path + snippet, or the bash command + output. **Don't
    paraphrase it.**
 2. **You own interpretation-checkpointing.** After tool clusters
-   producing findings, send a `reply_progress` with what they MEAN
+   producing findings, send a `chat reply ... interim=true` with what they MEAN
    — analytical insight, decision rationale, pivot reasoning.
 
 Good interpretation checkpoint:
@@ -142,7 +141,7 @@ channel's structured format:**
 Inline markdown is the fallback for content that does NOT match any
 trigger — short prose, single-row results, brief status.
 
-End the task with a single `reply` (not `reply_progress`) that:
+End the task with a single terminal `chat reply` (no `interim`, no `progress`) that:
 
 1. Delivers via the channel-appropriate primitive selected above.
 2. Lists **full file paths** for any files generated, in backticks.
@@ -156,30 +155,30 @@ from the menu.
 
 ---
 
-## Tool selection: reply vs reply_progress
+## Tool selection: terminal vs interim chat reply
 
-| Tool | When to use | Renders as |
+| Form | When to use | Renders as |
 |---|---|---|
-| `reply_progress` | Phase A plan, Phase B checkpoints | Status with `📊 ` prefix |
-| `reply` | Phase C final answer | Normal chat message |
+| `chat reply text="..." interim=true [progress=[…]]` | Phase A plan, Phase B checkpoints | Plain checklist on every channel; richer plan-state card on card-capable channels |
+| `chat reply text="..."` (no interim, no progress) | Phase C terminal answer | Normal chat message; auto-promotes to card if long or rich-markdown |
 
-**Anti-pattern:** sending the final answer via `reply_progress`
-because "we sent the others that way." The conclusion is
-structurally different — switch to `reply` for the ending.
+**Anti-pattern:** sending the final answer with `interim=true` because
+"the others were interim." The conclusion is structurally different —
+omit `interim` and `progress` to mark the ending.
 
 ---
 
 ## Discipline rules
 
 ### TC-1: Announce before executing on long tasks
-Any task taking >3 tool calls or 30 seconds → send a `reply_progress`
+Any task taking >3 tool calls or 30 seconds → send a `chat reply ... interim=true`
 plan announcement BEFORE the first tool call. Numbered list of 2-5
-steps. Goes in `reply_progress`, NOT bundled in assistant content
+steps. Goes in `chat reply ... interim=true`, NOT bundled in assistant content
 alongside a tool call.
 
 ### TC-2: Checkpoint at each meaningful milestone
 After each major tool cluster producing a finding, send a
-`reply_progress` with the concrete finding (number, not summary) and
+`chat reply ... interim=true` with the concrete finding (number, not summary) and
 what's next. **Hard ceiling: never go >2 consecutive tool calls
 without a checkpoint.** A `spawn` whose result contained
 user-relevant numbers is itself a milestone. For a 20-step task: 5-7
@@ -192,7 +191,7 @@ Numbers are auditable; summaries are not.
 
 ### TC-4: Show full file paths
 When you create or write a file, the path goes in the next
-`reply_progress` or `reply` IN BACKTICKS:
+`chat reply` (interim or terminal) IN BACKTICKS:
 ```
 Wrote: `/full/path/output_v14.csv`
 ```
@@ -209,7 +208,7 @@ Multiple-choice is faster than composing the next request.
 
 ### TC-7: For background tasks, skip user-facing comms
 If `session_key` starts with `system:` (heartbeat ticks, system
-events), `reply` and `reply_progress` are framework-disabled. Use
+events), all `chat reply` forms are framework-disabled. Use
 `memory` action=store to persist observations worth carrying forward.
 
 ### TC-8: When in doubt, send the checkpoint
@@ -232,10 +231,10 @@ MCP tasks, file uploads to external services.
 
 1. **Silent execution then dump.** Tool after tool with no
    user-facing output, then a 500-word summary. Hard rule: ≥1
-   `reply_progress` per 2 tool calls.
+   `chat reply ... interim=true` per 2 tool calls.
 2. **Spam-checkpoint per tool call.** User gets bombarded; they
    tune out. Group into milestones.
-3. **Final answer via `reply_progress`.** Switch to `reply`.
+3. **Final answer with `interim=true`.** Drop the `interim` flag (and `progress`) to mark the terminal reply.
 4. **Vague options.** "Let me know if you want anything else" is
    dead weight. Numbered choices.
 5. **Prose summaries instead of structure.** Use markdown tables /

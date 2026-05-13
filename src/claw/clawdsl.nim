@@ -2162,10 +2162,11 @@ proc resolveAgentCapabilities*(s: var ClawSpec, skillsDirs: seq[string],
     # SSoT: derived from the framework manifest (auto-syncs with renames
     # and unifications). The previous hand-maintained const had stale
     # names from before the unifications (`http_request`, `browser_open`,
-    # `playwright`, `learn_skill`, `reply_progress`, `cron`, `shell`,
-    # `forge`, `persist`, `remember`, `subagent`) — granting any of them
-    # silently produced dead references because the runtime registry
-    # only has the post-unification names.
+    # `playwright`, `learn_skill`, `reply_progress`, `reply`, `forward`,
+    # `cron`, `shell`, `forge`, `persist`, `remember`, `subagent`) —
+    # granting any of them silently produced dead references because the
+    # runtime registry only has the post-unification names. (`reply` and
+    # `forward` were folded into `chat` action=reply / action=forward.)
     let builtinTools = manifest.AllTools.mapIt(it.name)
 
     for skillName in effectiveSkills:

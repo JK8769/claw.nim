@@ -20,7 +20,6 @@ requires:
   tools:
     - social
     - chat
-    - reply  # legacy; will be removed once chat fully replaces it
 ---
 
 Workflow for verifying a customer's status and minting an invite

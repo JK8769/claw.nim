@@ -20,7 +20,7 @@ import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
-import ../tools/comm/[reply_unified, mail_unified, chat_unified, delegate, forward, lark, pushover]
+import ../tools/comm/[mail_unified, chat_unified, delegate, lark, pushover]
 import ../tools/channel_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
@@ -198,10 +198,10 @@ type
                                 ## in `runAgentLoop` can send synthetic
                                 ## visibility messages on the agent's
                                 ## behalf without going through a tool.
-    replyTool*: ReplyTool
-                                ## Plan-state lives on reply_progress
-                                ## (was a separate task_list tool, then
-                                ## consolidated). Held here so the
+    chatTool*: ChatTool
+                                ## Plan-state lives on `chat reply`
+                                ## (with optional `progress=[...]`
+                                ## payload). Held here so the
                                 ## dispatch loop can read item counts +
                                 ## recent completion timestamps for
                                 ## plan-derived iteration-budget scaling
@@ -1339,14 +1339,14 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     let usedPct = (iteration * 100) div max(maxIter, 1)
     if usedPct >= IterationSoftThresholdPct and
        maxIter < IterationHardCap and
-       al.replyTool != nil:
-      let list = al.replyTool.items.getOrDefault(opts.sessionKey, @[])
+       al.chatTool != nil:
+      let list = al.chatTool.progressItems.getOrDefault(opts.sessionKey, @[])
       var completedCount = 0
       var unfinishedCount = 0
       for item in list:
         case item.status
-        of tisClaimedDone, tisVerifiedDone: completedCount.inc
-        of tisInProgress, tisPending: unfinishedCount.inc
+        of chat_unified.tisClaimedDone, chat_unified.tisVerifiedDone: completedCount.inc
+        of chat_unified.tisInProgress, chat_unified.tisPending: unfinishedCount.inc
       let loopQuiet = loopDetector.streak < 3
       let productive = unfinishedCount > 0 and completedCount > 0 and loopQuiet
       if productive:
@@ -1365,12 +1365,12 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
     if usedPct >= IterationSoftThresholdPct and not budgetWarningInjected:
       let warning = "[FRAMEWORK NUDGE — iteration budget at " & $usedPct &
         "%] You have used " & $iteration & " of " & $maxIter & " iterations. " &
-        "If your `reply_progress.items` plan has unfinished items AND " &
+        "If your `chat reply ... progress=[…]` plan has unfinished items AND " &
         "you're making progress (completing items, varied tool calls), " &
         "the framework will auto-extend up to " & $IterationHardCap &
-        " total. Otherwise, wrap up NOW with a final `reply` " &
-        "summarizing what you have. Hitting the hard cap forces a " &
-        "synthetic summary with no chance for you to compose your own."
+        " total. Otherwise, wrap up NOW with a terminal `chat reply` " &
+        "(no interim) summarizing what you have. Hitting the hard cap " &
+        "forces a synthetic summary with no chance for you to compose your own."
       let warningMsg = providers_types.Message(
         role: providers_types.RoleSystem, content: warning)
       currentMessages.add(warningMsg)
@@ -1999,20 +1999,19 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         else:
           consecutiveNonCommTools += 1
 
-        # Plan-derived budget scale: when `reply_progress` is called
-        # with the optional `items` array (TodoWrite-style plan), bump
-        # the per-turn iteration cap to `min(N × 8, IterationHardCap)`.
-        # Monotonic — only grows. Folded into reply_progress (was a
-        # separate task_list tool); the agent provides plan state on
-        # the same tool that already announces progress.
-        if tc.name == "reply" and al.replyTool != nil:
-          let list = al.replyTool.items.getOrDefault(opts.sessionKey, @[])
+        # Plan-derived budget scale: when `chat reply` is called with
+        # the optional `progress=[...]` payload (TodoWrite-style plan),
+        # bump the per-turn iteration cap to `min(N × 8, IterationHardCap)`.
+        # Monotonic — only grows. The agent provides plan state on the
+        # same tool that already announces progress.
+        if tc.name == "chat" and al.chatTool != nil:
+          let list = al.chatTool.progressItems.getOrDefault(opts.sessionKey, @[])
           if list.len > 0:
             let scaled = min(list.len * 8, IterationHardCap)
             if scaled > maxIter:
               let oldMax = maxIter
               maxIter = scaled
-              infoCF("agent", "Iteration budget scaled from reply.items", {
+              infoCF("agent", "Iteration budget scaled from chat.progress", {
                 "session": opts.sessionKey,
                 "items": $list.len,
                 "old_max": $oldMax,
@@ -2036,11 +2035,12 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
         let nudge = "[FRAMEWORK NUDGE — TC-2 enforcement] " &
           "You have made " & $consecutiveNonCommTools &
           " consecutive non-communication tool calls without a " &
-          "checkpoint. Per rule TC-2, you MUST send a `reply_progress` " &
-          "with the latest concrete finding from your last tool result " &
-          "BEFORE the next tool call. Do not call another tool until " &
-          "you have sent the checkpoint. The user has been waiting in " &
-          "silence and cannot see what you are doing."
+          "checkpoint. Per rule TC-2, you MUST send a `chat reply " &
+          "text=\"<concrete finding>\" interim=true` with the latest " &
+          "result from your last tool BEFORE the next tool call. Do " &
+          "not call another tool until you have sent the checkpoint. " &
+          "The user has been waiting in silence and cannot see what " &
+          "you are doing."
         let nudgeMsg = providers_types.Message(
           role: providers_types.RoleSystem, content: nudge)
         currentMessages.add(nudgeMsg)
@@ -3069,8 +3069,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
       "The communication-discipline rules in your system prompt have been " &
       "tightened since this session was last active. From this turn forward, " &
       "follow the UPDATED handbook strictly. Specifically: never go more than " &
-      "2 consecutive tool calls without sending a `reply_progress` checkpoint, " &
-      "and end long-task replies with three explicit numbered next-step options. " &
+      "2 consecutive tool calls without sending a `chat reply ... interim=true` " &
+      "checkpoint, and end long-task replies with a terminal `chat reply` " &
+      "(no interim) carrying three explicit numbered next-step options. " &
       "Prior turns in this conversation predate this rule and MUST NOT be " &
       "treated as stylistic precedent."
     let injected = sessionsManager.applyPolicyUpdate(policyHash, policyMarker)
@@ -3089,21 +3090,13 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
             ["admin", "social", "graph", "customer", "invite", "core"],
             "query graph who entity rename contact customers onboard mint redeem invite pin code")
 
-  let rTool = newReplyTool()
-  rTool.setSendCallback(callback)
-  rTool.setTags(@["messaging", "core"])
-  rTool.setSearchHint("reply to current conversation")
-  toolsRegistry.register(rTool)
-
-  # `reply` is the unified output tool — both `action=final` (terminal
-  # answer with Feishu format guards + CardKit promotion) and
-  # `action=progress` (interim status with plan-state items[] for the
-  # framework's iteration budget scaling). Single tool, dual surface.
-
-  # `chat` is the new channel-agnostic protocol layer (send/reply/forward).
-  # Wired alongside reply during the migration window. Format selection is
-  # capability-driven (consults `channel capabilities`) — no hardcoded
-  # `t.channel == "feishu"` branches anywhere in this tool.
+  # `chat` is the channel-agnostic protocol layer (send/reply/forward).
+  # Format selection is capability-driven (consults `channel capabilities`)
+  # — no hardcoded `t.channel == "feishu"` branches anywhere in this
+  # tool. `reply` and `reply_progress` were folded into chat: agent calls
+  # `chat reply text="..." [progress=[...]] [interim=true]`. Plan-state
+  # in `progress=[]` powers iteration-budget scaling (read by the
+  # AgentLoop dispatch loop via al.chatTool.progressItems).
   let chatTool = newChatTool()
   chatTool.setSendCallback(callback)
   chatTool.setTags(@["comm", "chat", "messaging", "core"])
@@ -3115,12 +3108,6 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     larkTool.setTags(@["feishu", "lark", "docs", "calendar", "platform"])
     larkTool.setSearchHint("feishu lark docs sheets calendar tasks")
     toolsRegistry.register(larkTool)
-
-  let fwdTool = newForwardTool(officeDir)
-  fwdTool.setSendCallback(callback)
-  fwdTool.setTags(@["messaging", "core"])
-  fwdTool.setSearchHint("forward message to another chat")
-  toolsRegistry.register(fwdTool)
 
   # --- Discovery & meta ---
   let findToolInstance = newFindTools(toolsRegistry)
@@ -3316,7 +3303,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     memTool: memTool,
     techCommDefault: techCommDefault,
     sendCallback: callback,
-    replyTool: rTool,
+    chatTool: chatTool,
     larkTool: larkTool,
     cancelRequested: initTable[string, bool]()
   )

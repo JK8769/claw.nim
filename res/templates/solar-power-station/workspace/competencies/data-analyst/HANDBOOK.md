@@ -19,7 +19,7 @@ choices, sanity ranges, and terminology to whoever is asking
 ## The core discipline: hypothesis → method → validation → uncertainty
 
 Before any model or analysis, write down (in your reasoning, or
-explicitly in a `reply_progress`):
+explicitly in a `chat reply ... interim=true`):
 
 1. **What's the question?** Phrased as a hypothesis you can test
    or a quantity you can estimate. *"Is plant X under-performing?"*

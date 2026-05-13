@@ -20,8 +20,6 @@ requires:
     - solar
     - file
     - chat
-    - reply  # legacy; chat reply ... interim=true progress=[…] replaces
-             # both reply.action=final and reply_progress in one verb.
 ---
 
 Workflow for producing a customer's monthly plant-performance report.

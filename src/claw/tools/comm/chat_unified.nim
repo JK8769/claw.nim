@@ -73,8 +73,16 @@ type
       ## Wired by the gateway after construction. Same signature as
       ## ReplyTool's callback — pushes OutboundMessage to the bus,
       ## which Manager.dispatchOutbound routes to the right channel.
+    progressItems*: Table[string, seq[TaskItem]]
+      ## Per-session current plan-state. Replaced wholesale on each
+      ## `chat reply` call that includes `progress=[...]`. The agent
+      ## loop reads this for iteration-budget scaling: more items =
+      ## more iterations granted (TodoWrite-style). Mirrors the
+      ## former ReplyTool.items field; migration from reply.action=
+      ## progress kept the shape intact.
 
-proc newChatTool*(): ChatTool = ChatTool()
+proc newChatTool*(): ChatTool =
+  ChatTool(progressItems: initTable[string, seq[TaskItem]]())
 
 proc setSendCallback*(t: ChatTool, callback: types.SendCallback) =
   t.sendCallback = callback
@@ -321,6 +329,9 @@ proc doReply(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async
         arr.add(%*{"content": it.content, "status": $it.status,
                    "verification": it.verification})
       metadata["progress_json"] = $arr
+      # Stash the items per-session so the agent loop can read them
+      # for iteration-budget scaling (more items → more iterations).
+      t.progressItems[t.sessionKey] = items
 
   let capsOpt = getChannelCaps(t.channel)
   let format = if capsOpt.isSome:
