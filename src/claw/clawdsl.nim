@@ -1533,17 +1533,23 @@ proc installSkill(sk: ClawSkill, skillsDir: string, foundationNames: seq[string]
   # Non-foundation bare names no longer have a bundled source — users must
   # use `github:`/`claw:` schemes for anything beyond the foundation set.
   if bundledLocal.len == 0:
-    bundledLocal = getCurrentDir() / "res" / "foundation" / leafName
-    if not dirExists(bundledLocal):
+    # Bare-name skill resolution. Two bundled locations, foundation first
+    # (framework-essential) then distribution (cross-template opt-in
+    # productivity skills like lark-suite, anygen-when-bundled, etc.).
+    let searchDirs = ["foundation", "distribution" / "skills"]
+    for sub in searchDirs:
+      bundledLocal = getCurrentDir() / "res" / sub / leafName
+      if dirExists(bundledLocal): break
       var cur = getCurrentDir()
       for _ in 0..6:
         let up = cur.parentDir()
         if up == cur: break
         cur = up
-        let candidate = cur / "res" / "foundation" / leafName
+        let candidate = cur / "res" / sub / leafName
         if dirExists(candidate):
           bundledLocal = candidate
           break
+      if dirExists(bundledLocal): break
 
   # If already installed, preserve the existing copy by default so an
   # existing company isn't silently broken by a newer bundled version.

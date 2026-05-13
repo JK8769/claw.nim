@@ -1,21 +1,24 @@
-## feishu.nim — vendor MCP server for Lark productivity APIs.
+## lark-suite.nim — vendor MCP server for Lark Suite productivity APIs.
 ##
-## Exposes Lark's request/reply features (docs, sheets, calendar, tasks)
-## as `mcp_feishu_<op>` tools, registered via MCP stdio so the framework's
-## generic registry-scan picks them up at gateway boot. The unified
-## `channel` tool then dispatches `channel docs vendor=feishu op=…` to
-## these tools (mirrors the solar-adapter → mcp_<vendor>_<op> pattern).
+## Exposes Lark Suite's request/reply features (docs, sheets, calendar,
+## tasks, drive, wiki, contacts) as `mcp_lark-suite_<op>` tools,
+## registered via MCP stdio so the framework's generic registry-scan
+## picks them up at gateway boot. The unified `channel` tool then
+## dispatches `channel docs vendor=lark-suite op=…` to these tools
+## (mirrors the solar-adapter → mcp_<vendor>_<op> pattern).
 ##
 ## Each tool is a thin wrapper around a `lark-cli` subprocess call. The
 ## binary lookup falls back through (1) findExe (PATH), (2) the
 ## framework's bundled `channels/bin/lark-cli` if reachable. Config dir
 ## (auth) is the first `lark-cli-<APP_ID>/` directory under
-## `<NIMCLAW_DIR>/channels/feishu/`.
+## `<NIMCLAW_DIR>/channels/feishu/` — shared with the in-binary
+## messaging channel (channels/feishu.nim) so both halves of the
+## Lark/Feishu integration use one set of credentials per app.
 
 import std/[json, os, osproc, streams, strtabs, strutils, options, times]
 import mcp
 
-const ServerName    = "feishu"
+const ServerName    = "lark-suite"
 const ServerVersion = "0.1.0"
 
 # ── lark-cli locator ─────────────────────────────────────────────────
@@ -62,8 +65,9 @@ proc runLarkCli(args: seq[string], timeout = 30): tuple[code: int, output: strin
     return (-1, "lark-cli binary not found (checked PATH + common locations)")
   let configDir = findConfigDir()
   if configDir.len == 0:
-    return (-1, "no configured Feishu app found at " & nimclawDir() &
-                "/channels/feishu/lark-cli-*/")
+    return (-1, "no configured Feishu/Lark app found at " & nimclawDir() &
+                "/channels/feishu/lark-cli-*/ — run `claw channel add " &
+                "feishu <APP_ID> <APP_SECRET>` first")
   let env = newStringTable(modeCaseSensitive)
   for k, v in envPairs(): env[k] = v
   env["LARKSUITE_CLI_CONFIG_DIR"] = configDir
@@ -106,14 +110,14 @@ proc extractDocUrl(output: string): string =
 
 # ── MCP server + tools ───────────────────────────────────────────────
 
-mcpServer(ServerName, ServerVersion):
+let server = mcpServer(ServerName, ServerVersion):
 
   mcpTool:
     proc docs_create(title: string, markdown: string): JsonNode =
       ## Create a new Lark Doc with the given title and markdown body.
       ## Returns {"doc_url": "..."} on success or {"error": "..."} on
       ## failure. The agent reaches this via:
-      ##   channel docs vendor=feishu op=create args={title:…, markdown:…}
+      ##   channel docs vendor=lark-suite op=create args={title:…, markdown:…}
       if title.len == 0:
         return %*{"error": "title is required"}
       if markdown.len == 0:
@@ -141,7 +145,7 @@ mcpServer(ServerName, ServerVersion):
       ## Fetch the content of an existing Lark Doc by URL. Returns
       ## {"content": "..."} on success or {"error": "..."} on failure.
       ## The agent reaches this via:
-      ##   channel docs vendor=feishu op=fetch args={url:…}
+      ##   channel docs vendor=lark-suite op=fetch args={url:…}
       if url.len == 0:
         return %*{"error": "url is required"}
       let (code, output) = runLarkCli(@[
