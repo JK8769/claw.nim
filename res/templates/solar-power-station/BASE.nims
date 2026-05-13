@@ -61,10 +61,10 @@ org "REPLACE_WITH_YOUR_ORG_NAME":
 # workspace/competencies/<name>/HANDBOOK.md — declare here, edit there.
 
 competency "solar-operator":
-  description "Solar plant operations expertise: equipment taxonomy (plant→inverter→string), units & ranges, data-acquisition discipline via the fleet adapter, verification heuristics, domain terminology."
+  description "Solar plant operations expertise: equipment taxonomy (plant→inverter→string), units & ranges, data-acquisition discipline via the solar adapter, verification heuristics, domain terminology."
 
 competency "solar-frontdesk":
-  description "Customer-facing routing for solar power station ops: classify depth (simple/analytical/advisory), handle simple lookups via the fleet adapter, delegate analytical/advisory to the Analyst. Anti-fabrication discipline."
+  description "Customer-facing routing for solar power station ops: classify depth (simple/analytical/advisory), handle simple lookups via the solar adapter, delegate analytical/advisory to the Analyst. Anti-fabrication discipline."
   skills "delegate"
 
 competency "data-analyst":
@@ -76,15 +76,15 @@ competency "technical-communication":
 competency "knowledge-keeper":
   description "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Heartbeat duties auto-snapshot the wiki and surface promotion candidates."
 
-# ── Fleet adapter (L1 — vendor-neutral facade) ───────────────
-# Exposes five `fleet_*` tools that fan out across installed
-# inverter vendors and route per-plant queries automatically.
-# Agents that practice solar-operator or solar-frontdesk should
-# `uses "fleet-adapter"` to acquire these tools.
-skill "fleet-adapter"
+# ── Solar adapter (L1 — vendor-neutral facade) ───────────────
+# Exposes the `solar` tool that fans out across installed inverter
+# vendors and routes per-plant queries automatically. Agents that
+# practice solar-operator or solar-frontdesk should
+# `uses "solar-adapter"` to acquire it.
+skill "solar-adapter"
 
 # ── Workflow skills (L1, ship with this template) ───────────
-# Four vendor-neutral workflows over the fleet_* tools. All are
+# Four vendor-neutral workflows over the `solar` tool. All are
 # `loading: lazy` — they stub in agents' catalog by default and
 # inline only when explicitly loaded via `skill action=load`.
 skill "daily-yield-sync"
@@ -94,7 +94,7 @@ skill "alarm-response"
 
 # ── Vendor implementations (one or more) ─────────────────────
 # Each vendor is its own skill at workspace/skills/vendor-<name>/.
-# The fleet adapter routes per-plant queries to the right one
+# The solar adapter routes per-plant queries to the right one
 # automatically. Multiple vendors can coexist. The shipped
 # `vendor-sungrow` is a contract-conformant STUB returning mock
 # data — replace its src/sungrow.nim with a real implementation
@@ -140,7 +140,7 @@ agent "Frontdesk":
   if a reading isn't in the graph, I ask or defer.
   """
   maxDepth 8
-  uses "fleet-adapter"
+  uses "solar-adapter"
   # Frontdesk practices customer-facing disciplines.
   practices "solar-frontdesk", "technical-communication"
 
@@ -165,7 +165,7 @@ agent "Analyst":
   evidence. I prefer the explicit playbook over the implicit guess.
   """
   maxDepth 10
-  uses "fleet-adapter"
+  uses "solar-adapter"
   # Analyst practices the analytical disciplines.
   practices "solar-operator", "data-analyst",
             "technical-communication", "knowledge-keeper"

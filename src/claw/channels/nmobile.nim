@@ -1625,6 +1625,17 @@ method stop*(c: NMobileChannel) {.async.} =
   if c.bridge != nil:
     c.bridge.stop()
 
+method capabilities*(c: NMobileChannel): ChannelCapabilities =
+  ## NKN protocol: plaintext payloads + binary attachments. No native
+  ## rich-format primitives; text and file only.
+  ChannelCapabilities(
+    text: TextCaps(max_length: 0, markdown: false),
+    card: none(CardCaps),
+    file: true, voice: false, react: false,
+    edit: false, delete: false, threading: false,
+    formatting: @["plain"]
+  )
+
 method send*(c: NMobileChannel, msg: OutboundMessage) {.async.} =
   if not c.running or c.clientAddrs.len == 0: return
   # nMobile has no real typing-indicator API; a 💭 emoji "pre-message"

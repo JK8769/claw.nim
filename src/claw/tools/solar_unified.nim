@@ -1,138 +1,17 @@
-## fleet — single tool for the multi-vendor solar deployment facade.
+## solar — agent-facing tool for the multi-vendor solar power station facade.
 ##
-## Consolidates five previously-split tools, all backed by the runtime
-## registry scan + plant→vendor cache machinery in
-## `tools/fleet/fleet_adapter.nim`:
-##
-##   action=plant_list        — fan out across every installed vendor
-##                              and merge the Plant arrays. Replaces
-##                              `fleet_plant_list`.
-##   action=plant_now         — real-time state for one plant. Routes
-##                              by plant→vendor mapping. Replaces
-##                              `fleet_plant_now`. Required arg: id.
-##   action=plant_history     — daily yield history for one plant over
-##                              a date range. Replaces
-##                              `fleet_plant_history`. Required args:
-##                              id, from, to.
-##   action=inverter_list     — list inverters under one plant.
-##                              Replaces `fleet_inverter_list`.
-##                              Required arg: plant_id.
-##   action=inverter_alarms   — active alarms on inverters under one
-##                              plant. Replaces `fleet_inverter_alarms`.
-##                              Required arg: plant_id.
-##
-## The vendor MCP contract (per
-## `res/templates/solar-power-station/vendor/CONTRACT.md`) is unchanged:
-## vendor servers still implement five tools named `plant_list`,
-## `plant_now`, `plant_history`, `inverter_list`, `inverter_alarms`
-## (registered as `mcp_<vendor>_<contract-tool>` at gateway boot).
-## Consolidation is at the AGENT-FACING surface only — internally each
-## action still dispatches to `mcp_<vendor>_<contract-tool>` per the
-## existing fleet_adapter helpers.
-##
-## ─── Registration changes ──────────────────────────────────────────────
-##
-## src/claw/agent/loop.nim
-##
-##   DELETE (line 17):
-##     import ../tools/fleet/fleet_adapter
-##   ADD (replaces the line above):
-##     import ../tools/fleet_unified
-##     # The fleet_adapter module still hosts the registry-scan / cache /
-##     # routing helpers, but the five virtual-tool wrappers are gone.
-##     # If the helpers stay in fleet_adapter, keep the import — the
-##     # SolarTool below imports them from that module.
-##
-##   DELETE (lines 3006–3021, the entire fleet block):
-##     # Fleet adapter — vendor-agnostic facade for multi-vendor solar deployments.
-##     # Registers five fleet_* virtual tools that fan out across whichever
-##     # mcp_<vendor>_* tools were registered when the gateway loaded each
-##     # vendor MCP server. Default off; the solar-power-station template's
-##     # fleet-adapter skill declares them in requires.tools so agents that
-##     # opt in receive the grant.
-##     regTagged(newFleetPlantListTool(toolsRegistry),
-##       ["fleet", "solar", "domain"], "list plants across all installed vendors")
-##     regTagged(newFleetPlantNowTool(toolsRegistry),
-##       ["fleet", "solar", "domain"], "real-time state for one plant")
-##     regTagged(newFleetPlantHistoryTool(toolsRegistry),
-##       ["fleet", "solar", "domain"], "daily yield history for one plant")
-##     regTagged(newFleetInverterListTool(toolsRegistry),
-##       ["fleet", "solar", "domain"], "list inverters under one plant")
-##     regTagged(newFleetInverterAlarmsTool(toolsRegistry),
-##       ["fleet", "solar", "domain"], "active alarms on one plant")
-##
-##   ADD (single block, in place of the deleted block):
-##     # Fleet adapter — vendor-agnostic facade for multi-vendor solar
-##     # deployments. One unified `fleet` tool with five actions
-##     # (plant_list / plant_now / plant_history / inverter_list /
-##     # inverter_alarms). Internally fans out across whichever
-##     # mcp_<vendor>_* tools were registered when the gateway loaded
-##     # each vendor MCP server. Default off; the solar-power-station
-##     # template's fleet-adapter skill declares it in requires.tools so
-##     # agents that opt in receive the grant.
-##     regTagged(newSolarTool(toolsRegistry),
-##       ["fleet", "solar", "domain"],
-##       "fleet facade: list plants real-time state history inverters alarms across vendors")
-##
-## src/claw/tools/registry/manifest.nim
-##
-##   DELETE (lines 322–351, the five fleet_* spec entries):
-##     spec(name = "fleet_plant_list",
-##          description = "List all plants across every installed inverter vendor",
-##          tags = @["solar", "fleet", "domain"],
-##          searchKeywords = @["plant list", "fleet", "all plants"],
-##          domain = "solar",
-##          default = false, heartbeatSafe = false, category = "solar"),
-##     spec(name = "fleet_plant_now",
-##          description = "Real-time state for one plant (current power, today yield, status)",
-##          tags = @["solar", "fleet", "domain"],
-##          searchKeywords = @["plant now", "current power", "real-time"],
-##          domain = "solar",
-##          default = false, heartbeatSafe = false, category = "solar"),
-##     spec(name = "fleet_plant_history",
-##          description = "Daily yield history for one plant over a date range",
-##          tags = @["solar", "fleet", "domain"],
-##          searchKeywords = @["plant history", "yield history", "kwh history"],
-##          domain = "solar",
-##          default = false, heartbeatSafe = false, category = "solar"),
-##     spec(name = "fleet_inverter_list",
-##          description = "List inverters under one plant",
-##          tags = @["solar", "fleet", "domain"],
-##          searchKeywords = @["inverter list", "equipment"],
-##          domain = "solar",
-##          default = false, heartbeatSafe = false, category = "solar"),
-##     spec(name = "fleet_inverter_alarms",
-##          description = "Active alarms on inverters under one plant",
-##          tags = @["solar", "fleet", "domain"],
-##          searchKeywords = @["alarm list", "alarms", "active faults"],
-##          domain = "solar",
-##          default = false, heartbeatSafe = false, category = "solar"),
-##
-##   ADD (single block, in place of the deleted block):
-##     spec(name = "solar",
-##          description = "Solar power station fleet — multi-vendor facade " &
-##                        "(action=plant_list|plant_now|plant_history|" &
-##                        "inverter_list|inverter_alarms). Fans out for " &
-##                        "list ops, routes per-plant ops by " &
-##                        "plant→vendor cache.",
-##          tags = @["solar", "fleet", "domain"],
-##          searchKeywords = @["plant list", "fleet", "all plants",
-##                              "plant now", "current power", "real-time",
-##                              "today yield", "plant history", "yield",
-##                              "historical", "kwh", "inverter", "equipment",
-##                              "devices", "alarm", "fault", "alert"],
-##          domain = "solar",
-##          default = false, heartbeatSafe = false, category = "solar"),
+## Five actions (plant_list / plant_now / plant_history / inverter_list /
+## inverter_alarms) all dispatch through `solar_adapter` helpers, which scan
+## the registry for `mcp_<vendor>_<contract-tool>` entries and either fan out
+## (list ops) or route by plant→vendor cache (per-plant ops). Vendor MCP
+## contract lives in `res/templates/solar-power-station/vendor/CONTRACT.md`.
 
 import std/[json, asyncdispatch, tables]
 import ./types
 import ./spec
 import ./registry
-import ./fleet/fleet_adapter
-import ../logger  # warnCF — used in doPlantList's fan-out error paths.
-                  # Once fleet_adapter is trimmed to "helpers only", make sure
-                  # findVendorTools / cachePlant / routeByPlantId carry the `*`
-                  # export marker; they're currently module-private.
+import ./solar/solar_adapter
+import ../logger  # warnCF — fan-out error paths in doPlantList
 
 const ToolSpec* = spec(
   name = "solar",
@@ -227,10 +106,9 @@ method parameters*(t: SolarTool): Table[string, JsonNode] =
 # ---------------------------------------------------------------------------
 
 proc doPlantList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from the legacy fleet_plant_list tool. Scans the registry for every
-  ## `mcp_<vendor>_plant_list`, calls each, primes the plant→vendor cache from
-  ## the per-Plant `vendor` field (or falls back to the discovered vendor
-  ## name), and merges the results into a single JSON array.
+  ## Scan registry for every `mcp_<vendor>_plant_list`, call each, prime the
+  ## plant→vendor cache from the per-Plant `vendor` field (or fall back to the
+  ## discovered vendor name), merge results into a single JSON array.
   let vendors = findVendorTools(t.reg, "plant_list")
   if vendors.len == 0: return "[]"
   var merged = newJArray()
@@ -246,20 +124,18 @@ proc doPlantList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.
             cachePlant(pid, pvendor)
           merged.add(plant)
       elif resp.kind == JObject and resp.hasKey("error"):
-        warnCF("fleet_adapter", "vendor plant_list returned error",
+        warnCF("solar_adapter", "vendor plant_list returned error",
                {"vendor": v.vendor, "error": resp["error"].getStr()}.toTable)
     except CatchableError as e:
-      warnCF("fleet_adapter", "vendor plant_list raised",
+      warnCF("solar_adapter", "vendor plant_list raised",
              {"vendor": v.vendor, "error": e.msg}.toTable)
   return $merged
 
 # ---------------------------------------------------------------------------
 # Argument shaping for per-plant routes.
-#
-# The five legacy tools used `plant_id` uniformly in their arg dicts, but
-# the unified surface uses `id` for plant_now / plant_history (matching the
-# README convention "the plant's vendor-prefixed ID"). Internally we still
-# need to pass `plant_id` to `routeByPlantId`, so we translate.
+# The agent surface uses `id` for plant_now / plant_history (matching the
+# README convention "the plant's vendor-prefixed ID"); `routeByPlantId`
+# expects `plant_id`, so we translate.
 # ---------------------------------------------------------------------------
 
 proc forwardArgsAsPlantId(args: Table[string, JsonNode],
@@ -277,7 +153,6 @@ proc forwardArgsAsPlantId(args: Table[string, JsonNode],
 # ---------------------------------------------------------------------------
 
 proc doPlantNow(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from the legacy fleet_plant_now tool — routes via routeByPlantId.
   let forwarded = forwardArgsAsPlantId(args, "id")
   return await routeByPlantId(t.reg, "plant_now", forwarded)
 
@@ -286,7 +161,6 @@ proc doPlantNow(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.a
 # ---------------------------------------------------------------------------
 
 proc doPlantHistory(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from the legacy fleet_plant_history tool — routes via routeByPlantId.
   ## from / to date args ride along untouched in the args table.
   let forwarded = forwardArgsAsPlantId(args, "id")
   return await routeByPlantId(t.reg, "plant_history", forwarded)
@@ -296,7 +170,6 @@ proc doPlantHistory(t: SolarTool, args: Table[string, JsonNode]): Future[string]
 # ---------------------------------------------------------------------------
 
 proc doInverterList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from the legacy fleet_inverter_list tool — routes via routeByPlantId.
   return await routeByPlantId(t.reg, "inverter_list", args)
 
 # ---------------------------------------------------------------------------
@@ -304,7 +177,6 @@ proc doInverterList(t: SolarTool, args: Table[string, JsonNode]): Future[string]
 # ---------------------------------------------------------------------------
 
 proc doInverterAlarms(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  ## Verbatim from the legacy fleet_inverter_alarms tool — routes via routeByPlantId.
   return await routeByPlantId(t.reg, "inverter_alarms", args)
 
 # ---------------------------------------------------------------------------

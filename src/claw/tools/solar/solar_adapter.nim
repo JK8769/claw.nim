@@ -1,34 +1,23 @@
-## fleet_adapter.nim — Fleet aggregation facade for multi-vendor solar deployments.
+## solar_adapter.nim — substrate for the multi-vendor solar facade.
 ##
-## Implements the 5 fleet_* virtual tools per the contract in
-## `res/templates/solar-power-station/vendor/CONTRACT.md`:
-##
-##   fleet_plant_list()                            → fan out + merge
-##   fleet_plant_now(plant_id)                     → route by plant→vendor mapping
-##   fleet_plant_history(plant_id, from, to)       → route by plant→vendor mapping
-##   fleet_inverter_list(plant_id)                 → route by plant→vendor mapping
-##   fleet_inverter_alarms(plant_id)               → route by plant→vendor mapping
-##
-## Each tool scans the live tool registry for matching `mcp_<vendor>_<tool>`
-## entries (registered when a vendor's MCP server is loaded at gateway boot),
-## fans out to all installed vendors for list operations, and routes per-plant
-## operations to the right vendor via an in-memory plant→vendor cache that's
-## populated lazily on the first `fleet_plant_list` call.
+## Exports helpers consumed by `tools/solar_unified.nim` (the agent-facing
+## `solar` tool). Each contract op (plant_list, plant_now, plant_history,
+## inverter_list, inverter_alarms) is implemented at the agent surface, which
+## either fans out via `findVendorTools` (list ops) or routes per-plant via
+## `routeByPlantId` (per-plant ops) — both backed by an in-memory
+## plantId → vendor cache populated lazily on the first plant_list call.
 ##
 ## Why framework-shipped and not template-shipped: the fan-out + route-by-cache
-## pattern needs runtime registry access. An MCP-server-implementation living
-## in `workspace/skills/fleet-adapter/bin/` would need MCP-to-MCP plumbing to
-## reach the vendor servers — strictly more complexity. The fleet adapter
-## as framework Nim code uses the registry directly. The solar terminology
-## here is the price of having a flagship template; if a second template
+## pattern needs runtime registry access. An MCP-server living in
+## `workspace/skills/solar-adapter/bin/` would need MCP-to-MCP plumbing to
+## reach the vendor servers — strictly more complexity. If a second template
 ## emerges with a similar fan-out pattern, this code can be generalized into
 ## a `tool_group` framework feature.
 ##
-## Plant→vendor routing convention:
-##
-##   1. First `fleet_plant_list()` populates `plantVendorCache` from each
+## Plant → vendor routing:
+##   1. First plant_list call populates `plantVendorCache` from each
 ##      Plant.vendor field in the merged response.
-##   2. Per-plant tools consult the cache. Cache miss → call plant_list
+##   2. Per-plant ops consult the cache. Cache miss → call plant_list
 ##      transparently to populate, then retry.
 ##   3. Plant IDs are vendor-prefixed per the contract (SG-, HW-, GW-, …),
 ##      so cold-start routing can fall back to prefix-matching against
@@ -36,7 +25,6 @@
 
 import std/[asyncdispatch, json, tables, strutils, locks]
 import ../types, ../registry
-import ../spec
 import ../../logger
 
 # ── Plant → vendor mapping (in-memory, populated lazily) ──────────
@@ -57,11 +45,10 @@ proc lookupVendor*(plantId: string): string =
   if plantVendorCache.hasKey(plantId): plantVendorCache[plantId] else: ""
 
 # ── Helpers for fanout + routing ──────────────────────────────────
-# These five (cachePlant, lookupVendor, findVendorTools, dispatchToVendor,
-# routeByPlantId) are exported so `tools/fleet_unified.nim` can compose
-# them into the agent-facing `fleet` tool. The substrate stays here as
-# `fleet_adapter` per the substrate-vs-capability naming convention
-# documented in CLAUDE.md.
+# Exported (cachePlant, lookupVendor, findVendorTools, dispatchToVendor,
+# routeByPlantId) so `tools/solar_unified.nim` can compose them into the
+# agent-facing `solar` tool. Substrate stays here as `solar_adapter` per
+# the substrate-vs-capability naming rule.
 
 proc findVendorTools*(reg: ToolRegistry,
                       contractTool: string): seq[tuple[vendor: string, tool: Tool]] =
@@ -94,7 +81,7 @@ proc dispatchToVendor*(reg: ToolRegistry, vendor, contractTool: string,
   for vt in vendorTools:
     if vt.vendor == vendor:
       return await vt.tool.execute(args)
-  warnCF("fleet_adapter", "vendor not installed for contract tool",
+  warnCF("solar_adapter", "vendor not installed for contract tool",
          {"vendor": vendor, "contract": contractTool}.toTable)
   return """{"error":"vendor_not_installed","vendor":"""" & vendor & """","contract":"""" & contractTool & """"}"""
 
@@ -122,5 +109,5 @@ proc routeByPlantId*(reg: ToolRegistry, contractTool: string,
               let pvendor = if plant.hasKey("vendor"): plant["vendor"].getStr() else: vt.vendor
               cachePlant(pid, pvendor)
       except CatchableError as e:
-        warnCF("fleet_adapter", "vendor plant_list failed during cold-start cache",
+        warnCF("solar_adapter", "vendor plant_list failed during cold-start cache",
                {"vendor": vt.vendor, "error": e.msg}.toTable)

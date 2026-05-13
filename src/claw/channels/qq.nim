@@ -95,6 +95,15 @@ proc qqGatewayLoop(c: QQChannel) {.async.} =
 
 method name*(c: QQChannel): string = "qq"
 
+method capabilities*(c: QQChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 0, markdown: false),
+    card: none(CardCaps),
+    file: true, voice: false, react: false,
+    edit: false, delete: false, threading: false,
+    formatting: @["plain"]
+  )
+
 method start*(c: QQChannel) {.async.} =
   if c.appID == "" or c.appSecret == "": return
   infoC("qq", "Starting QQ Bot channel...")

@@ -1,7 +1,7 @@
 ---
 name: vendor-template
 version: 0.1.0
-description: "Skeleton vendor implementation for the solar-power-station fleet adapter. Copy this directory to vendor/<your-vendor>/, rename references, replace mock data with real API calls. Returns hardcoded mock plants/readings so the fleet adapter contract can be validated end-to-end before wiring up an actual inverter API."
+description: "Skeleton vendor implementation for the solar-power-station solar adapter. Copy this directory to vendor/<your-vendor>/, rename references, replace mock data with real API calls. Returns hardcoded mock plants/readings so the solar adapter contract can be validated end-to-end before wiring up an actual inverter API."
 contract_version: 1
 requires:
   tools: []
@@ -39,11 +39,11 @@ Then validate:
 
 ```bash
 # Boot the gateway and check the validation log:
-claw gateway --debug 2>&1 | grep fleet_adapter
+claw gateway --debug 2>&1 | grep solar_adapter
 # Should see:
-#   [INFO] fleet_adapter: vendor `<your-vendor>` registered, contract v1 OK
+#   [INFO] solar_adapter: vendor `<your-vendor>` registered, contract v1 OK
 # Drift produces:
-#   [WARN] fleet_adapter: vendor `<your-vendor>` schema drift — ...
+#   [WARN] solar_adapter: vendor `<your-vendor>` schema drift — ...
 ```
 
 ## Implementation tips
@@ -52,6 +52,7 @@ claw gateway --debug 2>&1 | grep fleet_adapter
   fine to omit; required ones must be present in every response.
 - Plant IDs MUST be prefixed with your vendor name (e.g. `MY-123`)
   to avoid collision in multi-vendor fleets.
+
 - Clamp negative `current_kw` to 0 — vendor APIs sometimes report
   small negative values at dawn/dusk due to sensor noise.
 - For `plant_history`, return one `YieldPoint` per calendar day

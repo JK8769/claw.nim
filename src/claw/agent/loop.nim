@@ -20,7 +20,8 @@ import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
-import ../tools/comm/[reply_unified, mail_unified, delegate, forward, lark, pushover]
+import ../tools/comm/[reply_unified, mail_unified, chat_unified, delegate, forward, lark, pushover]
+import ../tools/channel_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
@@ -2908,6 +2909,14 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newMailTool(workspace, officeDir), ["agent", "core", "messaging"], "inter-agent mail (send to peers, archive your own processed inbox)")
   regTagged(newWorkstationTool(officeDir), ["agent", "core", "workstation"], "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds")
 
+  # Channel — vendor-level transport navigator (read-only). Lists enabled
+  # channel vendors and their feature matrices (text length, markdown,
+  # card kind, file/voice/react/edit/delete/threading, formatting). The
+  # tool reaches the live manager via channels/access (gateway calls
+  # bindChannelAccess once after initChannels).
+  regTagged(newChannelTool(), ["comm", "channel", "transport", "core"],
+            "channel transport navigator: list vendors and their features (text/card/file/voice/react/edit/threading)")
+
   # --- Web tools ---
   # Internet stack — sea / ship / navigator
   #   web    = the sea (HTTP fetch + raw request)
@@ -3004,16 +3013,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
 
   # Solar — vendor-agnostic facade for multi-vendor solar power
-  # stations. One unified `solar` tool with five actions (plant_list /
-  # plant_now / plant_history / inverter_list / inverter_alarms).
-  # Internally fans out across whichever mcp_<vendor>_* tools were
-  # registered when the gateway loaded each vendor MCP server. The
-  # implementation pattern is "fleet adapter" (substrate name kept in
-  # tools/fleet/fleet_adapter.nim per the substrate-vs-capability
-  # naming rule); the agent-facing CAPABILITY is solar operations.
-  # Default off; the solar-power-station template's fleet-adapter
-  # skill declares it in requires.tools so agents that opt in receive
-  # the grant.
+  # stations. Substrate in tools/solar/solar_adapter.nim; agent surface
+  # is `solar` (one tool, five actions). Default off; the
+  # solar-power-station template's solar-adapter skill declares it in
+  # requires.tools so agents that opt in receive the grant.
   regTagged(newSolarTool(toolsRegistry),
     ["solar", "fleet", "domain"],
     "solar power station fleet: list plants real-time state history inverters alarms across vendors")
@@ -3096,6 +3099,16 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # answer with Feishu format guards + CardKit promotion) and
   # `action=progress` (interim status with plan-state items[] for the
   # framework's iteration budget scaling). Single tool, dual surface.
+
+  # `chat` is the new channel-agnostic protocol layer (send/reply/forward).
+  # Wired alongside reply during the migration window. Format selection is
+  # capability-driven (consults `channel capabilities`) — no hardcoded
+  # `t.channel == "feishu"` branches anywhere in this tool.
+  let chatTool = newChatTool()
+  chatTool.setSendCallback(callback)
+  chatTool.setTags(@["comm", "chat", "messaging", "core"])
+  chatTool.setSearchHint("send reply forward channel-agnostic chat")
+  toolsRegistry.register(chatTool)
 
   let larkTool = newLarkCliTool()
   if larkTool.larkCliBin.len > 0:

@@ -194,6 +194,15 @@ proc poll(c: TelegramChannel) {.async.} =
 
 method name*(c: TelegramChannel): string = "telegram"
 
+method capabilities*(c: TelegramChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 4096, markdown: true),
+    card: some(CardCaps(kind: "telegram_inline", interactive: true)),
+    file: true, voice: true, react: true,
+    edit: true, delete: true, threading: true,
+    formatting: @["plain", "markdown", "html"]
+  )
+
 method start*(c: TelegramChannel) {.async.} =
   infoC("telegram", "Starting Telegram bot (raw mode)...")
   let me = await c.apiCall("getMe", %*{})

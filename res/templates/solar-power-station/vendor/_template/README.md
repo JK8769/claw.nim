@@ -49,7 +49,7 @@ claw gateway --debug 2>&1 | grep "vendor.*$VENDOR"
 
 Should see:
 ```
-[INFO] fleet_adapter: vendor `<your-vendor>` registered, contract v1 OK
+[INFO] solar_adapter: vendor `<your-vendor>` registered, contract v1 OK
 ```
 
 If you see warnings about schema drift, the named field is the one

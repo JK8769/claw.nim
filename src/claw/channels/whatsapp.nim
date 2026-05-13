@@ -20,6 +20,15 @@ proc newWhatsAppChannel*(cfg: WhatsAppConfig, bus: MessageBus): WhatsAppChannel 
 
 method name*(c: WhatsAppChannel): string = "whatsapp"
 
+method capabilities*(c: WhatsAppChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 4096, markdown: false),
+    card: none(CardCaps),
+    file: true, voice: true, react: true,
+    edit: false, delete: true, threading: false,
+    formatting: @["plain"]
+  )
+
 proc listen(c: WhatsAppChannel) {.async.} =
   while c.running:
     try:

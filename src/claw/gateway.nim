@@ -16,7 +16,7 @@ import tools/registry as tools_registry
 import tools/types as tools_types
 import providers/http, providers/types as providers_types,
        providers/fallback, providers/health as provider_health, protocol
-import channels/[base as channel_base, manager as channel_manager, nmobile as nmobile_channel]
+import channels/[base as channel_base, manager as channel_manager, access as channel_access, nmobile as nmobile_channel]
 import services/[heartbeat, scheduler as cron_service, heartbeat_orchestrator,
                   heartbeat_decl, notes_watcher, auto_update]
 import cli_upgrade
@@ -2645,6 +2645,22 @@ Options:
   # Channels
   gChanManager = newManager(cfg[], msgBus)
   gChanManager.initChannels()
+
+  # Bind the channel-access singleton so the `channel` tool (and any other
+  # tool that needs read-only manager state) can see the live vendors +
+  # capabilities without importing the manager module directly.
+  channel_access.bindChannelAccess(
+    proc(): seq[string] {.gcsafe.} =
+      {.gcsafe.}: gChanManager.getEnabledChannels(),
+    proc(name: string): Option[channel_base.ChannelCapabilities] {.gcsafe.} =
+      {.gcsafe.}:
+        let (ch, ok) = gChanManager.getChannel(name)
+        if ok: some(ch.capabilities()) else: none(channel_base.ChannelCapabilities),
+    proc(name: string): bool {.gcsafe.} =
+      {.gcsafe.}:
+        let (ch, ok) = gChanManager.getChannel(name)
+        if ok: ch.isRunning() else: false
+  )
 
   gCtx = GatewayContext(
     cfg: cfg[],

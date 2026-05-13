@@ -6,7 +6,7 @@ adapter.
 
 **Audience: anyone (coding agent or human) authoring a new vendor
 adapter.** The contract is the source of truth — implementations
-that don't conform won't be routable by the fleet adapter.
+that don't conform won't be routable by the solar adapter.
 
 ## How vendors plug in
 
@@ -26,7 +26,7 @@ this document + the schemas + the skeleton in one pass.
 
 ## Required tools (the floor)
 
-Every vendor MUST expose these five tools. The fleet adapter
+Every vendor MUST expose these five tools. The solar adapter
 fans queries out to all installed vendors via these names (prefixed
 with the vendor name at MCP registration — e.g. `sungrow_plant_list`).
 
@@ -39,13 +39,13 @@ with the vendor name at MCP registration — e.g. `sungrow_plant_list`).
 | `inverter_alarms` | `plant_id: string` | `[Alarm]` | Active alarms |
 
 A vendor implementation missing any of these is incomplete; the
-fleet adapter logs a warning at boot and skips that vendor for the
+solar adapter logs a warning at boot and skips that vendor for the
 affected operation (graceful degradation, not removal).
 
 ## Optional tools (extensions)
 
 Vendors MAY expose additional tools beyond the floor. These are NOT
-fanned out by the fleet adapter, but skills can target them by their
+fanned out by the solar adapter, but skills can target them by their
 fully-qualified name (e.g. `mcp_sungrow_solar_optimizer_now`).
 
 Common extension areas:
@@ -72,7 +72,7 @@ their own.
 
 ## Vendor extension fields
 
-The fleet adapter preserves vendor-specific fields in merged
+The solar adapter preserves vendor-specific fields in merged
 output. Example response from `plant_list`:
 
 ```json
@@ -120,20 +120,20 @@ The MCP tool responses follow these conventions for failure modes:
 | Rate limit hit | `{"error": "rate_limited", "vendor": "<name>", "retry_after_seconds": 60}` |
 | Schema-shape error in the response | NEVER happens — vendor bug |
 
-The fleet adapter handles `error` responses by logging the issue
+The solar adapter handles `error` responses by logging the issue
 and excluding that vendor's result from the merged output for that
 specific call. Other vendors' results still flow through.
 
 ## Boot-time validation
 
-At gateway startup, the fleet adapter samples each installed vendor's
+At gateway startup, the solar adapter samples each installed vendor's
 first response and validates against the schemas. Drift is logged
 clearly:
 
 ```
-[WARN] fleet_adapter: vendor `huawei` schema drift —
+[WARN] solar_adapter: vendor `huawei` schema drift —
        plant_list response item missing required field `capacity_kwp`
-[WARN] fleet_adapter: vendor `huawei` schema drift —
+[WARN] solar_adapter: vendor `huawei` schema drift —
        plant_now `status` field value `running` not in enum
        [online, offline, fault, maintenance, unknown]
 ```
@@ -153,7 +153,7 @@ vendor name** to avoid collision in multi-vendor fleets:
 - ✅ `GW-99999` (GoodWe)
 - ❌ `12345` (no prefix → could collide across vendors)
 
-The fleet adapter relies on prefix uniqueness for fast vendor-routing
+The solar adapter relies on prefix uniqueness for fast vendor-routing
 lookup before falling back to the cortex graph.
 
 ## Skeleton + first implementation
@@ -175,7 +175,7 @@ contract_version: 1
 ```
 
 Bumped when REQUIRED fields are added, REMOVED, or renamed. The
-fleet adapter logs the contract version it expects against each
+solar adapter logs the contract version it expects against each
 vendor's `SKILL.md` `contract_version:` field at boot.
 
 OPTIONAL field additions don't bump the version — vendors that

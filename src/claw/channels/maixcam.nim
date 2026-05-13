@@ -26,6 +26,15 @@ proc newMaixCamChannel*(cfg: MaixCamConfig, bus: MessageBus): MaixCamChannel =
 
 method name*(c: MaixCamChannel): string = "maixcam"
 
+method capabilities*(c: MaixCamChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 0, markdown: false),
+    card: none(CardCaps),
+    file: false, voice: false, react: false,
+    edit: false, delete: false, threading: false,
+    formatting: @["plain"]
+  )
+
 proc handleClient(c: MaixCamChannel, client: AsyncSocket) {.async.} =
   while c.running:
     try:

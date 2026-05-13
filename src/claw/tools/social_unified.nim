@@ -61,7 +61,8 @@ import ../channels/feishu as feishu_channel
 const ToolSpec* = spec(
   name = "social",
   description = "Social interactions over the world graph: query, look up, " &
-                "rename, list onboarded customers, mint/redeem customer invites",
+                "rename, list onboarded customers, mint/redeem customer invites, " &
+                "and route messages to recipients (route/discover/mark_unreachable)",
   tags = @["admin", "social", "graph", "customer", "invite", "core"],
   domain = "social",
   default = true,
@@ -104,8 +105,38 @@ method parameters*(t: SocialTool): Table[string, JsonNode] =
     "properties": %*{
       "action": {
         "type": "string",
-        "enum": ["query", "who", "update", "customers", "invite", "redeem"],
+        "enum": ["query", "who", "update", "customers", "invite", "redeem",
+                 "route", "discover", "mark_unreachable"],
         "description": "Operation to perform"
+      },
+      # --- action=route / discover / mark_unreachable ---
+      "to": {
+        "type": "string",
+        "description": "route/discover/mark_unreachable — recipient nc:id (e.g. 'nc:7')"
+      },
+      "vendor": {
+        "type": "string",
+        "description": "mark_unreachable — vendor name (feishu, telegram, ...) " &
+                       "to flag as unreachable for this recipient. Also accepted on " &
+                       "route as an explicit override of the preferred-channel pick."
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["chat", "mail"],
+        "description": "route/discover — filter by channel kind. Default: chat. " &
+                       "(Mail vendors aren't wired yet; reserved for future.)"
+      },
+      "urgency": {
+        "type": "string",
+        "enum": ["normal", "urgent"],
+        "description": "route — caller's urgency hint. Reserved for future " &
+                       "routing-rule lookup; ignored in v1."
+      },
+      "reason": {
+        "type": "string",
+        "description": "mark_unreachable — short reason for the flag (e.g. " &
+                       "'bounce', 'auth_failed', 'user_blocked'). Stored " &
+                       "with a timestamp in entity.custom.unreachable[vendor]."
       },
       # --- action=query ---
       "expression": {
@@ -819,20 +850,196 @@ proc doRedeem(t: SocialTool, args: Table[string, JsonNode]): string =
   return "Successfully redeemed Pin Code! The user '" & inv.customerName & "' is now authenticated as a Customer for this Agent. You may now assist them normally."
 
 # ---------------------------------------------------------------------------
+# route / discover / mark_unreachable — recipient-centric channel routing
+# ---------------------------------------------------------------------------
+#
+# Channel addresses live as entries in `WorldEntity.identifiers` (one row per
+# vendor → opaque address). Routing preferences and learned-unreachability
+# are tucked into `WorldEntity.custom`:
+#
+#   custom.preferred_channel : string         — vendor name to prefer
+#   custom.unreachable       : object         — { vendor → { reason, ts } }
+#
+# Schema-light by design: cortex's existing identifiers + custom JsonNode
+# carry everything routing needs without bloating the WorldEntity type.
+
+const ChatVendors = ["feishu", "telegram", "discord", "dingtalk", "qq",
+                     "whatsapp", "nmobile", "zen", "lark", "maixcam"]
+const MailVendors = ["email", "smtp", "imap"]
+
+proc isChatVendor(v: string): bool =
+  for c in ChatVendors:
+    if c == v: return true
+  false
+
+proc isMailVendor(v: string): bool =
+  for m in MailVendors:
+    if m == v: return true
+  false
+
+proc parseVendorFromIdKey(key: string): string =
+  ## Identifier keys in cortex are typically `vendor:scope` (e.g.
+  ## `feishu:cli_xxx`) or just `vendor`. Strip the scope to get the bare
+  ## vendor name for capability lookup.
+  let i = key.find(':')
+  if i > 0: key[0 ..< i] else: key
+
+proc getEntityForRoute(t: SocialTool, args: Table[string, JsonNode]):
+    (Option[WorldEntity], string) =
+  ## Resolve `to=nc:X` to a WorldEntity. Returns (some(entity), "") on
+  ## success; (none, errMsg) on failure.
+  if t.contextBuilder == nil or t.contextBuilder.graph == nil:
+    return (none(WorldEntity), "Error: World Graph is not initialized.")
+  if not args.hasKey("to"):
+    return (none(WorldEntity), "Error: Missing 'to' (e.g. 'nc:7').")
+  let alias = args["to"].getStr().strip()
+  if alias.len == 0:
+    return (none(WorldEntity), "Error: 'to' must be non-empty.")
+  let g = t.contextBuilder.graph
+  if not g.idAliasIndex.hasKey(alias):
+    return (none(WorldEntity), "Entity not found: " & alias)
+  let id = g.idAliasIndex[alias]
+  if not g.entities.hasKey(id):
+    return (none(WorldEntity), "Entity index points to a missing entry: " & alias)
+  (some(g.entities[id]), "")
+
+proc isUnreachable(ent: WorldEntity, vendor: string): bool =
+  if ent.custom.isNil or ent.custom.kind != JObject: return false
+  if not ent.custom.hasKey("unreachable"): return false
+  let u = ent.custom["unreachable"]
+  if u.kind != JObject: return false
+  u.hasKey(vendor)
+
+proc preferredChannel(ent: WorldEntity): string =
+  if ent.custom.isNil or ent.custom.kind != JObject: return ""
+  if not ent.custom.hasKey("preferred_channel"): return ""
+  ent.custom["preferred_channel"].getStr("")
+
+proc routeKind(args: Table[string, JsonNode]): string =
+  if args.hasKey("kind"): args["kind"].getStr("chat") else: "chat"
+
+proc kindMatches(vendor, kind: string): bool =
+  case kind
+  of "mail": isMailVendor(vendor)
+  else:      isChatVendor(vendor)
+
+proc doRoute(t: SocialTool, args: Table[string, JsonNode]): string =
+  ## Pick a channel for a recipient. Order:
+  ##   1. Explicit override: `vendor=X` if X is in the recipient's identifiers
+  ##      and not flagged unreachable
+  ##   2. `custom.preferred_channel` if it matches kind and isn't unreachable
+  ##   3. First identifier whose vendor matches kind and isn't unreachable
+  let (eOpt, err) = getEntityForRoute(t, args)
+  if eOpt.isNone: return err
+  let ent = eOpt.get
+  let kind = routeKind(args)
+
+  # Build the (vendor, address) candidate list from identifiers.
+  var candidates: seq[tuple[vendor, address, key: string]]
+  for k, v in ent.identifiers:
+    let vendor = parseVendorFromIdKey(k)
+    if vendor.len == 0: continue
+    if not kindMatches(vendor, kind): continue
+    candidates.add((vendor: vendor, address: v, key: k))
+  if candidates.len == 0:
+    return $(%*{"error": "no_reachable_address",
+                "to": args["to"].getStr(),
+                "kind": kind})
+
+  # 1. Explicit override
+  if args.hasKey("vendor"):
+    let want = args["vendor"].getStr()
+    for c in candidates:
+      if c.vendor == want and not isUnreachable(ent, c.vendor):
+        return $(%*{"vendor": c.vendor, "address": c.address,
+                    "key": c.key, "reason": "explicit_override"})
+    return $(%*{"error": "vendor_not_reachable", "vendor": want,
+                "to": args["to"].getStr()})
+
+  # 2. Stated preference
+  let pref = preferredChannel(ent)
+  if pref.len > 0:
+    for c in candidates:
+      if c.vendor == pref and not isUnreachable(ent, c.vendor):
+        return $(%*{"vendor": c.vendor, "address": c.address,
+                    "key": c.key, "reason": "preferred_channel"})
+
+  # 3. First reachable
+  for c in candidates:
+    if not isUnreachable(ent, c.vendor):
+      return $(%*{"vendor": c.vendor, "address": c.address,
+                  "key": c.key, "reason": "first_available"})
+
+  $(%*{"error": "all_unreachable", "to": args["to"].getStr(),
+       "candidates": candidates.len})
+
+proc doDiscover(t: SocialTool, args: Table[string, JsonNode]): string =
+  ## List every channel address known for a recipient, with reachability
+  ## flag. Useful for the agent to reason about which paths exist.
+  let (eOpt, err) = getEntityForRoute(t, args)
+  if eOpt.isNone: return err
+  let ent = eOpt.get
+  let kind = routeKind(args)
+  let pref = preferredChannel(ent)
+  var rows = newJArray()
+  for k, v in ent.identifiers:
+    let vendor = parseVendorFromIdKey(k)
+    if vendor.len == 0: continue
+    if not kindMatches(vendor, kind): continue
+    rows.add(%*{
+      "vendor": vendor,
+      "address": v,
+      "key": k,
+      "preferred": vendor == pref,
+      "unreachable": isUnreachable(ent, vendor)
+    })
+  $rows
+
+proc doMarkUnreachable(t: SocialTool, args: Table[string, JsonNode]): string =
+  ## Stamp `custom.unreachable[vendor] = { reason, ts }` and persist.
+  if not args.hasKey("vendor"):
+    return "Error: 'vendor' is required (the channel that bounced)."
+  let vendor = args["vendor"].getStr().strip()
+  if vendor.len == 0:
+    return "Error: 'vendor' must be non-empty."
+  let reason = if args.hasKey("reason"): args["reason"].getStr() else: ""
+  let (eOpt, err) = getEntityForRoute(t, args)
+  if eOpt.isNone: return err
+  let ent = eOpt.get
+  let g = t.contextBuilder.graph
+  var mutated = ent
+  if mutated.custom.isNil or mutated.custom.kind != JObject:
+    mutated.custom = newJObject()
+  if not mutated.custom.hasKey("unreachable") or
+     mutated.custom["unreachable"].kind != JObject:
+    mutated.custom["unreachable"] = newJObject()
+  mutated.custom["unreachable"][vendor] = %*{
+    "reason": reason,
+    "ts": $now()
+  }
+  g.entities[mutated.id] = mutated
+  saveWorld(g)
+  $(%*{"to": args["to"].getStr(), "vendor": vendor,
+       "marked_unreachable": true, "reason": reason})
+
+# ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
 
 method execute*(t: SocialTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("action"):
-    return "Error: 'action' is required (query | who | update | customers | invite | redeem)"
+    return "Error: 'action' is required (query | who | update | customers | invite | redeem | route | discover | mark_unreachable)"
   let action = args["action"].getStr()
   case action
-  of "query":     return doQuery(t, args)
-  of "who":       return doWho(t, args)
-  of "update":    return doUpdate(t, args)
-  of "customers": return doCustomers(t, args)
-  of "invite":    return await doInvite(t, args)
-  of "redeem":    return doRedeem(t, args)
+  of "query":            return doQuery(t, args)
+  of "who":              return doWho(t, args)
+  of "update":           return doUpdate(t, args)
+  of "customers":        return doCustomers(t, args)
+  of "invite":           return await doInvite(t, args)
+  of "redeem":           return doRedeem(t, args)
+  of "route":            return doRoute(t, args)
+  of "discover":         return doDiscover(t, args)
+  of "mark_unreachable": return doMarkUnreachable(t, args)
   else:
     return "Error: Unknown action '" & action &
-           "'. Use: query | who | update | customers | invite | redeem"
+           "'. Use: query | who | update | customers | invite | redeem | route | discover | mark_unreachable"

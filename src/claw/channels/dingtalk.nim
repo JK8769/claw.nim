@@ -55,6 +55,15 @@ proc dingtalkGatewayLoop(c: DingTalkChannel) {.async.} =
 
 method name*(c: DingTalkChannel): string = "dingtalk"
 
+method capabilities*(c: DingTalkChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 20000, markdown: true),
+    card: some(CardCaps(kind: "actioncard", interactive: true)),
+    file: true, voice: false, react: false,
+    edit: false, delete: false, threading: false,
+    formatting: @["plain", "markdown", "actioncard"]
+  )
+
 method start*(c: DingTalkChannel) {.async.} =
   if c.clientID == "" or c.clientSecret == "": return
   infoC("dingtalk", "Starting DingTalk channel...")

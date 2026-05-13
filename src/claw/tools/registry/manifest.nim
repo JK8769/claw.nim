@@ -72,10 +72,42 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["messaging", "core"], domain = "comm",
        default = true, heartbeatSafe = true, externalAllowed = true,
        category = "comm"),
+  # Chat — channel-agnostic protocol verbs (send/reply/forward). Format
+  # selection driven by `channel capabilities`, not hardcoded vendor
+  # branches. Rolling out alongside `reply` during the migration window;
+  # callers will move from `reply action=final` → `chat reply` over
+  # phases 7–8.
+  spec(name = "chat",
+       description = "real-time conversational messaging — channel-agnostic " &
+                     "protocol verbs (action=send|reply|forward). Capability-" &
+                     "driven format selection (text vs card) with no hardcoded " &
+                     "vendor branches. For persistent / async messaging, see mail.",
+       tags = @["comm", "chat", "messaging", "core"], domain = "comm",
+       searchKeywords = @["send message", "chat send", "chat reply",
+                          "chat forward", "talk", "respond", "message",
+                          "answer", "reply"],
+       default = false, heartbeatSafe = false, externalAllowed = true,
+       category = "comm"),
   spec(name = "mail",
        description = "inter-agent mail (action=send to peers; action=archive your own processed inbox)",
        tags = @["agent", "core", "messaging"], domain = "comm",
        default = true, heartbeatSafe = true, category = "comm"),
+  # Channel — vendor-level transport navigator (read-only). chat / mail
+  # consult capabilities here for format-promotion decisions; no hardcoded
+  # vendor branches in protocol layers. Bound to live channel manager at
+  # gateway boot.
+  spec(name = "channel",
+       description = "channel transport navigator: list enabled vendors and " &
+                     "their feature matrices (action=list|capabilities). " &
+                     "Read-only. For routing to a recipient, use social. " &
+                     "For sending, use chat / mail.",
+       tags = @["comm", "channel", "transport", "core"], domain = "comm",
+       searchKeywords = @["channel list", "channel capabilities",
+                          "vendor list", "vendor features", "transport",
+                          "feishu", "telegram", "discord", "nmobile",
+                          "max length", "supports markdown",
+                          "supports card", "supports file"],
+       default = true, heartbeatSafe = true, category = "messaging"),
   spec(name = "delegate",
        description = "delegate tasks to other named agents (sync or deferred)",
        tags = @["agent", "delegation"], domain = "comm",
@@ -174,16 +206,24 @@ const AllTools*: seq[ToolSpec] = @[
   # Social — read/write world graph + customer onboarding flow.
   # Replaces the former query_graph + update_contact + my_customers +
   # create_customer_invite + redeem_invite tools. Single tool, action
-  # enum (query | who | update | customers | invite | redeem). Backed
-  # by the cortex module — the brain's social organ, hence the name.
+  # enum (query | who | update | customers | invite | redeem | route |
+  # discover | mark_unreachable). Backed by the cortex module — the
+  # brain's social organ, hence the name. The route/discover/
+  # mark_unreachable trio answers "how do I reach this recipient?";
+  # `channel` answers the orthogonal "what can each transport carry?".
   spec(name = "social",
        description = "social interactions over the world graph: " &
                      "query, look up, rename, list onboarded customers, " &
-                     "mint/redeem customer invites",
-       tags = @["admin", "social", "graph", "customer", "invite", "core"],
+                     "mint/redeem customer invites, and route messages " &
+                     "to recipients (action=route|discover|mark_unreachable)",
+       tags = @["admin", "social", "graph", "customer", "invite", "core",
+                "comm", "routing"],
        searchKeywords = @["graph", "who", "lookup", "entity", "rename",
                            "contact", "customers", "onboard", "mint",
-                           "redeem", "invite", "pin", "code"],
+                           "redeem", "invite", "pin", "code",
+                           "route", "discover", "unreachable",
+                           "preferred channel", "address book",
+                           "how to reach", "reach recipient"],
        domain = "social",
        default = true, heartbeatSafe = false, externalAllowed = true,
        category = "social"),
@@ -311,24 +351,14 @@ const AllTools*: seq[ToolSpec] = @[
        tags = @["admin", "mcp", "skills"], domain = "mcp",
        default = false, heartbeatSafe = false, category = "mcp"),
 
-  # Fleet adapter — vendor-agnostic facade for multi-vendor solar deployments.
-  # Implementations in `tools/fleet/fleet_adapter.nim`. Each tool scans the
-  # runtime registry for `mcp_<vendor>_<contract-tool>` matches, fans out
-  # for list operations, and routes per-plant operations via an in-memory
-  # plant→vendor cache. Used by the solar-power-station template's workflow
-  # skills (daily-yield-sync, monthly-report, alarm-response). Default off;
-  # the template's `fleet-adapter` skill declares them in requires.tools so
-  # agents that opt in receive the grant.
-  # Solar — multi-vendor solar fleet facade. Five domain operations
-  # consolidated under one tool with action enum. Replaces fleet_plant_list /
-  # fleet_plant_now / fleet_plant_history / fleet_inverter_list /
-  # fleet_inverter_alarms. Internally fans out across whichever
-  # mcp_<vendor>_* tools were registered when each vendor MCP server
-  # loaded; vendor contract (per template's vendor/CONTRACT.md) is
-  # unchanged at the MCP layer.
-  # Substrate-vs-capability naming: implementation pattern stays
-  # `fleet_adapter.nim` (it IS a fleet adapter); agent surface is
-  # `solar` (what it ENABLES — solar fleet operations).
+  # Solar — multi-vendor solar power station facade. One tool with five
+  # actions (plant_list / plant_now / plant_history / inverter_list /
+  # inverter_alarms). Substrate in `tools/solar/solar_adapter.nim` scans
+  # the registry for `mcp_<vendor>_<contract-tool>` matches, fans out for
+  # list ops, routes per-plant ops via plant→vendor cache. Used by
+  # solar-power-station template skills (daily-yield-sync, monthly-report,
+  # alarm-response). Default off; template's `solar-adapter` skill grants
+  # via requires.tools.
   spec(name = "solar",
        description = "Solar power station fleet — multi-vendor facade " &
                      "(action=plant_list|plant_now|plant_history|" &

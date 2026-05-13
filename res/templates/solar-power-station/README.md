@@ -13,8 +13,8 @@ stations. Ships with claw.nim. Vendor-neutral but business-opinionated.
 - **4 vendor-neutral skills** for fleet operations:
   `daily-yield-sync`, `monthly-report`, `customer-onboarding`,
   `alarm-response`.
-- **A fleet-adapter facade** that abstracts vendor differences —
-  skills call `fleet_*` tools; the adapter routes to the right
+- **A solar-adapter facade** that abstracts vendor differences —
+  skills call the `solar` tool; the adapter routes to the right
   vendor MCP server per plant.
 - **A vendor contract** (`vendor/CONTRACT.md`) documenting how to
   add a new inverter brand. Ships with a `_template/` skeleton and
@@ -22,7 +22,7 @@ stations. Ships with claw.nim. Vendor-neutral but business-opinionated.
 
 ## What this template does NOT commit to
 
-- A specific inverter brand. The fleet adapter routes to whatever
+- A specific inverter brand. The solar adapter routes to whatever
   vendor MCP servers are installed (SunGrow, Huawei, GoodWe, …).
   Multi-vendor fleets are first-class.
 - Specific customer entities. Each deployment adds its own.
@@ -53,7 +53,7 @@ skill "vendor/sungrow"
 skill "vendor/huawei"
 ```
 
-The fleet adapter discovers plants from both APIs at startup,
+The solar adapter discovers plants from both APIs at startup,
 populates the cortex graph with `plant → vendor` mapping, and routes
 each per-plant query to the right vendor automatically. Skills like
 `daily-yield-sync` work unchanged across vendor mixes.

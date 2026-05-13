@@ -171,6 +171,15 @@ proc newZenChannel*(cfg: Config, bus: MessageBus): ZenChannel =
 
 method name*(c: ZenChannel): string = "zen"
 
+method capabilities*(c: ZenChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 0, markdown: true),
+    card: some(CardCaps(kind: "zen_pane", interactive: true)),
+    file: true, voice: false, react: false,
+    edit: true, delete: true, threading: false,
+    formatting: @["plain", "markdown", "zen_pane"]
+  )
+
 method start*(c: ZenChannel) {.async.} =
   if c.running:
     infoC("zen", "Zen channel already running")

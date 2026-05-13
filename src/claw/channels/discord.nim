@@ -79,6 +79,15 @@ proc gatewayLoop(c: DiscordChannel) {.async.} =
 
 method name*(c: DiscordChannel): string = "discord"
 
+method capabilities*(c: DiscordChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 2000, markdown: true),
+    card: some(CardCaps(kind: "discord_embed", interactive: true)),
+    file: true, voice: false, react: true,
+    edit: true, delete: true, threading: true,
+    formatting: @["plain", "markdown"]
+  )
+
 method start*(c: DiscordChannel) {.async.} =
   infoC("discord", "Starting Discord bot (Gateway mode)...")
   try:

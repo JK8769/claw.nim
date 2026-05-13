@@ -1,8 +1,28 @@
-import std/[asyncdispatch, strutils, tables]
+import std/[asyncdispatch, strutils, tables, options]
 import ../bus, ../bus_types
 import ../services/voice
+export options  # `some`/`none`/`Option` reach channel impls via base.nim
 
 type
+  TextCaps* = object
+    max_length*: int            ## 0 = unbounded
+    markdown*: bool
+
+  CardCaps* = object
+    kind*: string               ## "CardKit" | "telegram_inline" | "discord_embed" | "actioncard" | …
+    interactive*: bool          ## buttons / callbacks supported
+
+  ChannelCapabilities* = object
+    text*: TextCaps
+    card*: Option[CardCaps]     ## none() if vendor has no card primitive
+    file*: bool
+    voice*: bool
+    react*: bool
+    edit*: bool                 ## can edit a sent message
+    delete*: bool               ## can delete a sent message
+    threading*: bool            ## native thread / reply-chain
+    formatting*: seq[string]    ## ["plain", "markdown", "lark_cardkit", "html", …]
+
   Channel* = ref object of RootObj
 
 method name*(c: Channel): string {.base.} = ""
@@ -12,6 +32,18 @@ method send*(c: Channel, msg: OutboundMessage): Future[void] {.base, async.} = d
 method isRunning*(c: Channel): bool {.base.} = false
 method isAllowed*(c: Channel, senderID: string): bool {.base.} = true
 method setTranscriber*(c: Channel, transcriber: GroqTranscriber) {.base.} = discard
+
+method capabilities*(c: Channel): ChannelCapabilities {.base.} =
+  ## Conservative default: plain text, nothing else. Each channel impl
+  ## overrides with its actual feature set so the chat/mail tools can
+  ## drive format selection generically — no hardcoded vendor branches.
+  ChannelCapabilities(
+    text: TextCaps(max_length: 0, markdown: false),
+    card: none(CardCaps),
+    file: false, voice: false, react: false,
+    edit: false, delete: false, threading: false,
+    formatting: @["plain"]
+  )
 
 type
   BaseChannel* = ref object of Channel

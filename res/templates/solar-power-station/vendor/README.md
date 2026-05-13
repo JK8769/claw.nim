@@ -1,7 +1,7 @@
 # Vendor Implementations
 
 This directory hosts inverter-vendor MCP server implementations for
-the solar-power-station template's fleet adapter.
+the solar-power-station template's solar adapter.
 
 ## Adding a new vendor
 
@@ -40,7 +40,7 @@ standard skill resolver, installer, and binary loader.
 ## Multi-vendor support
 
 A deployment can install multiple vendors simultaneously. The
-fleet adapter (`skills/fleet-adapter/`) routes per-plant queries
+solar adapter (`skills/solar-adapter/`) routes per-plant queries
 to the right vendor based on the `plant → vendor` mapping in the
 cortex graph (populated at first startup from each vendor's
 `plant_list`).
@@ -57,7 +57,7 @@ work unchanged regardless of which combination is installed.
 
 ## Contract validation
 
-At gateway boot, the fleet adapter:
+At gateway boot, the solar adapter:
 
 1. Discovers which `vendor/<name>/` skills are installed
 2. Calls each one's `plant_list` (and other floor tools) once

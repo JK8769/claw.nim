@@ -1165,6 +1165,15 @@ proc newFeishuChannel*(cfg: FeishuConfig, bus: MessageBus): FeishuChannel =
 
 method name*(c: FeishuChannel): string = "feishu"
 
+method capabilities*(c: FeishuChannel): ChannelCapabilities =
+  ChannelCapabilities(
+    text: TextCaps(max_length: 4096, markdown: true),
+    card: some(CardCaps(kind: "CardKit", interactive: true)),
+    file: true, voice: false, react: true,
+    edit: true, delete: true, threading: true,
+    formatting: @["plain", "markdown", "lark_cardkit"]
+  )
+
 method start*(c: FeishuChannel) {.async.} =
   if c.apps.len == 0: return
   if c.running:
