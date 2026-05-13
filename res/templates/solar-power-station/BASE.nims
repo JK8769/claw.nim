@@ -73,8 +73,8 @@ competency "data-analyst":
 competency "technical-communication":
   description "Communication discipline for long-running technical tasks: Phase 0 intake, progress checkpoints, plan announcements, structured result formatting, async-tool handoff."
 
-competency "knowledge-keeper":
-  description "Maintains the agent's cross-project knowledge wiki at <office>/knowledge/. Heartbeat duties auto-snapshot the wiki and surface promotion candidates."
+competency "thinker":
+  description "The agent's meta-cognitive practice — tends memory + knowledge + heart together. Heartbeat duties: snapshot wiki, surface knowledge promotion candidates, weekly reflection on partner experiences (with stripEntityIdentifiers backstop), monthly journal consolidation, quarterly visibility audit. Replaces the former 'knowledge-keeper' (which only covered the wiki); now covers all three cognitive stores as one practice."
 
 # ── Solar adapter (L1 — vendor-neutral facade) ───────────────
 # Exposes the `solar` tool that fans out across installed inverter
@@ -163,7 +163,7 @@ agent "Analyst":
   uses "solar-adapter"
   # Analyst practices the analytical disciplines.
   practices "solar-operator", "data-analyst",
-            "technical-communication", "knowledge-keeper"
+            "technical-communication", "thinker"
 
   reportsTo "Operator":
     role "boss"

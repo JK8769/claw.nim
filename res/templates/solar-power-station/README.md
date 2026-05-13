@@ -9,7 +9,7 @@ stations. Ships with claw.nim. Vendor-neutral but business-opinionated.
   back-office analyst, with a delegate flow wiring them together.
 - **5 competencies** practiced by the agents: `solar-operator`,
   `solar-frontdesk`, `data-analyst`, `technical-communication`,
-  `knowledge-keeper`.
+  `thinker`.
 - **4 vendor-neutral skills** for fleet operations:
   `daily-yield-sync`, `monthly-report`, `customer-onboarding`,
   `alarm-response`.

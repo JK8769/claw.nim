@@ -107,6 +107,51 @@ proc downgradeForTrust*(requested: MemoryVisibility, trustLevel: int): MemoryVis
   if trustLevel < 100 and requested == mvSecret: return mvPrivate
   requested
 
+# ── Entity-strip for reflections ────────────────────────────────────
+#
+# Mechanically removes structural identifiers from text before storage.
+# Applied automatically by `memory store category=reflection` so an
+# agent-authored reflection that accidentally references a partner's
+# nc:id or channel-specific identifier doesn't fingerprint them in the
+# reflection store.
+#
+# Scope (what gets stripped):
+#   nc:\d+              cortex IDs
+#   ou_[A-Za-z0-9]+     Feishu open_id
+#   on_[A-Za-z0-9]+     Feishu open_chat_id
+#   oc_[A-Za-z0-9]+     Feishu open_chat_id (alt)
+#   om_[A-Za-z0-9]+     Feishu union_id variant
+#   @[A-Za-z0-9._-]+    chat @-mentions (any channel)
+#
+# Scope EXPLICITLY NOT covered (agent's prompt-craft responsibility):
+#   display names (no reliable detector)
+#   phone numbers / emails (fragile assumptions about format)
+#   semantic context ("they're stressed about the merger")
+#
+# This is the structural backstop. The semantic strip belongs in the
+# agent's reflection prompt: "summarize without naming partners; refer
+# to them generically." That part is the `thinker` competency's job.
+
+import std/re
+
+let entityStripPatterns = [
+  (re"nc:\d+", "[entity]"),
+  (re"ou_[A-Za-z0-9]+", "[feishu_id]"),
+  (re"on_[A-Za-z0-9]+", "[feishu_id]"),
+  (re"oc_[A-Za-z0-9]+", "[feishu_id]"),
+  (re"om_[A-Za-z0-9]+", "[feishu_id]"),
+  (re"@[A-Za-z0-9._-]+", "[mention]"),
+]
+
+proc stripEntityIdentifiers*(text: string): string =
+  ## Mechanical structural-identifier strip. ~10ms per call. Used by
+  ## reflection-storing paths to prevent partner identifiers leaking
+  ## into self.jsonl. Returns text with all known identifier patterns
+  ## replaced by generic placeholders.
+  result = text
+  for (pat, replacement) in entityStripPatterns:
+    result = result.replacef(pat, replacement)
+
 # ── File-name sanitisation ─────────────────────────────────────────
 
 proc sanitizeId(id: string): string =
@@ -172,11 +217,18 @@ proc recordExperience*(ms: MemoryStore, ncId, kind, content: string,
   ## Auto-captured outcome event for the partner identified by `ncId`.
   ## Lands in that partner's isolated experience file; never crosses
   ## into self.jsonl. Framework-only entry point: agents do not call
-  ## this directly. The offline MemoryConsolidationService reads
-  ## across these files (with entity-strip) to produce mcReflection
-  ## entries on self.jsonl.
+  ## this directly.
   ##
-  ## `kind` is a stable tag that the synthesizer keys on
+  ## Reflection synthesis (mcReflection entries on self.jsonl) is
+  ## currently AGENT-AUTHORED — the `thinker` competency's heartbeat
+  ## duties prompt the agent to read recent partner experiences and
+  ## write a sanitized reflection via `memory store category=reflection`.
+  ## `stripEntityIdentifiers` is applied automatically on store
+  ## (mechanical backstop for nc:id / channel-id leaks); semantic
+  ## sanitization (no display names, no specifics) is the agent's
+  ## prompt-craft job.
+  ##
+  ## `kind` is a stable tag the agent keys on when surveying experiences
   ## ("cancelled_turn", "positive_feedback"). `content` is a short
   ## human-readable summary anchored to the agent's recent work
   ## ("iter 5: history queries on plant 荣鑫"). `weight` carries the

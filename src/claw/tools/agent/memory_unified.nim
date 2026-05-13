@@ -196,8 +196,17 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
     if not args.hasKey("content") or args["content"].getStr() == "":
       return "Error: 'content' is required"
     let key = args["key"].getStr()
-    let content = args["content"].getStr()
     let catStr = if args.hasKey("category"): args["category"].getStr() else: "core"
+    let category = parseCategory(catStr)
+    # Reflections get the structural-identifier strip applied automatically.
+    # Mechanical backstop — agents are expected to also write the reflection
+    # in generic terms (e.g. "the partner" not "Lubin"); this catches the
+    # nc:id / channel-id leaks the prompt-craft layer might miss.
+    let content =
+      if category == mcReflection:
+        stripEntityIdentifiers(args["content"].getStr())
+      else:
+        args["content"].getStr()
     case scope
     of "self":
       let requested = if args.hasKey("visibility"):
@@ -206,11 +215,14 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
       let actual = downgradeForTrust(requested, t.trustLevel)
       try:
         t.store.storeSelf(t.senderNcId, key, content,
-                          parseCategory(catStr), actual, t.trustLevel)
+                          category, actual, t.trustLevel)
         let note = if actual != requested:
           fmt" (visibility clamped {requested} → {actual} for trust {t.trustLevel})"
         else: ""
-        return fmt"Stored in self.jsonl as {actual}{note}"
+        let stripNote = if category == mcReflection:
+          " (entity-strip applied: nc:id/channel-id placeholders inserted)"
+        else: ""
+        return fmt"Stored in self.jsonl as {actual}{note}{stripNote}"
       except Exception as e:
         return fmt"Failed to store '{key}' to self: {e.msg}"
     else:  # sender scope
@@ -218,7 +230,7 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
         return "Error: scope=sender requires a resolved partner. The current requester has no nc:id yet — try scope=self or route through a channel that registers the user in the graph."
       try:
         t.store.storeAboutSender(t.senderNcId, key, content,
-                                  parseCategory(catStr), t.trustLevel)
+                                  category, t.trustLevel)
         return fmt"Stored '{key}' in conversation memory for {t.senderNcId}"
       except Exception as e:
         return fmt"Failed to store '{key}' to sender file: {e.msg}"

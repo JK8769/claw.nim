@@ -1,0 +1,99 @@
+{
+  "name": "thinker",
+  "description": "The agent's meta-cognitive practice — tends all three cognitive stores: memory (raw past), knowledge (timeless facts), heart (personal state + journal). Heartbeat-driven duties for reflection synthesis, wiki snapshot, knowledge promotion, journal consolidation, and visibility audit. Reflections are agent-authored with stripEntityIdentifiers applied automatically. Distinguishes timeless facts (knowledge) from episodic events (memory) from personal state (heart). The 'I think about my own thinking' competency.",
+  "skills": [],
+  "summary": "",
+  "has_handbook": true,
+  "loading": "lazy",
+  "heartbeat": [
+    {
+      "id": "snapshot_knowledge",
+      "title": "Auto-snapshot knowledge/ wiki if dirty",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "DIR=${OFFICE_DIR}/knowledge; if [ -d $DIR/.git ]; then cd $DIR && git status -s 2>/dev/null | head -1; fi"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "auto": {
+          "tool": "exec",
+          "args": {
+            "command": "cd ${OFFICE_DIR}/knowledge && git add -A && git commit -q -m 'Heartbeat snapshot {datetime}' 2>&1 | tail -1"
+          }
+        }
+      }
+    },
+    {
+      "id": "knowledge_promotion_candidates",
+      "title": "Cross-project knowledge promotion candidates",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "grep -rEh 'TODO|LEARN|NOTE:|FACT:' ${OFFICE_DIR}/workstation/active/*/README.md 2>/dev/null | head -20"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "These markers in project READMEs may point to insights worth promoting to knowledge/. For each, ask: does this apply BEYOND this project? If yes — call `knowledge action=consolidate topic=… insight=… source=…` to add it to your wiki. If no — leave it in the project. Don't promote project-specific data; only cross-project facts (API quirks, methodology notes, vendor gotchas, domain truths). Once consolidated, optionally rank with `knowledge action=rank topic=… score=N reason=…` so the most-important facts surface in `knowledge action=top`."
+      }
+    },
+    {
+      "id": "extract_from_recent_archives",
+      "title": "Recently-archived projects — extract durable lessons",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "find ${OFFICE_DIR}/workstation/archive -name 'README.md' -mtime -7 2>/dev/null | head -5"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "These projects were archived in the last 7 days. Project graveyards are a goldmine for retrospective insight. For each: scan the README and any retrospective notes. Anything that's a durable lesson (not project-specific) should land in knowledge/ via `knowledge action=consolidate`. The project body itself stays in archive/; only the cross-project insights get promoted."
+      }
+    },
+    {
+      "id": "reflect_on_recent_experiences",
+      "title": "Weekly reflection — synthesize patterns from recent partner experiences",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "find ${OFFICE_DIR}/memory -name 'nc_*.jsonl' -mtime -7 2>/dev/null | head -10"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Partner-experience files updated in the last 7 days. Read recent entries (use `memory action=recent days=7`), look for PATTERNS — recurring frustrations, what's working well, what's drifting. Write ONE reflection per pattern via `memory action=store category=reflection key=<short-tag> content=<the lesson>`. Critical discipline: write in GENERIC TERMS — 'a customer asked for X' not 'Lubin asked for X'; 'multiple partners struggled with Y' not 'nc:5 and nc:7 struggled with Y'. The framework runs stripEntityIdentifiers on store, but that's a backstop for nc:id/channel-id leaks; semantic anonymization (no display names, no specific contexts) is your prompt-craft job. Reflections that are actually CROSS-PROJECT TIMELESS FACTS belong in knowledge — promote those via `knowledge action=consolidate` instead."
+      }
+    },
+    {
+      "id": "consolidate_journal",
+      "title": "Monthly narrative — consolidate reflections into heart journal",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "test -f ${OFFICE_DIR}/heart/HEART.md && find ${OFFICE_DIR}/memory -name 'self.jsonl' -mtime -30 -exec wc -l {} \\; 2>/dev/null | head -3"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Self.jsonl has activity in the last 30 days. Pull recent reflections (`memory action=recent days=30 scope=self`), write a narrative paragraph for the month — what shifted in your understanding, what patterns emerged, what you're carrying forward. Append to `heart/journal.md` (or create it). The journal is identity-shaping prose, not structured data — readable by you next month, narrative tone. Distinct from reflections (which are short structured signals) and knowledge (which is timeless fact)."
+      }
+    },
+    {
+      "id": "audit_self_visibility",
+      "title": "Quarterly visibility audit — check for over-shares in self.jsonl",
+      "read": {
+        "tool": "exec",
+        "args": {
+          "command": "if [ -f ${OFFICE_DIR}/memory/self.jsonl ]; then grep -c '\"visibility\":\"shared\"' ${OFFICE_DIR}/memory/self.jsonl 2>/dev/null; fi"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Self.jsonl contains shared-visibility entries. Skim them (`memory action=recall scope=self query=...`) and ask: should any of these actually be private? Shared entries surface to lower-trust callers; private stays gated to high-trust. If you spot a shared entry that includes specifics about a partner, judgment about a person, or sensitive context — re-tag via `memory action=forget` + re-store with `visibility=private`. The visibility tags are the intra-boundary protection (boundary protection happens at office-scoping); this audit catches drift over time."
+      }
+    }
+  ]
+}
