@@ -86,27 +86,25 @@ const AllTools*: seq[ToolSpec] = @[
                           "interim", "checkpoint"],
        default = true, heartbeatSafe = true, externalAllowed = true,
        category = "comm"),
-  # `email` is chat's persistent / async counterpart — same capability-
-  # driven design, addressed at email-kind channels (SMTP / IMAP /
-  # third-party). Default off until an email vendor is enabled; sends
-  # return a clear "no email channel configured" error in the meantime.
-  spec(name = "email",
-       description = "persistent / async messaging — channel-agnostic " &
-                     "protocol verbs (action=send|reply|forward). Subject " &
-                     "+ thread-id semantics; capability-driven format " &
-                     "(plain vs HTML). Routes via social with kind=mail. " &
-                     "For real-time conversation, see chat. For inter-agent " &
-                     "peer notifications (local file queue), see mail.",
-       tags = @["comm", "email", "messaging", "core"], domain = "comm",
-       searchKeywords = @["email", "smtp", "imap", "send mail",
-                          "email reply", "email forward", "subject",
-                          "thread", "attachment", "postmark", "sendgrid",
-                          "ses", "persistent", "archive"],
-       default = false, heartbeatSafe = false, externalAllowed = false,
-       category = "comm"),
+  # (email and shipment folded into mail kind=email / kind=shipment)
+  # `mail` is the unified persistent / async messaging tool — three
+  # transport kinds (internal | email | shipment) under one tool.
+  # Internal: local file queue between agents (heartbeat MAILBOX ALERT
+  # integration unchanged). Email: SMTP/IMAP/Postmark/SendGrid/SES via
+  # the channel manager. Shipment: FedEx/UPS/USPS/DHL via the channel
+  # manager (transport TBD per operator's carrier choice).
   spec(name = "mail",
-       description = "inter-agent mail (action=send to peers; action=archive your own processed inbox)",
-       tags = @["agent", "core", "messaging"], domain = "comm",
+       description = "persistent / async messaging (action=send|reply|" &
+                     "forward|archive|track, kind=internal|email|shipment). " &
+                     "Internal kind = file queue between agents. Email + " &
+                     "shipment kinds route via channel manager when their " &
+                     "vendors are enabled. For real-time conversation, see chat.",
+       tags = @["comm", "mail", "messaging", "core", "agent"],
+       searchKeywords = @["mail send", "send mail", "memo", "email",
+                          "ship", "shipment", "parcel", "smtp", "imap",
+                          "postmark", "sendgrid", "ses", "fedex", "ups",
+                          "usps", "dhl", "track", "archive", "MAILBOX"],
+       domain = "comm",
        default = true, heartbeatSafe = true, category = "comm"),
   # Channel — vendor-level transport navigator (read-only). chat / mail
   # consult capabilities here for format-promotion decisions; no hardcoded

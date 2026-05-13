@@ -20,7 +20,7 @@ import ../tools/file_unified
 import ../tools/finder_unified
 import ../tools/system/[shell, clock, jq]
 import ../tools/agent/[spawn, subagent, memory_unified, todo_unified, workstation_unified, consolidate_knowledge, find]
-import ../tools/comm/[mail_unified, chat_unified, email_unified, delegate, lark, pushover]
+import ../tools/comm/[mail_unified, chat_unified, delegate, lark, pushover]
 import ../tools/channel_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
@@ -2906,7 +2906,18 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # office) can't see the tombstone.
   regTagged(newTodoTool(officeDir), ["agent", "core"], "manage your todo queue (defer/done) and time-scheduled TODOs (schedule/done_note)")
   regTagged(newConsolidateKnowledgeTool(officeDir, agentName), ["agent", "core"], "promote a cross-project insight into your knowledge wiki at knowledge/<topic>.md")
-  regTagged(newMailTool(workspace, officeDir), ["agent", "core", "messaging"], "inter-agent mail (send to peers, archive your own processed inbox)")
+  # `mail` is the unified persistent / async messaging tool. Three
+  # transport kinds: internal (file queue between agents), email
+  # (SMTP/IMAP/Postmark/etc — needs an email-kind channel enabled),
+  # shipment (FedEx/UPS/USPS/DHL — needs a shipment-kind channel).
+  # The send callback handles email + shipment dispatch via the
+  # MessageBus; internal kind dispatches directly via filesystem.
+  # Callback is bound below once it's defined; until then internal kind
+  # works (no callback needed) and email/shipment self-error if called.
+  let mailTool = newMailTool(workspace, officeDir)
+  regTagged(mailTool,
+            ["comm", "mail", "messaging", "core"],
+            "mail send reply forward archive track internal email shipment memo parcel")
   regTagged(newWorkstationTool(officeDir), ["agent", "core", "workstation"], "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds")
 
   # Channel — vendor-level transport navigator (read-only). Lists enabled
@@ -3097,23 +3108,14 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # `chat reply text="..." [progress=[...]] [interim=true]`. Plan-state
   # in `progress=[]` powers iteration-budget scaling (read by the
   # AgentLoop dispatch loop via al.chatTool.progressItems).
+  # Bind the send callback to mailTool now that callback is in scope.
+  mailTool.setSendCallback(callback)
+
   let chatTool = newChatTool()
   chatTool.setSendCallback(callback)
   chatTool.setTags(@["comm", "chat", "messaging", "core"])
   chatTool.setSearchHint("send reply forward channel-agnostic chat")
   toolsRegistry.register(chatTool)
-
-  # `email` is chat's persistent / async counterpart — same capability-
-  # driven design, addressed at email-kind channels (SMTP / IMAP / third-
-  # party providers). Returns a clear "no email channel configured" error
-  # until an operator enables a vendor; the protocol shape is in place
-  # so callers can plan against it. Default off — only useful once a
-  # vendor is wired.
-  let emailTool = newEmailTool()
-  emailTool.setSendCallback(callback)
-  emailTool.setTags(@["comm", "email", "messaging", "core"])
-  emailTool.setSearchHint("send reply forward email persistent async")
-  toolsRegistry.register(emailTool)
 
   let larkTool = newLarkCliTool()
   if larkTool.larkCliBin.len > 0:
