@@ -2,19 +2,27 @@
 ##
 ## Org-level direction: who's here, what we deliver, what we've declared.
 ##
-## Actions:
-##   info       op=read | update                                  (admin)
-##   memos      op=list | read | create | update | remove | mark_critical
-##   workforce  op=agents | offices | performance                 (cross-office views)
-##   labs       op=list | info | members | tasks | performance    (team workspaces)
-##   business   op=overview | revenue | performance | customers | payment
+## Uses METHOD-style dispatch — a single `method` arg accepts a dotted
+## path that selects the operation. Mirrors Nim's OOP `obj.member.method()`
+## syntax, just expressed as a string the LLM constructs.
+##
+## Methods (Phase 1 — reads only):
+##   info.read                       — admin metadata
+##   info.update                     — Phase 2 (BASE.nims persistence)
+##   memos.list | memos.read          — list/read policy docs
+##   memos.create | memos.update      — Phase 2 (Staff+ writes)
+##   memos.remove | memos.mark_critical — Phase 2 (Admin+ writes)
+##   workforce.agents | workforce.offices  — staff directory + vessel directory
+##   workforce.performance            — Phase 2 (per-agent metrics)
+##   labs.list | labs.info            — team workspace directory + per-team config
+##   labs.members | labs.tasks | labs.performance — Phase 2
+##   business.overview                — what the company does
+##   business.revenue | business.performance — Phase 2 (Admin+ financial reads)
+##   business.customers | business.payment   — Phase 2 (Staff+/Admin+)
+##   business.<domain>.<op>           — template-extensible (Phase 2)
 ##
 ## Trust gating (every write requires Staff+ minimum; sensitive writes
-## are Admin+). External customers (Guest tier) blocked from EVERY action.
-##
-## Phase 1 implements: reads (info read, memos list/read, workforce
-## agents/offices, labs list/info, business overview). Writes deferred
-## to Phase 2 once persistence and approval flows are designed.
+## are Admin+). External customers (Guest tier) blocked from EVERY method.
 ##
 ## Sibling tools on this trio:
 ##   tools     — sea (workforce capabilities, agent's craft)
@@ -27,12 +35,12 @@ import ../../config
 
 const ToolSpec* = spec(
   name = "company",
-  description = "Org-level navigator. info (admin metadata) | memos (policy docs) | workforce (agents/offices/performance) | labs (team workspaces) | business (overview/revenue/performance/customers/payment). Reads gated by trust tier (Member+); writes by Staff+ or Admin+. Guest tier blocked entirely.",
+  description = "Org-level navigator. Method-style dispatch — `method=path.to.thing`. Top-level methods: info | memos | workforce | labs | business. Each takes nested ops via dot (e.g. memos.list, workforce.agents, business.solar.plant_list). Reads gated at Member tier (40+); writes Staff+ or Admin+. Guest tier blocked entirely.",
   tags = @["agent", "core", "company", "org"],
   searchKeywords = @["company", "org", "organization", "info", "memos",
                       "workforce", "agents", "offices", "labs", "teams",
                       "business", "revenue", "performance", "customers",
-                      "payment", "policy", "staff", "directory"],
+                      "payment", "policy", "staff", "directory", "method"],
   domain = "agent",
   default = true,
   heartbeatSafe = true,
@@ -56,8 +64,7 @@ proc newCompanyTool*(workspace, companyName: string,
   )
 
 proc setRequesterContext*(t: CompanyTool, trustLevel: int) =
-  ## Refresh trust per turn — gates trust-tier checks in action handlers.
-  ## Mirrors UnifiedMemoryTool's setRequesterContext pattern.
+  ## Refresh trust per turn — gates trust-tier checks in method handlers.
   t.trustLevel = trustLevel
 
 method name*(t: CompanyTool): string = "company"
@@ -65,56 +72,59 @@ method name*(t: CompanyTool): string = "company"
 method description*(t: CompanyTool): string =
   "Org-level navigator — the navigator of the tools / office / company " &
   "trio.\n\n" &
-  "Actions (each with sub-ops):\n" &
-  "  info       — admin metadata (op: read | update)\n" &
-  "  memos      — policy docs (op: list | read | create | update | remove | mark_critical)\n" &
-  "  workforce  — individuals (op: agents | offices | performance)\n" &
-  "  labs       — team workspaces (op: list | info | members | tasks | performance)\n" &
-  "  business   — what we deliver (op: overview | revenue | performance | customers | payment)\n\n" &
+  "Method-style dispatch: `method=path.to.thing`. Reads naturally as " &
+  "Nim/OOP `company.path.to.thing(args)`. Available methods:\n\n" &
+  "  info.read                          — admin metadata\n" &
+  "  info.update                        — Phase 2 (BASE.nims persistence)\n" &
+  "  memos.list | memos.read             — list / read policy docs\n" &
+  "  memos.create | memos.update         — Staff+ writes (Phase 2)\n" &
+  "  memos.remove | memos.mark_critical  — Admin+ writes (Phase 2)\n" &
+  "  workforce.agents                   — list staff (people lens)\n" &
+  "  workforce.offices                  — list vessels (state lens)\n" &
+  "  workforce.performance              — Staff+ (Phase 2)\n" &
+  "  labs.list | labs.info              — team workspaces directory + config\n" &
+  "  labs.members | labs.tasks | labs.performance — Phase 2\n" &
+  "  business.overview                  — what the company does\n" &
+  "  business.revenue | business.performance — Admin+ financial (Phase 2)\n" &
+  "  business.customers | business.payment   — Staff+/Admin+ (Phase 2)\n" &
+  "  business.<domain>.<op>             — template-extensible (Phase 2)\n\n" &
   "Trust gating: reads require Member tier (40+); writes require Staff (70+) " &
-  "or Admin (90+). External customers (Guest tier) blocked from every action.\n\n" &
-  "Phase 1: reads only (info/memos/workforce/labs/business read ops). " &
-  "Writes Phase 2."
+  "or Admin (90+). External customers (Guest tier) blocked from every method."
 
 method parameters*(t: CompanyTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
-        "enum": ["info", "memos", "workforce", "labs", "business"],
-        "description": "Top-level concern. Each takes an `op` sub-arg."
-      },
-      "op": {
-        "type": "string",
-        "description": "Sub-operation. info: read | update. memos: list | read | create | update | remove | mark_critical. workforce: agents | offices | performance. labs: list | info | members | tasks | performance. business: overview | revenue | performance | customers | payment."
+        "description": "Dot-separated method path. Top-level: info | memos | workforce | labs | business. Examples: info.read, memos.list, memos.read, workforce.agents, workforce.offices, labs.list, labs.info, business.overview, business.solar.plant_list."
       },
       "name": {
         "type": "string",
-        "description": "Resource name (memo/agent/office/lab name)."
+        "description": "Resource name (memos.read, labs.info — the memo/lab name to fetch)."
       },
       "content": {
         "type": "string",
-        "description": "memos op=create/update — memo body."
+        "description": "memos.create / memos.update — memo body."
       },
       "field": {
         "type": "string",
-        "description": "info op=update — field name (description, etc.)"
+        "description": "info.update — field name (description, etc.)."
       },
       "value": {
         "type": "string",
-        "description": "info op=update — new field value."
+        "description": "info.update — new field value."
       },
       "critical": {
         "type": "boolean",
-        "description": "memos op=create/mark_critical — is this a critical memo (surfaces in every agent's system prompt)?"
+        "description": "memos.create / memos.mark_critical — is this a critical memo (surfaces in every agent's system prompt)?"
       },
       "period": {
         "type": "string",
-        "description": "performance ops — time window: today | last_7d | last_30d | all (default all)."
+        "description": "performance methods — time window: today | last_7d | last_30d | all (default all)."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── Trust gates ─────────────────────────────────────────────────────
@@ -125,25 +135,24 @@ const
   TrustStaff = 70
   TrustAdmin = 90
 
-proc requireTrust(t: CompanyTool, minTrust: int, label: string): string =
-  ## Returns "" if trust met; an Error message otherwise.
+proc requireAdmin(t: CompanyTool, label: string): string =
+  ## Returns "" if Admin tier met; an Error message otherwise.
   if t.role.toLowerAscii in ["boss", "master", "admin", "superadmin"]:
-    return ""  # internal high-priv roles bypass numeric checks
-  # Note: for memos op=remove and op=mark_critical we ALSO check role
-  # since these are admin-tier; trustLevel may still be Staff (70).
-  # Here we use the structural role + trust band check.
-  if minTrust >= TrustAdmin:
-    if t.role.toLowerAscii notin ["boss", "master", "admin", "superadmin"]:
-      return "Error: '" & label & "' requires Admin tier or higher. " &
-             "Current caller role: '" & t.role & "'. Lower tiers can read " &
-             "but cannot perform admin writes."
-  # For Staff+ checks, structural role lookup or fall back
-  return ""  # Phase 1: trust band integration with framework happens in Phase 2
+    return ""
+  return "Error: '" & label & "' requires Admin tier. Current caller " &
+         "role: '" & t.role & "'. Lower tiers can read but cannot " &
+         "perform admin writes."
 
-# ── info handlers ──────────────────────────────────────────────────
+proc requireStaff(t: CompanyTool, label: string): string =
+  ## Phase 1: lenient (trust-band integration deferred). Will tighten in Phase 2.
+  if t.role.toLowerAscii in ["boss", "master", "admin", "superadmin", "staff"]:
+    return ""
+  return "Error: '" & label & "' requires Staff tier (70+). Current caller " &
+         "role: '" & t.role & "'."
+
+# ── info.* ──────────────────────────────────────────────────────────
 
 proc doInfoRead(t: CompanyTool): string =
-  ## Public-readable company info (gated at Member tier).
   let envelope = %*{
     "name": t.companyName,
     "workspace": t.workspace,
@@ -154,18 +163,19 @@ proc doInfoRead(t: CompanyTool): string =
   }
   envelope.pretty()
 
-proc doInfo(t: CompanyTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: "read"
+proc doInfo(t: CompanyTool, op: string, args: Table[string, JsonNode]): string =
   case op
-  of "read", "":
+  of "", "read":
     return doInfoRead(t)
   of "update":
-    return "Error: 'info op=update' is Phase 2 — needs BASE.nims persistence design. " &
+    let gate = t.requireStaff("info.update")
+    if gate.len > 0: return gate
+    return "Error: 'info.update' is Phase 2 — needs BASE.nims persistence design. " &
            "Today, edit BASE.nims directly and run `claw co update`."
   else:
-    return "Error: unknown info op '" & op & "'. Use: read | update."
+    return "Error: unknown info method 'info." & op & "'. Use: info.read | info.update."
 
-# ── memos handlers ─────────────────────────────────────────────────
+# ── memos.* ─────────────────────────────────────────────────────────
 
 proc memorandumDir(t: CompanyTool): string =
   t.workspace / "memorandum"
@@ -199,7 +209,7 @@ proc doMemosList(t: CompanyTool): string =
   return "Memos in " & dir & ":\n" & rows.join("\n")
 
 proc doMemosRead(t: CompanyTool, args: Table[string, JsonNode]): string =
-  if not args.hasKey("name"): return "Error: 'name' is required for memos read"
+  if not args.hasKey("name"): return "Error: 'name' is required for memos.read"
   let name = args["name"].getStr().strip()
   if name.len == 0: return "Error: 'name' must not be empty"
   let path = t.memorandumDir() / (if name.endsWith(".md"): name else: name & ".md")
@@ -210,28 +220,27 @@ proc doMemosRead(t: CompanyTool, args: Table[string, JsonNode]): string =
   except CatchableError as e:
     return "Error: failed to read memo: " & e.msg
 
-proc doMemos(t: CompanyTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: "list"
+proc doMemos(t: CompanyTool, op: string, args: Table[string, JsonNode]): string =
   case op
-  of "list", "":
+  of "", "list":
     return doMemosList(t)
   of "read":
     return doMemosRead(t, args)
   of "create", "update":
-    let gate = t.requireTrust(TrustStaff, "memos op=" & op)
+    let gate = t.requireStaff("memos." & op)
     if gate.len > 0: return gate
-    return "Error: 'memos op=" & op & "' is Phase 2 — needs file-write + frontmatter handling."
+    return "Error: 'memos." & op & "' is Phase 2 — needs file-write + frontmatter handling."
   of "remove", "mark_critical":
-    let gate = t.requireTrust(TrustAdmin, "memos op=" & op)
+    let gate = t.requireAdmin("memos." & op)
     if gate.len > 0: return gate
-    return "Error: 'memos op=" & op & "' is Phase 2 (Admin-tier write)."
+    return "Error: 'memos." & op & "' is Phase 2 (Admin-tier write)."
   else:
-    return "Error: unknown memos op '" & op & "'. Use: list | read | create | update | remove | mark_critical."
+    return "Error: unknown memos method 'memos." & op &
+           "'. Use: memos.list | memos.read | memos.create | memos.update | memos.remove | memos.mark_critical."
 
-# ── workforce handlers ─────────────────────────────────────────────
+# ── workforce.* ─────────────────────────────────────────────────────
 
 proc doWorkforceAgents(t: CompanyTool): string =
-  ## List agents from cfg.
   if t.agentsConfig.len == 0: return "(no agents declared in this company)"
   var rows: seq[string]
   for a in t.agentsConfig:
@@ -242,7 +251,6 @@ proc doWorkforceAgents(t: CompanyTool): string =
   return "Agents (" & $t.agentsConfig.len & "):\n" & rows.join("\n")
 
 proc doWorkforceOffices(t: CompanyTool): string =
-  ## List office dirs (per-agent vessels). Trust-gated: lower tiers see less.
   let officesDir = t.workspace / "offices"
   if not dirExists(officesDir):
     return "(no offices yet — workspace/offices/ doesn't exist)"
@@ -257,7 +265,6 @@ proc doWorkforceOffices(t: CompanyTool): string =
       let info = getFileInfo(path)
       lastActive = info.lastWriteTime.format("yyyy-MM-dd HH:mm")
     except: discard
-    # SuperAdmin tier sees more detail; Member only sees existence.
     if t.role.toLowerAscii in ["boss", "master", "admin", "superadmin"]:
       var bytes: int64 = 0
       for p in walkDirRec(path, relative = false, checkDir = false):
@@ -270,26 +277,25 @@ proc doWorkforceOffices(t: CompanyTool): string =
   rows.sort()
   return "Offices in " & officesDir & ":\n" & rows.join("\n")
 
-proc doWorkforce(t: CompanyTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: "agents"
+proc doWorkforce(t: CompanyTool, op: string, args: Table[string, JsonNode]): string =
   case op
-  of "agents", "":
+  of "", "agents":
     return doWorkforceAgents(t)
   of "offices":
     return doWorkforceOffices(t)
   of "performance":
-    let gate = t.requireTrust(TrustStaff, "workforce op=performance")
+    let gate = t.requireStaff("workforce.performance")
     if gate.len > 0: return gate
-    return "Error: 'workforce op=performance' is Phase 2 (per-agent metrics aggregation)."
+    return "Error: 'workforce.performance' is Phase 2 (per-agent metrics aggregation)."
   else:
-    return "Error: unknown workforce op '" & op & "'. Use: agents | offices | performance."
+    return "Error: unknown workforce method 'workforce." & op &
+           "'. Use: workforce.agents | workforce.offices | workforce.performance."
 
-# ── labs handlers ──────────────────────────────────────────────────
+# ── labs.* ──────────────────────────────────────────────────────────
 
 proc labsDir(t: CompanyTool): string =
   ## Phase 1 reads from existing collaboration/teams/ location.
-  ## Phase 2 will migrate to workspace/labs/ for parallel structure with
-  ## offices (offices/<agent>/ + labs/<team>/).
+  ## Phase 2 will migrate to workspace/labs/ for parallel structure with offices.
   t.workspace / "collaboration" / "teams"
 
 proc doLabsList(t: CompanyTool): string =
@@ -316,7 +322,7 @@ proc doLabsList(t: CompanyTool): string =
   return "Labs (team workspaces):\n" & rows.join("\n")
 
 proc doLabsInfo(t: CompanyTool, args: Table[string, JsonNode]): string =
-  if not args.hasKey("name"): return "Error: 'name' is required for labs info"
+  if not args.hasKey("name"): return "Error: 'name' is required for labs.info"
   let name = args["name"].getStr().strip()
   let teamPath = t.labsDir() / name / "TEAM.json"
   if not fileExists(teamPath):
@@ -326,68 +332,84 @@ proc doLabsInfo(t: CompanyTool, args: Table[string, JsonNode]): string =
   except CatchableError as e:
     return "Error: failed to read TEAM.json: " & e.msg
 
-proc doLabs(t: CompanyTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: "list"
+proc doLabs(t: CompanyTool, op: string, args: Table[string, JsonNode]): string =
   case op
-  of "list", "":
+  of "", "list":
     return doLabsList(t)
   of "info":
     return doLabsInfo(t, args)
   of "members", "tasks", "performance":
-    return "Error: 'labs op=" & op & "' is Phase 2 (members from TEAM.json; tasks from labs/<team>/TASKS.md; performance aggregation)."
+    return "Error: 'labs." & op & "' is Phase 2 (members from TEAM.json; tasks from labs/<team>/TASKS.md; performance aggregation)."
   else:
-    return "Error: unknown labs op '" & op & "'. Use: list | info | members | tasks | performance."
+    return "Error: unknown labs method 'labs." & op &
+           "'. Use: labs.list | labs.info | labs.members | labs.tasks | labs.performance."
 
-# ── business handlers ─────────────────────────────────────────────
+# ── business.* ─────────────────────────────────────────────────────
 
 proc doBusinessOverview(t: CompanyTool): string =
-  ## Phase 1: generic overview. Templates extend with domain ops in Phase 2.
   let envelope = %*{
     "company": t.companyName,
     "agents": t.agentsConfig.len,
-    "comment": "domain-specific business sub-ops (fleet, inverter_alarms, etc.) are template-extension territory — Phase 2"
+    "comment": "domain-specific business sub-methods (e.g. business.solar.plant_list, business.payment.balance) are template-extension territory — Phase 2"
   }
   envelope.pretty()
 
-proc doBusiness(t: CompanyTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: "overview"
-  case op
-  of "overview", "":
+proc doBusiness(t: CompanyTool, subpath: string, args: Table[string, JsonNode]): string =
+  ## subpath can be: "" (default to overview), "overview", "revenue", etc.,
+  ## OR a deeper dotted path like "solar.plant_list" or "payment.balance"
+  ## (Phase 2 — template-registered domains).
+  if subpath == "" or subpath == "overview":
     return doBusinessOverview(t)
+
+  let dotIdx = subpath.find('.')
+  let topOp = if dotIdx < 0: subpath else: subpath[0 ..< dotIdx]
+  case topOp.toLowerAscii
   of "revenue", "performance":
-    let gate = t.requireTrust(TrustAdmin, "business op=" & op)
+    let gate = t.requireAdmin("business." & topOp)
     if gate.len > 0: return gate
-    return "Error: 'business op=" & op & "' is Phase 2 (Admin-tier financial/operational reads)."
+    return "Error: 'business." & topOp & "' is Phase 2 (Admin-tier financial/operational reads)."
   of "customers":
-    let gate = t.requireTrust(TrustStaff, "business op=customers")
+    let gate = t.requireStaff("business.customers")
     if gate.len > 0: return gate
-    return "Error: 'business op=customers' is Phase 2 — for now use `social my_customers`."
+    return "Error: 'business.customers' is Phase 2 — for now use `social my_customers`."
   of "payment":
-    let gate = t.requireTrust(TrustStaff, "business op=payment")
+    let gate = t.requireStaff("business.payment")
     if gate.len > 0: return gate
-    return "Error: 'business op=payment' is Phase 2 — for now use the standalone `payment` tool. Will fold here once company.business sub-actions stabilize."
+    return "Error: 'business.payment' is Phase 2 — for now use the standalone `payment` tool. Will fold here once company.business sub-methods stabilize."
   else:
-    return "Error: unknown business op '" & op & "'. Use: overview | revenue | performance | customers | payment."
+    # Unknown top-op — could be a template-registered domain (e.g. solar)
+    return "Error: 'business." & subpath & "' — domain '" & topOp &
+           "' not registered. Phase 2 will support template-extensible " &
+           "domains (e.g. business.solar.plant_list via the solar template)."
 
 # ── dispatch ───────────────────────────────────────────────────────
 
 method execute*(t: CompanyTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
-    return "Error: 'action' is required (info | memos | workforce | labs | business)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (e.g. info.read, memos.list, workforce.agents, labs.list, business.overview)"
 
-  # Hard guard: external customers (Guest tier 10) blocked from every action.
+  # Hard guard: external customers (Guest tier) blocked from every method.
   if t.trustLevel <= TrustGuest:
-    return "Error: company-level actions are not available at Guest trust. " &
+    return "Error: company-level methods are not available at Guest trust. " &
            "External customers can use `chat`, `mail`, and `social action=redeem` " &
            "to interact with the company; internal directory and operations are restricted."
 
-  let action = args["action"].getStr().toLowerAscii()
-  case action
-  of "info":      return doInfo(t, args)
-  of "memos":     return doMemos(t, args)
-  of "workforce": return doWorkforce(t, args)
-  of "labs":      return doLabs(t, args)
-  of "business":  return doBusiness(t, args)
+  let methodPath = args["method"].getStr().strip()
+  if methodPath.len == 0:
+    return "Error: 'method' must not be empty"
+
+  # Parse: split on first dot — top-level method + the rest as sub-path.
+  let dotIdx = methodPath.find('.')
+  let top = if dotIdx < 0: methodPath else: methodPath[0 ..< dotIdx]
+  let rest = if dotIdx < 0: "" else: methodPath[dotIdx + 1 .. ^1]
+
+  case top.toLowerAscii
+  of "info":      return doInfo(t, rest, args)
+  of "memos":     return doMemos(t, rest, args)
+  of "workforce": return doWorkforce(t, rest, args)
+  of "labs":      return doLabs(t, rest, args)
+  of "business":  return doBusiness(t, rest, args)
   else:
-    return "Error: Unknown action '" & action &
-           "'. Use: info | memos | workforce | labs | business."
+    return "Error: unknown method '" & methodPath &
+           "'. Top-level methods: info | memos | workforce | labs | business. " &
+           "Examples: info.read, memos.list, workforce.agents, labs.list, business.overview."
