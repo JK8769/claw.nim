@@ -365,8 +365,8 @@ proc doContent(t: FinderTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: FinderTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (files | content)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (files | content)"
   let action = getMethodArg(args)
   case action
   of "files":   return doFiles(t, args)

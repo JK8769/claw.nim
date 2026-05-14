@@ -27,9 +27,9 @@ The shape of what you're noticing dictates where it lands:
 
 | Shape | Goes to | Action |
 |---|---|---|
-| "I need a code container for this" | `<office>/workstation/repos/<name>/` | `workstation repo op=create name=...` |
-| "I need to track work that may span multiple sessions" | `<office>/workstation/projects/<name>/` | `workstation project op=create name=...` |
-| "Specific work item with status / fields" | `<office>/workstation/projects/<name>/items/<id>.json` | `workstation item op=add project=... title=... fields={...}` |
+| "I need a code container for this" | `<office>/workstation/repos/<name>/` | `workstation method=repo.create name=...` |
+| "I need to track work that may span multiple sessions" | `<office>/workstation/projects/<name>/` | `workstation method=project.create name=...` |
+| "Specific work item with status / fields" | `<office>/workstation/projects/<name>/items/<id>.json` | `workstation method=item.add project=... title=... fields={...}` |
 | "Untimed personal queue item, no project" | `<office>/notes/todo.jsonl` | `todo defer summary=...` (different tool) |
 | "Time-anchored reminder" | cron service or notes.org | `schedule add ...` (different tool) |
 
@@ -56,7 +56,7 @@ will have 30 in six months.
 Items stuck in `status=done` for >14 days are surfaced for cleanup
 decision. Two paths:
 - The done item is a meaningful historical record → leave it
-- The done item is just clutter → `workstation item op=remove` (Phase 2)
+- The done item is just clutter → `workstation method=item.remove` (Phase 2)
   or move to an `archived/` subfolder under items/
 
 A project with 200 done items + 5 active items has poor visibility into
@@ -66,7 +66,7 @@ what's actually being worked on.
 
 Repos with no commits in 90+ days are surfaced. For each:
 - Confirm it's a finished/abandoned project
-- Either `workstation repo op=archive` (Phase 2) or move to `_archive/`
+- Either `workstation method=repo.archive` (Phase 2) or move to `_archive/`
   manually
 - Or do nothing — sometimes long-quiet repos hold reference work the
   agent will return to
@@ -90,7 +90,7 @@ For each, decide: prune, split, or accept.
   done is a way to lose work. Always check the last commit's content and
   ask whether it represents a parking-spot or a finished state.
 - **Treating items as messages.** Items are persistent project records.
-  Don't use `workstation item op=add` for "remind me to ask Jerry about
+  Don't use `workstation method=item.add` for "remind me to ask Jerry about
   X" — that's a `todo` or a `chat` follow-up. Items are work the project
   is tracking long-term.
 - **Conflating projects with todos.** A project is multi-item, multi-

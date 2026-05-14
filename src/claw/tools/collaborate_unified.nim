@@ -1445,7 +1445,7 @@ method execute*(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
   # capability defaulting style; reduces friction for the LLM's first
   # tool call.
   let action =
-    if (args.hasKey("method") or args.hasKey("action")): getMethodArg(args).strip().toLowerAscii()
+    if args.hasKey("method"): getMethodArg(args).strip().toLowerAscii()
     else: "fan_out"
   case action
   of "fan_out", "fanout", "fan-out":

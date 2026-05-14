@@ -122,7 +122,7 @@ proc phase2Stub(action: string): string =
   "method=learn` for workstation-tier authoring."
 
 method execute*(t: FindTools, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
+  if not args.hasKey("method"):
     return "Error: 'method' is required (find | forge | update | share | remove)"
   let action = getMethodArg(args).toLowerAscii()
   case action

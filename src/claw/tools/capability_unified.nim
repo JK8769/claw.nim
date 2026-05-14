@@ -1040,8 +1040,8 @@ proc doInvoke(t: CapabilityTool, args: Table[string, JsonNode]): Future[string] 
 # ---------------------------------------------------------------------------
 
 method execute*(t: CapabilityTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (list | find | has | route | invoke)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (list | find | has | route | invoke)"
   let action = getMethodArg(args)
   case action
   of "list":   return doList(t)

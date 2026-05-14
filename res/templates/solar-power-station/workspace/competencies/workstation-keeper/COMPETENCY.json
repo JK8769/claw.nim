@@ -12,13 +12,12 @@
       "read": {
         "tool": "workstation",
         "args": {
-          "method": "audit",
-          "scope": "workstation"
+          "method": "audit.workstation"
         }
       },
       "act": {
         "when": "result_not_empty",
-        "hint": "Audit returned a workstation-wide health report. Look for `needs_attention` and `missing` projects. For each: investigate, then either fix the drift (port missing files, clean dirty git, reify empty scaffolds) or `workstation project op=archive` if the project is dead. Don't let the workstation accumulate cruft — entropy compounds."
+        "hint": "Audit returned a workstation-wide health report. Look for `needs_attention` and `missing` projects. For each: investigate, then either fix the drift (port missing files, clean dirty git, reify empty scaffolds) or `workstation method=project.archive` if the project is dead. Don't let the workstation accumulate cruft — entropy compounds."
       }
     },
     {
@@ -33,7 +32,7 @@
       },
       "act": {
         "when": "result_not_empty",
-        "hint": "Items in 'done' status for >14 days are candidates for archive. For each: confirm the work is genuinely complete and the historical record is valuable, then `workstation item op=remove` (Phase 2) or leave them as a record. Don't let the items dir bloat indefinitely; old dones add visual noise to active project views."
+        "hint": "Items in 'done' status for >14 days are candidates for archive. For each: confirm the work is genuinely complete and the historical record is valuable, then `workstation method=item.remove` (Phase 2) or leave them as a record. Don't let the items dir bloat indefinitely; old dones add visual noise to active project views."
       }
     },
     {
@@ -48,7 +47,7 @@
       },
       "act": {
         "when": "result_not_empty",
-        "hint": "Repos with no commits in 3+ months are candidates for archive. For each: check if it's a finished/abandoned project worth preserving as a record (`workstation repo op=archive` — Phase 2, currently means manually moving to a `_archive/` dir) or if it's still active and just dormant. Don't archive without confirmation — sometimes long-quiet repos hold reference work."
+        "hint": "Repos with no commits in 3+ months are candidates for archive. For each: check if it's a finished/abandoned project worth preserving as a record (`workstation method=repo.archive` — Phase 2, currently means manually moving to a `_archive/` dir) or if it's still active and just dormant. Don't archive without confirmation — sometimes long-quiet repos hold reference work."
       }
     },
     {
@@ -63,7 +62,7 @@
       },
       "act": {
         "when": "result_not_empty",
-        "hint": "Projects with 0 items may be dead drafts; projects with very high item counts (>50) may need splitting or the open-items pruned. For each: `workstation project op=close` (Phase 2) on dead drafts or surface large projects for review."
+        "hint": "Projects with 0 items may be dead drafts; projects with very high item counts (>50) may need splitting or the open-items pruned. For each: `workstation method=project.close` (Phase 2) on dead drafts or surface large projects for review."
       }
     }
   ]

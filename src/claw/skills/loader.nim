@@ -23,8 +23,8 @@ type
     workstationSkills*: string     ## Tier 3: <officeDir>/workstation/skills/
     loadedLazySkills*: HashSet[string]
       ## Session-scoped: names of `loading: lazy` skills the agent has called
-      ## `skill action=load` on. The prompt builder inlines their bodies on
-      ## subsequent turns until `skill action=unload` removes them. Per
+      ## `skill method=load` on. The prompt builder inlines their bodies on
+      ## subsequent turns until `skill method=unload` removes them. Per
       ## SkillsLoader (which is per-agent), so different agents have
       ## independent activation sets. Sticky: not auto-evicted — the agent
       ## owns lifecycle to avoid mid-procedure context loss.
@@ -408,7 +408,7 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
       lines.add("    <loading>lazy</loading>")
       lines.add("    <loaded>" & (if active: "true" else: "false") & "</loaded>")
       if not active:
-        lines.add("    <hint>call `skill action=load name=" & s.name &
+        lines.add("    <hint>call `skill method=load name=" & s.name &
                   "` to inline this skill's body for this session</hint>")
     if s.requires_tools.len > 0:
       lines.add("    <requires_tools>" & s.requires_tools.join(", ") & "</requires_tools>")
@@ -473,10 +473,10 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
 proc buildLoadedLazySkillBodies*(sl: SkillsLoader,
                                   allowedNames: seq[string]): string =
   ## Inline the FULL body of any `loading: lazy` skill the agent has
-  ## activated this session via `skill action=load name=<n>`. Mirrors
+  ## activated this session via `skill method=load name=<n>`. Mirrors
   ## `buildChannelActiveSkillRecipes` but the trigger is per-session
   ## activation rather than channel matching. Sticky: stays inlined
-  ## until `skill action=unload`.
+  ## until `skill method=unload`.
   ##
   ## Why: lazy skills appear as stubs in the catalog by default. When
   ## the agent decides one is relevant to the task at hand, loading
@@ -502,9 +502,9 @@ proc buildLoadedLazySkillBodies*(sl: SkillsLoader,
     blocks.add("## " & s.name & " (loaded for this session)\n\n" & content)
   if blocks.len == 0: return ""
   return "# Loaded Skill Bodies\n\nThe following skill content is " &
-         "INLINED below because you called `skill action=load` on it. " &
+         "INLINED below because you called `skill method=load` on it. " &
          "Apply the patterns directly — no `read_file` round-trip needed. " &
-         "Call `skill action=unload name=<n>` when the task is done to free " &
+         "Call `skill method=unload name=<n>` when the task is done to free " &
          "context.\n\n" & blocks.join("\n\n---\n\n")
 
 proc buildChannelActiveSkillRecipes*(sl: SkillsLoader,

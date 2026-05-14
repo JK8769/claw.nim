@@ -319,7 +319,7 @@ proc completeNote(t: ScheduleTool, args: Table[string, JsonNode]): string =
          $matchLine & " no longer present. Check notes.org integrity."
 
 method execute*(t: ScheduleTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")): return "Error: action is required"
+  if not args.hasKey("method"): return "Error: action is required"
   let action = getMethodArg(args)
 
   case action:

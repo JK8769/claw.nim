@@ -184,8 +184,8 @@ proc doInverterAlarms(t: SolarTool, args: Table[string, JsonNode]): Future[strin
 # ---------------------------------------------------------------------------
 
 method execute*(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required " &
+  if not args.hasKey("method"):
+    return "Error: 'method' is required " &
            "(plant_list | plant_now | plant_history | inverter_list | inverter_alarms)"
   let action = getMethodArg(args)
   case action

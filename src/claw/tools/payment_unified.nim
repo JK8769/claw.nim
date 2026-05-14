@@ -154,7 +154,7 @@ proc doHistory(t: PaymentTool, args: Table[string, JsonNode]): Future[string] {.
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: PaymentTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
+  if not args.hasKey("method"):
     return """{"error":"missing_action"}"""
   let action = getMethodArg(args).toLowerAscii()
   case action

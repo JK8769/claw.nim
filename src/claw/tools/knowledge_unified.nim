@@ -679,8 +679,8 @@ proc doLink(t: KnowledgeTool, args: Table[string, JsonNode]): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: KnowledgeTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (consolidate | lookup | list | " &
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (consolidate | lookup | list | " &
            "rank | top | update | deprecate | link)"
   let action = getMethodArg(args).toLowerAscii()
   case action

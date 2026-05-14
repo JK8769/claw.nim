@@ -104,8 +104,8 @@ method parameters*(t: WebTool): Table[string, JsonNode] =
   }.toTable
 
 method execute*(t: WebTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (fetch | request). " &
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (fetch | request). " &
            "For search engine queries use the standalone `search` tool."
   let action = getMethodArg(args)
   case action

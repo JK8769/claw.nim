@@ -152,8 +152,8 @@ proc phase2Stub(action: string): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: SystemTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required"
   let action = getMethodArg(args).toLowerAscii()
   case action
   of "capture":   return await doCapture(t, args)

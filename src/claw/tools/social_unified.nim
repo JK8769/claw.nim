@@ -1027,8 +1027,8 @@ proc doMarkUnreachable(t: SocialTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: SocialTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (query | who | update | customers | invite | redeem | route | discover | mark_unreachable)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (query | who | update | customers | invite | redeem | route | discover | mark_unreachable)"
   let action = getMethodArg(args)
   case action
   of "query":            return doQuery(t, args)

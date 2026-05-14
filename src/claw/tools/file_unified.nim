@@ -267,8 +267,8 @@ proc doAppend(t: FileTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: FileTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (read | write | edit | append)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (read | write | edit | append)"
   if not args.hasKey("path"):
     return "Error: 'path' is required"
   let action = getMethodArg(args)

@@ -186,7 +186,7 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
   if t.store == nil:
     return "Error: memory store not configured."
 
-  let action = if (args.hasKey("method") or args.hasKey("action")): getMethodArg(args) else: ""
+  let action = if args.hasKey("method"): getMethodArg(args) else: ""
   let scope = extractScope(args)
 
   case action

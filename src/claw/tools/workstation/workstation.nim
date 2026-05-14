@@ -84,12 +84,7 @@ method parameters*(t: WorkstationTool): Table[string, JsonNode] =
     "properties": %*{
       "method": {
         "type": "string",
-        "enum": ["overview", "repo", "project", "item", "audit"],
-        "description": "Top-level action. Most take a sub `op` arg."
-      },
-      "op": {
-        "type": "string",
-        "description": "Sub-operation for repo/project/item. e.g. repo op=create, project op=list, item op=add."
+        "description": "Dot-separated method path. Available: overview | repo.create | repo.list | project.create | project.list | item.add | item.list | item.update | audit.project | audit.workstation. Phase 2 stubs: repo.archive | repo.info | repo.pin | project.open | project.close | project.archive | item.remove | item.move."
       },
       "name": {
         "type": "string",
@@ -97,36 +92,31 @@ method parameters*(t: WorkstationTool): Table[string, JsonNode] =
       },
       "id": {
         "type": "string",
-        "description": "Item id (for item op=update / op=remove / op=move)."
+        "description": "Item id (for item.update / item.remove / item.move)."
       },
       "project": {
         "type": "string",
-        "description": "Project name (for item ops)."
+        "description": "Project name (for item.* methods)."
       },
       "description": {
         "type": "string",
-        "description": "repo/project create — optional description."
-      },
-      "scope": {
-        "type": "string",
-        "enum": ["project", "workstation"],
-        "description": "audit — project (single project audit) or workstation (cross-project tidiness)."
+        "description": "repo.create / project.create — optional description."
       },
       "title": {
         "type": "string",
-        "description": "item op=add — title (required)."
+        "description": "item.add — title (required)."
       },
       "status": {
         "type": "string",
-        "description": "item op=add/update — status (default: todo)."
+        "description": "item.add / item.update — status (default: todo)."
       },
       "fields": {
         "type": "object",
-        "description": "item op=add/update — additional fields as JSON object (priority, due, assignee, etc.). Schemaless."
+        "description": "item.add / item.update — additional fields as JSON object (priority, due, assignee, etc.). Schemaless."
       },
       "filter": {
         "type": "string",
-        "description": "list ops — substring/key=value filter (e.g. status=in_progress)."
+        "description": "list methods — substring/key=value filter (e.g. status=in_progress)."
       }
     },
     "required": %["method"]
@@ -235,17 +225,16 @@ proc phase2Stub(action, op: string): string =
   "implemented (planned for Phase 2). The surface is locked so agents " &
   "can plan against the future API."
 
-proc doRepo(t: WorkstationTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: ""
+proc doRepo(t: WorkstationTool, op: string, args: Table[string, JsonNode]): string =
   case op
   of "create": return doRepoCreate(t, args)
   of "list":   return doRepoList(t, args)
   of "archive", "info", "pin", "unpin", "link":
     return phase2Stub("repo", op)
   of "":
-    return "Error: 'op' is required for repo. Use: create | list (Phase 1) | archive | info | pin | unpin | link (Phase 2)"
+    return "Error: dotted-method required for repo. Use: repo.create | repo.list (Phase 1) | repo.archive | repo.info | repo.pin | repo.unpin | repo.link (Phase 2)"
   else:
-    return "Error: unknown repo op '" & op & "'. Use: create | list | archive | info | pin | unpin | link"
+    return "Error: unknown repo method 'repo." & op & "'. Use: repo.create | repo.list | repo.archive | repo.info | repo.pin | repo.unpin | repo.link"
 
 # ── project actions ───────────────────────────────────────────────
 
@@ -327,17 +316,16 @@ proc doProjectList(t: WorkstationTool, args: Table[string, JsonNode]): string =
   rows.sort()
   return "Projects in " & t.projectsDir & ":\n" & rows.join("\n")
 
-proc doProject(t: WorkstationTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: ""
+proc doProject(t: WorkstationTool, op: string, args: Table[string, JsonNode]): string =
   case op
   of "create": return doProjectCreate(t, args)
   of "list":   return doProjectList(t, args)
   of "open", "close", "archive":
     return phase2Stub("project", op)
   of "":
-    return "Error: 'op' is required. Use: create | list (Phase 1) | open | close | archive (Phase 2)"
+    return "Error: dotted-method required for project. Use: project.create | project.list (Phase 1) | project.open | project.close | project.archive (Phase 2)"
   else:
-    return "Error: unknown project op '" & op & "'. Use: create | list | open | close | archive"
+    return "Error: unknown project method 'project." & op & "'. Use: project.create | project.list | project.open | project.close | project.archive"
 
 # ── item actions ──────────────────────────────────────────────────
 
@@ -458,8 +446,7 @@ proc doItemUpdate(t: WorkstationTool, args: Table[string, JsonNode]): string =
   return "Updated item `" & id & "` in project `" & project & "` (fields: " &
          changedFields.join(", ") & ")"
 
-proc doItem(t: WorkstationTool, args: Table[string, JsonNode]): string =
-  let op = if args.hasKey("op"): args["op"].getStr().strip().toLowerAscii() else: ""
+proc doItem(t: WorkstationTool, op: string, args: Table[string, JsonNode]): string =
   case op
   of "add":    return doItemAdd(t, args)
   of "list":   return doItemList(t, args)
@@ -467,9 +454,9 @@ proc doItem(t: WorkstationTool, args: Table[string, JsonNode]): string =
   of "remove", "move":
     return phase2Stub("item", op)
   of "":
-    return "Error: 'op' is required. Use: add | list | update (Phase 1) | remove | move (Phase 2)"
+    return "Error: dotted-method required for item. Use: item.add | item.list | item.update (Phase 1) | item.remove | item.move (Phase 2)"
   else:
-    return "Error: unknown item op '" & op & "'. Use: add | list | update | remove | move"
+    return "Error: unknown item method 'item." & op & "'. Use: item.add | item.list | item.update | item.remove | item.move"
 
 # ── overview ──────────────────────────────────────────────────────
 
@@ -698,14 +685,15 @@ proc resolveProjectRoot(t: WorkstationTool, name: string): string =
     if dirExists(c): return c
   return ""
 
-proc doAudit(t: WorkstationTool, args: Table[string, JsonNode]): string =
+proc doAudit(t: WorkstationTool, scope: string, args: Table[string, JsonNode]): string =
+  ## scope = "project" or "workstation" (was a sub-arg, now part of dotted method)
   ensureDirs(t)
-  let scope = if args.hasKey("scope"): args["scope"].getStr().toLowerAscii() else: "project"
+  let scopeStr = if scope.len == 0: "project" else: scope
 
-  case scope
+  case scopeStr
   of "project":
     if not args.hasKey("name"):
-      return "Error: 'name' is required for audit scope=project"
+      return "Error: 'name' is required for audit.project"
     let name = args["name"].getStr().strip()
     if not validBasename(name):
       return "Error: 'name' must be a valid basename"
@@ -754,22 +742,30 @@ proc doAudit(t: WorkstationTool, args: Table[string, JsonNode]): string =
     return summary.pretty()
 
   else:
-    return "Error: scope must be 'project' or 'workstation' (got: '" & scope & "')"
+    return "Error: audit scope must be 'project' or 'workstation' (got: '" & scopeStr & "'). Use audit.project name=X or audit.workstation."
 
 # ── dispatch ──────────────────────────────────────────────────────
 
 method execute*(t: WorkstationTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (overview | repo | project | item | audit)"
-  let action = getMethodArg(args).toLowerAscii()
-  case action
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (e.g. overview, repo.create, project.list, item.add, audit.project, audit.workstation)"
+  let methodPath = getMethodArg(args).toLowerAscii()
+  if methodPath.len == 0:
+    return "Error: 'method' must not be empty"
+
+  # Parse: split on first dot — top-level + the rest as sub-op.
+  let dotIdx = methodPath.find('.')
+  let top = if dotIdx < 0: methodPath else: methodPath[0 ..< dotIdx]
+  let rest = if dotIdx < 0: "" else: methodPath[dotIdx + 1 .. ^1]
+
+  case top
   of "overview": return doOverview(t)
-  of "repo":     return doRepo(t, args)
-  of "project":  return doProject(t, args)
-  of "item":     return doItem(t, args)
-  of "audit":    return doAudit(t, args)
+  of "repo":     return doRepo(t, rest, args)
+  of "project":  return doProject(t, rest, args)
+  of "item":     return doItem(t, rest, args)
+  of "audit":    return doAudit(t, rest, args)
   else:
-    return "Error: Unknown action '" & action &
-           "'. Use: overview | repo | project | item | audit"
+    return "Error: Unknown method '" & methodPath &
+           "'. Top-level: overview | repo.* | project.* | item.* | audit.*"

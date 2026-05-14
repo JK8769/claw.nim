@@ -134,8 +134,8 @@ proc doDone(t: TodoTool, args: Table[string, JsonNode]): string =
 method execute*(t: TodoTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (defer | done). For time-anchored work use the `schedule` tool."
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (defer | done). For time-anchored work use the `schedule` tool."
   let action = getMethodArg(args)
   case action
   of "defer":     return doDefer(t, args)

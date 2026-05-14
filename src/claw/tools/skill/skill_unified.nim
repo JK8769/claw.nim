@@ -438,8 +438,8 @@ proc doUnload(t: SkillTool, args: Table[string, JsonNode]): string =
          "load again with `skill method=load name=" & name & "`."
 
 method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (list | load | unload | install | learn)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (list | load | unload | install | learn)"
   let action = getMethodArg(args)
   case action
   of "list":    return doList(t, args)

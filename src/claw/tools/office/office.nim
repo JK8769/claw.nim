@@ -270,8 +270,8 @@ proc doStats(t: OfficeTool, args: Table[string, JsonNode]): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: OfficeTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (clock | calendar | info | state | occupant | stats)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (clock | calendar | info | state | occupant | stats)"
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
   let action = getMethodArg(args).toLowerAscii()

@@ -92,7 +92,7 @@ method parameters*(t: UnifiedMcpTool): Table[string, JsonNode] =
   }.toTable
 
 method execute*(t: UnifiedMcpTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  let action = if (args.hasKey("method") or args.hasKey("action")): getMethodArg(args) else: ""
+  let action = if args.hasKey("method"): getMethodArg(args) else: ""
 
   # Forward context to sub-tools
   t.forgeTool.sessionKey = t.sessionKey

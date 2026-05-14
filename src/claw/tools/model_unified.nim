@@ -493,8 +493,8 @@ proc doCurrent(t: ModelTool): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: ModelTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (list | info | current)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (list | info | current)"
   let action = getMethodArg(args)
   case action
   of "list":    return doList(t, args)

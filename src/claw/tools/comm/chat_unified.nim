@@ -392,8 +392,8 @@ proc doForward(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.asy
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (send | reply | forward)."
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (send | reply | forward)."
   if not args.hasKey("text"):
     return "Error: 'text' is required."
   let action = getMethodArg(args)

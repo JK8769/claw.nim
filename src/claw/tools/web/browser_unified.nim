@@ -78,8 +78,8 @@ method parameters*(t: BrowserTool): Table[string, JsonNode] =
   }.toTable
 
 method execute*(t: BrowserTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (open | automate)"
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (open | automate)"
   let action = getMethodArg(args)
   case action
   of "open":

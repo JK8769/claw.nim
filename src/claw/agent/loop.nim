@@ -33,8 +33,8 @@ import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
 import ../tools/sched/schedule
 # (admin/* tools folded into other tools:
-#   set_api_key   → provider action=set_key
-#   feishu_add_app→ channel action=add_app vendor=feishu
+#   set_api_key   → provider method=set_key
+#   feishu_add_app→ channel method=add_app vendor=feishu
 #  feishu_add_app's runFeishuAddApp proc is imported by channel_unified)
 import ../tools/provider_unified
 import ../tools/model_unified
@@ -1239,7 +1239,7 @@ proc trySelfHealHiddenTool(al: AgentLoop, toolName, dispatchKind: string): Optio
   if not found:
     warnCF("agent", "Tool not found in registry", {"tool": toolName}.toTable)
     return some("Error: tool '" & toolName & "' is not registered. " &
-                "Call `tools action=find query=\"…\"` to discover what's available.")
+                "Call `tools method=find query=\"…\"` to discover what's available.")
   al.findTool.activateWithTTL(toolName)
   let schema = toolToSchema(tool, inferStrategy(al.model))
   let schemaJson = (%*{
@@ -1512,8 +1512,8 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                 "schemas are not in this turn's tool list. **You cannot " &
                 "call them directly** — if you try, you will guess " &
                 "parameter names and the call will fail.\n\n" &
-                "To use any of these, FIRST call `tools action=find` with " &
-                "relevant keywords (e.g. `tools action=find query=\"solar " &
+                "To use any of these, FIRST call `tools method=find` with " &
+                "relevant keywords (e.g. `tools method=find query=\"solar " &
                 "history\"`). That activates the tool's schema for " &
                 "the rest of this turn. Only then dispatch the tool.\n\n" &
                 "Categories:\n" & taxonomy)
@@ -2898,15 +2898,15 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # verbatim through path_security helpers in each.
   regTagged(newFsTool(workspace, officeDir, allowedPaths),
             ["filesystem", "data", "core"],
-            "structural fs ops: list mkdir delete move copy exists info (action=list|exists|info|mkdir|delete|move|copy)")
+            "structural fs ops: list mkdir delete move copy exists info (method=list|exists|info|mkdir|delete|move|copy)")
   regTagged(newFileTool(workspace, officeDir, allowedPaths),
             ["filesystem", "data", "core"],
-            "single-file content I/O: read write edit append (action=read|write|edit|append)")
+            "single-file content I/O: read write edit append (method=read|write|edit|append)")
   regTagged(newFinderTool(workspace, officeDir, allowedPaths),
             ["filesystem", "search", "data", "core"],
-            "discover files and content: glob path search and ripgrep content search (action=files|content)")
+            "discover files and content: glob path search and ripgrep content search (method=files|content)")
   regTagged(newShellTool(workspace), ["system", "dev", "automation", "core"], "process invocation: run command (sync or background); manage bg processes (read/kill/list)")
-  # `clock` folded into `office action=clock` (timezone-aware, office-bound).
+  # `clock` folded into `office method=clock` (timezone-aware, office-bound).
   regTagged(newOfficeTool(officeDir, workspace),
             ["agent", "core", "office"],
             "agent's vessel: clock/calendar/info/state/occupant/stats — read-only, self-only")
@@ -2969,7 +2969,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   #   search = the navigator (search engines: Brave w/ DDG fallback)
   regTagged(newWebTool(50000, toolCurly, createMaster()),
             ["web", "http", "data"],
-            "HTTP fetching: page extraction and raw HTTP requests (action=fetch|request)")
+            "HTTP fetching: page extraction and raw HTTP requests (method=fetch|request)")
   regTagged(newSearchTool(expandEnv(cfg.tools.web.search.api_key),
                           cfg.tools.web.search.max_results,
                           toolCurly, createMaster()),
@@ -3006,7 +3006,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
 
   # --- Hardware (unified) ---
   # hardware tool dropped — i2c/spi/mem_read/mem_write are embedded-only (option A).
-  # Host-level board info lives in `system action=info`. If on-device peripheral
+  # Host-level board info lives in `system method=info`. If on-device peripheral
   # I/O is needed, install a separate skill.
   regTagged(newDelegateTool(workspace, cfg.agents.named, askPeer = askPeer), ["agent", "delegation"], "delegate tasks to other named agents")
   # Collaborate — multi-agent orchestration over delegate. The navigator
@@ -3029,7 +3029,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # learn_skill: author a workstation SKILL.md from structured inputs (enforces invariants).
   # Only exposed to agents with workstation:true — see the auto-add below near the ClawDSL scope block.
   # Skill management — install registry/GitHub skills + author workstation Tier-3 skills (skill_unified)
-  # set_api_key folded into `provider action=set_key name=<x> api_key=<y>`
+  # set_api_key folded into `provider method=set_key name=<x> api_key=<y>`
   # — provider IS the LLM-credentials manager; key-setting belongs there.
   # Provider / model / capability — the sea / ship / navigator trio for
   # the LLM stack. Replaces provider_auth + model_list with three unified
@@ -3037,7 +3037,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   #   provider   = LLM accounts (sea)   — list, verify, info
   #   model      = LLM models (ship)    — list, info, current
   #   capability = capability discovery (navigator) — list, find, has
-  # `capability action=has` is heartbeat-safe and designed for framework-
+  # `capability method=has` is heartbeat-safe and designed for framework-
   # internal feature gating (e.g., "does this agent's current model have
   # vision before we serve an image?").
   regTagged(newProviderTool(),
@@ -3049,7 +3049,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newCapabilityTool(),
             ["diagnostics", "models", "capability", "core"],
             "find list has model capability tag vision tool-use reasoning")
-  # feishu_add_app folded into `channel action=add_app vendor=feishu
+  # feishu_add_app folded into `channel method=add_app vendor=feishu
   # app_id=cli_… app_secret=… agent=…`. Trust gate (SuperAdmin) lives
   # in runFeishuAddApp; channel_unified's add_app handler dispatches.
   # (Customer onboarding + my-customers + graph-query + update-contact +
@@ -3168,7 +3168,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   findToolInstance.setTags(@["utility", "core"])
   findToolInstance.setSearchHint("discover and activate hidden tools")
   toolsRegistry.register(findToolInstance)
-  # (Graph query collapsed into `social action=query` — see registration above.)
+  # (Graph query collapsed into `social method=query` — see registration above.)
 
   # Phase 400: Scan Tier 1 (foundation), Tier 2 (company), and system-wide MCPs.
   #
@@ -3294,7 +3294,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     try: createDir(pwDir)
     except: discard
     pwTool = newPlaywrightTool(pwDir)
-  regTagged(newBrowserTool(allowedBrowserDomains, pwTool), ["browser", "web", "ui", "automation"], "browser interaction: open URL (action=open) or playwright automation (action=automate)")
+  regTagged(newBrowserTool(allowedBrowserDomains, pwTool), ["browser", "web", "ui", "automation"], "browser interaction: open URL (method=open) or playwright automation (method=automate)")
 
   # --- Memory (unified, trust-gated) ---
   # Shares the same MemoryStore the ContextBuilder uses for system-prompt
@@ -3419,7 +3419,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     if added > 0:
       infoCF("agent", "Auto-exposed workstation-forged tools",
         {"agent": agentName, "count": $added, "tools": workstationTools.join(",")}.toTable)
-    # `skill` (action=learn) is the workstation-authoring path; was
+    # `skill` (method=learn) is the workstation-authoring path; was
     # `learn_skill` standalone pre-Phase-3b. Always available when
     # `workstation true` is set on the agent.
     if "skill" notin al.allowedTools:

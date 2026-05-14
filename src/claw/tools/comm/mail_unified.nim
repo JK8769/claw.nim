@@ -572,8 +572,8 @@ proc resolveKind(action: string, args: Table[string, JsonNode]): (string, string
                 " (internal | email | shipment).")
 
 method execute*(t: MailTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not (args.hasKey("method") or args.hasKey("action")):
-    return "Error: 'action' is required (send | reply | forward | archive | track)."
+  if not args.hasKey("method"):
+    return "Error: 'method' is required (send | reply | forward | archive | track)."
   let action = getMethodArg(args)
   let (kind, kindErr) = resolveKind(action, args)
   if kindErr.len > 0: return kindErr
