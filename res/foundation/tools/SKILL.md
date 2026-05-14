@@ -9,7 +9,7 @@ operations:
   - learn
 requires:
   tools:
-    - find_tools
+    - tools
     - mcp
     - delegate
     - skill
@@ -26,7 +26,7 @@ requires:
 This skill is about the agent's relationship to its tools. Five faces:
 
 - **What you have** — knowing your active surface
-- **What's hidden** — discovering tools by intent (find_tools)
+- **What's hidden** — discovering tools by intent (tools action=find)
 - **What a peer has** — delegating instead of authoring
 - **What doesn't exist yet** — forging new MCP tools
 - **What's worth saving** — capturing workflows as skills
@@ -76,13 +76,13 @@ Every agent gets a universal default set (~25 framework tools the manifest marks
 | **Competency** | Layer 3, role discipline (skills + handbook + duties) |
 | **Heart** | Layer 4, per-agent personal state |
 
-The decision tree below (memory → active → find_tools → delegate → forge → learn) is one specific application of this architecture — discovering and acquiring capabilities. The same layering applies when you're deciding where to put new knowledge.
+The decision tree below (memory → active → tools action=find → delegate → forge → learn) is one specific application of this architecture — discovering and acquiring capabilities. The same layering applies when you're deciding where to put new knowledge.
 
 ## The decision tree, in order
 
 1. **Memory check.** `memory action=recall scope=all query="..."` — you might already remember how you did this. Cheapest, cited.
 2. **Active list.** Scan your current tool list. Don't search for what's already in front of you.
-3. **Hidden discovery.** `find_tools query="..."` — most tools are hidden by default to save context. Search by **INTENT**, not tool name; the framework's `searchKeywords` field maps task vocabulary to tool names (e.g., "remind" → `schedule`, "modify" → `file action=edit`).
+3. **Hidden discovery.** `tools action=find query="..."` — most tools are hidden by default to save context. Search by **INTENT**, not tool name; the framework's `searchKeywords` field maps task vocabulary to tool names (e.g., "remind" → `schedule`, "modify" → `file action=edit`).
 4. **Peer delegation.** `delegate agent=X prompt="..."` — if a peer agent has the capability and you don't, ask them. Cheaper than forging; respects trust boundaries.
 5. **Forge new.** `mcp action=forge ...` — create a new MCP tool. Heavy: writes Nim, compiles, registers a server, adds tokens to your context. Reserve for genuinely new capabilities you'll use ≥3 times.
 6. **Capture as skill.** `skill action=learn ...` — when an ad-hoc workflow has been useful 3+ times, the workflow itself deserves a SKILL.md. Forge creates *capability*; learn creates *discoverability*.
@@ -101,18 +101,18 @@ You don't always know the right tool name. Search by what you want to DO:
 | search the internet | `search`, `google`, `lookup` | `web` action=search |
 | open a website | `browser`, `open`, `site` | `browser` action=open |
 | interact with a page | `click`, `automate`, `navigate`, `form` | `browser` action=automate |
-| run a shell command | `shell`, `bash`, `run`, `execute` | `exec` |
-| commit code | `commit`, `push`, `branch`, `diff` | `git` |
-| extract from JSON | `json`, `parse`, `filter`, `query` | `json_query` |
+| run a shell command | `shell`, `bash`, `run`, `execute` | `shell` action=run |
+| commit code | `commit`, `push`, `branch`, `diff` | `shell` action=run cmd="git ..." |
+| extract from JSON | `json`, `parse`, `filter`, `query` | `shell` action=run cmd="jq ..." |
 | describe an image | `describe image`, `vision`, `ocr` | `capability` action=invoke tag=vision |
 | verify a claim | `verify`, `prove`, `evidence` | `memory` action=verify or `workstation` action=audit scope=project |
 
-If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try a different intent angle. If `find_tools` still returns no useful results, the capability genuinely doesn't exist — proceed to delegate or forge.
+If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try a different intent angle. If `tools action=find` still returns no useful results, the capability genuinely doesn't exist — proceed to delegate or forge.
 
 ## When to forge — and when NOT
 
 **Forge when** all of these hold:
-- No existing claw tool or MCP server covers the capability (verified via `find_tools`, not assumed)
+- No existing claw tool or MCP server covers the capability (verified via `tools action=find`, not assumed)
 - The need is a **computation / API wrapper / hardware access** — not a sequence of existing tools
 - You'll use it ≥3 times (forging costs tokens and compile time; one-shots aren't worth it)
 - Your agent has `workstation: true`
@@ -242,11 +242,11 @@ The forge creates *capability*. The learn creates *discoverability*.
 
 ## Anti-patterns
 
-- **Don't forge for tools that already exist via composition.** Run `find_tools` first.
+- **Don't forge for tools that already exist via composition.** Run `tools action=find` first.
 - **Don't search for tools you already have active.** Check your tool list.
 - **Don't delegate when the peer doesn't have the capability either.** Ask them what they have first.
 - **Don't learn-as-skill for one-off workflows.** Wait for the 3rd repetition.
 - **Don't fall back to `exec` when a structured tool already does the job.** `git`, `web`, `mcp` etc. carry safety wrappers `exec` skips.
-- **Don't blindly call random tools to "see what they do."** `find_tools` returns descriptions without burning iterations.
+- **Don't blindly call random tools to "see what they do."** `tools action=find` returns descriptions without burning iterations.
 
 Practiced over time, the decision tree above becomes invisible — but writing it out keeps the discipline visible while it's still being learned.

@@ -18,7 +18,9 @@ import ../tools/solar_unified
 import ../tools/fs_unified
 import ../tools/file_unified
 import ../tools/finder_unified
-import ../tools/system/[clock, system]
+import ../tools/system/system
+import ../tools/office/office
+import ../tools/company/company
 import ../tools/shell/shell
 import ../tools/agent/[focus, subagent, memory_unified, todo_unified, find]
 import ../tools/workstation/workstation
@@ -1237,7 +1239,7 @@ proc trySelfHealHiddenTool(al: AgentLoop, toolName, dispatchKind: string): Optio
   if not found:
     warnCF("agent", "Tool not found in registry", {"tool": toolName}.toTable)
     return some("Error: tool '" & toolName & "' is not registered. " &
-                "Call find_tools(query=\"…\") to discover what's available.")
+                "Call `tools action=find query=\"…\"` to discover what's available.")
   al.findTool.activateWithTTL(toolName)
   let schema = toolToSchema(tool, inferStrategy(al.model))
   let schemaJson = (%*{
@@ -1510,9 +1512,9 @@ proc runLLMIteration(al: AgentLoop, ctx: TaskContext, messages: seq[providers_ty
                 "schemas are not in this turn's tool list. **You cannot " &
                 "call them directly** — if you try, you will guess " &
                 "parameter names and the call will fail.\n\n" &
-                "To use any of these, FIRST call `find_tools` with " &
-                "relevant keywords (e.g. `find_tools(query=\"solar " &
-                "history\")`). That activates the tool's schema for " &
+                "To use any of these, FIRST call `tools action=find` with " &
+                "relevant keywords (e.g. `tools action=find query=\"solar " &
+                "history\"`). That activates the tool's schema for " &
                 "the rest of this turn. Only then dispatch the tool.\n\n" &
                 "Categories:\n" & taxonomy)
               infoCF("agent", "Deferred tool loading", {"core_schemas": $defs.len, "hidden": $hiddenNames.len, "activated": $activatedSet.len}.toTable)
@@ -2904,7 +2906,20 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
             ["filesystem", "search", "data", "core"],
             "discover files and content: glob path search and ripgrep content search (action=files|content)")
   regTagged(newShellTool(workspace), ["system", "dev", "automation", "core"], "process invocation: run command (sync or background); manage bg processes (read/kill/list)")
-  regTagged(newClockTool(), ["utility", "core"], "get current date and time")
+  # `clock` folded into `office action=clock` (timezone-aware, office-bound).
+  regTagged(newOfficeTool(officeDir, workspace),
+            ["agent", "core", "office"],
+            "agent's vessel: clock/calendar/info/state/occupant/stats — read-only, self-only")
+  # Derive company name from the workspace's parent dir basename
+  # (`.nimclaw-<name>/workspace/` → `<name>`).
+  let companyDirName = extractFilename(parentDir(workspace))
+  let companyName = if companyDirName.startsWith(".nimclaw-"):
+                      companyDirName[".nimclaw-".len .. ^1]
+                    else: companyDirName
+  let companyTool = newCompanyTool(workspace, companyName, cfg.agents.named)
+  regTagged(companyTool,
+            ["agent", "core", "company", "org"],
+            "org-level navigator: info/memos/workforce/labs/business — trust-gated reads (Phase 1)")
   # The per-agent todo store lives at <officeDir>/notes/todo.jsonl;
   # pass officeDir not workspace, otherwise the tool writes to the
   # company root and the heartbeat dispatcher (which reads from the

@@ -61,9 +61,18 @@ const AllTools*: seq[ToolSpec] = @[
                            "where", "match", "regex"],
        domain = "file",
        default = true, heartbeatSafe = true, category = "files"),
-  spec(name = "find_tools",
-       description = "discover and activate hidden tools by keyword (meta-tool for tool surface introspection)",
-       tags = @["utility", "core", "meta"], domain = "agent",
+  # ── tools / office / company trio ──────────────────────────────
+  # tools     = sea  (workforce capabilities — agent's craft surface)
+  # office    = ship (agent's vessel — clock/calendar/state/etc.)
+  # company   = navigator (org-level direction — workforce/labs/business)
+  spec(name = "tools",
+       description = "Agent's craft surface for non-foundation tools. find = discover by keyword (Phase 1). forge / update / share / remove = author / modify / publish / delete authored tools (Phase 2 stubs).",
+       tags = @["utility", "core", "meta", "tools"],
+       searchKeywords = @["tools", "find tool", "discover", "search", "activate",
+                          "forge", "author", "create tool", "share tool",
+                          "remove tool", "update tool", "tool surface",
+                          "find_tools"],
+       domain = "agent",
        default = true, heartbeatSafe = false, category = "discovery"),
 
   # Communication
@@ -284,9 +293,25 @@ const AllTools*: seq[ToolSpec] = @[
        category = "relationships"),
 
   # Time / scheduling / housekeeping
-  spec(name = "clock", description = "get current date and time",
-       tags = @["utility", "core"], domain = "system",
-       default = true, heartbeatSafe = false, category = "system"),
+  # `clock` folded into `office action=clock` (timezone-aware, office-bound).
+  spec(name = "office",
+       description = "The agent's vessel — clock/calendar/info/state/occupant/stats. Read-only, self-only. clock+calendar timezone-aware (office tz). info = admin-set vessel config; state = system-tracked dynamics (sessions/storage/health); occupant = agent dynamics (presence); stats = usage analytics for cost analysis.",
+       tags = @["agent", "core", "office"],
+       searchKeywords = @["office", "clock", "time", "now", "calendar", "date",
+                          "today", "weekday", "week", "info", "state", "presence",
+                          "storage", "stats", "tokens", "cost", "usage",
+                          "vessel", "self", "my office"],
+       domain = "agent",
+       default = true, heartbeatSafe = true, category = "self-management"),
+  spec(name = "company",
+       description = "Org-level navigator. info (admin metadata) | memos (policy docs) | workforce (agents/offices/performance) | labs (team workspaces) | business (overview/revenue/performance/customers/payment). Reads gated by trust tier (Member+); writes by Staff+ or Admin+. Guest tier blocked entirely.",
+       tags = @["agent", "core", "company", "org"],
+       searchKeywords = @["company", "org", "organization", "info", "memos",
+                          "workforce", "agents", "offices", "labs", "teams",
+                          "business", "revenue", "performance", "customers",
+                          "payment", "policy", "staff", "directory"],
+       domain = "agent",
+       default = true, heartbeatSafe = true, category = "self-management"),
   spec(name = "schedule",
        description = "Time-anchored work. CRON: at_seconds | every_seconds | cron_expr (active fire). NOTES.ORG: due (+ recur) for date-tagged TODOs (passive heartbeat scan). action=complete marks a notes.org TODO done.",
        tags = @["scheduling", "automation", "cron"],
