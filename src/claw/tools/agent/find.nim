@@ -16,7 +16,7 @@
 ##   office   — ship  (agent's vessel — clock/calendar/state/etc.)
 ##   company  — navigator (org-level direction; cross-office views)
 
-import std/[asyncdispatch, json, tables, strutils, sets]
+import std/[asyncdispatch, json, tables, strutils, sets, sequtils]
 import ../types, ../registry
 import ../spec
 
@@ -41,9 +41,17 @@ type
   FindTools* = ref object of Tool
     registry*: ToolRegistry
     activated*: Table[string, int]  ## tool name -> remaining TTL (turns)
+    subTools*: Table[string, Tool]  ## sub-tool dispatch (e.g. "mcp" → UnifiedMcpTool).
+                                    ## Routed by execute() as `tools method=mcp.<op>`.
 
 proc newFindTools*(registry: ToolRegistry): FindTools =
-  FindTools(registry: registry, activated: initTable[string, int]())
+  FindTools(registry: registry, activated: initTable[string, int](),
+             subTools: initTable[string, Tool]())
+
+proc registerSubTool*(t: FindTools, name: string, handler: Tool) =
+  ## Register a sub-namespace under tools (e.g. "mcp" routes
+  ## `tools method=mcp.<op>` to handler.execute()).
+  t.subTools[name.toLowerAscii] = handler
 
 proc activateWithTTL*(t: FindTools, name: string, ttl: int = DefaultToolTTL) =
   ## Activate a tool with a TTL. Re-activating resets the TTL.
@@ -123,12 +131,28 @@ proc phase2Stub(action: string): string =
 
 method execute*(t: FindTools, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("method"):
-    return "Error: 'method' is required (find | forge | update | share | remove)"
-  let action = getMethodArg(args).toLowerAscii()
-  case action
+    return "Error: 'method' is required (find | forge | update | share | remove | mcp.<op>)"
+  let methodPath = getMethodArg(args).toLowerAscii()
+
+  # Parse: split on first dot for sub-tool routing.
+  let dotIdx = methodPath.find('.')
+  let top = if dotIdx < 0: methodPath else: methodPath[0 ..< dotIdx]
+  let rest = if dotIdx < 0: "" else: methodPath[dotIdx + 1 .. ^1]
+
+  case top
   of "find": return doFind(t, args)
   of "forge", "update", "share", "remove":
-    return phase2Stub(action)
+    return phase2Stub(top)
   else:
-    return "Error: Unknown action '" & action &
-           "'. Use: find | forge | update | share | remove."
+    # Try registered sub-tools (e.g. mcp).
+    if t.subTools.hasKey(top):
+      var subArgs = initTable[string, JsonNode]()
+      subArgs["method"] = %rest
+      for k, v in args.pairs:
+        if k != "method": subArgs[k] = v
+      return await t.subTools[top].execute(subArgs)
+    var available: seq[string]
+    for s in t.subTools.keys: available.add(s)
+    let availStr = if available.len > 0: " | " & available.mapIt(it & ".<op>").join(" | ") else: ""
+    return "Error: Unknown method '" & methodPath &
+           "'. Use: find | forge | update | share | remove" & availStr

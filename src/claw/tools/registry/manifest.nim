@@ -403,59 +403,24 @@ const AllTools*: seq[ToolSpec] = @[
   # (pushover folded into channels/pushover.nim — agents reach it via
   #  `chat send vendor=pushover` like any other channel vendor)
 
-  # Payment — value-transfer protocol verbs. Phase 1: read-only
-  # (balance, status, history). Vendor rails are payment-suite skills
-  # (nkn-suite today, btc/lightning/usdc-* future). Send / transfer
-  # actions deferred until the approval-flow design lands.
-  spec(name = "payment",
-       description = "value transfer (Phase 1: READ-ONLY — balance, " &
-                     "status, history). Routes via vendor rails " &
-                     "(nkn-suite today; btc/lightning/usdc-* future). " &
-                     "Send/transfer ops require an approval flow that " &
-                     "isn't shipped yet.",
-       tags = @["payment", "finance", "wallet", "core"],
-       searchKeywords = @["payment", "balance", "wallet", "transaction",
-                          "tx", "status", "history", "nkn", "btc",
-                          "lightning", "usdc", "money", "value"],
-       domain = "payment",
-       default = false, heartbeatSafe = false, externalAllowed = false,
-       category = "finance"),
+  # `payment` folded under `company method=business.payment.<op>` (Phase 3).
+  # PaymentTool stays as an internal handler registered with company.business;
+  # no longer a standalone framework tool.
+
   # (feishu_add_app folded into `channel method=add_app vendor=feishu
   #  app_id=… app_secret=… agent=…` — SuperAdmin gate preserved.)
 
   # (Customer onboarding — create_customer_invite, my_customers,
   # redeem_invite — all collapsed into the unified `social` tool above
-  # as actions=invite, =customers, =redeem respectively.)
+  # as methods=invite, =customers, =redeem respectively.)
 
-  # MCP forge (heavy — for agents that need to author tools)
-  spec(name = "mcp",
-       description = "forge / persist / purge MCP tool servers and skills",
-       tags = @["admin", "mcp", "skills"], domain = "mcp",
-       default = false, heartbeatSafe = false, category = "mcp"),
+  # `mcp` folded under `tools method=mcp.<op>` (Phase 3). UnifiedMcpTool
+  # stays as an internal sub-tool registered with the tools tool;
+  # no longer a standalone framework tool.
 
-  # Solar — multi-vendor solar power station facade. One tool with five
-  # actions (plant_list / plant_now / plant_history / inverter_list /
-  # inverter_alarms). Substrate in `tools/solar/solar_adapter.nim` scans
-  # the registry for `mcp_<vendor>_<contract-tool>` matches, fans out for
-  # list ops, routes per-plant ops via plant→vendor cache. Used by
-  # solar-power-station template skills (daily-yield-sync, monthly-report,
-  # alarm-response). Default off; template's `solar-adapter` skill grants
-  # via requires.tools.
-  spec(name = "solar",
-       description = "Solar power station fleet — multi-vendor facade " &
-                     "(method=plant_list|plant_now|plant_history|" &
-                     "inverter_list|inverter_alarms). Fans out for " &
-                     "list ops, routes per-plant ops by " &
-                     "plant→vendor cache.",
-       tags = @["solar", "fleet", "domain"],
-       searchKeywords = @["plant list", "all plants", "fleet",
-                           "plant now", "current power", "real-time",
-                           "today yield", "plant history", "yield",
-                           "historical", "kwh", "inverter", "equipment",
-                           "devices", "alarm", "fault", "alert",
-                           "photovoltaic", "pv", "solar"],
-       domain = "solar",
-       default = false, heartbeatSafe = false, category = "solar"),
+  # `solar` folded under `company method=business.solar.<op>` (Phase 3).
+  # SolarTool stays as an internal handler registered with company.business;
+  # no longer a standalone framework tool.
 
   # Skill management (heavy — install mutates system; learn requires workstation)
   spec(name = "skill",

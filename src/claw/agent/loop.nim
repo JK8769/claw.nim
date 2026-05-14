@@ -2958,9 +2958,11 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # READ-ONLY balance/status/history). Routes via vendor-rail skills
   # (nkn-suite today; btc/lightning/usdc-* future). Default off; operator
   # opts in by installing a payment-rail skill in BASE.nims.
-  regTagged(newPaymentTool(toolsRegistry),
-            ["payment", "finance", "wallet", "core"],
-            "payment balance status history wallet transaction tx vendor=nkn-suite")
+  # `payment` folded under `company method=business.payment.<op>` (Phase 3).
+  # Construct the tool but DON'T register as standalone — register as a
+  # business domain on the company tool below.
+  let paymentToolInstance = newPaymentTool(toolsRegistry)
+  companyTool.registerBusinessDomain("payment", paymentToolInstance)
 
   # --- Web tools ---
   # Internet stack — sea / ship / navigator
@@ -3025,7 +3027,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   #  actions; the pool is just another shape of multi-agent coordination)
 
   # --- Admin & config ---
-  regTagged(newUnifiedMcpTool(toolsRegistry, officeDir), ["admin", "mcp", "skills"], "forge persist purge MCP tool servers skills")
+  # `mcp` folded under `tools method=mcp.<op>` (Phase 3). Construct the
+  # tool but register as a sub-tool on the tools tool, not standalone.
+  let mcpToolInstance = newUnifiedMcpTool(toolsRegistry, officeDir)
   # learn_skill: author a workstation SKILL.md from structured inputs (enforces invariants).
   # Only exposed to agents with workstation:true — see the auto-add below near the ClawDSL scope block.
   # Skill management — install registry/GitHub skills + author workstation Tier-3 skills (skill_unified)
@@ -3064,9 +3068,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # is `solar` (one tool, five actions). Default off; the
   # solar-power-station template's solar-adapter skill declares it in
   # requires.tools so agents that opt in receive the grant.
-  regTagged(newSolarTool(toolsRegistry),
-    ["solar", "fleet", "domain"],
-    "solar power station fleet: list plants real-time state history inverters alarms across vendors")
+  # `solar` folded under `company method=business.solar.<op>` (Phase 3).
+  let solarToolInstance = newSolarTool(toolsRegistry)
+  companyTool.registerBusinessDomain("solar", solarToolInstance)
 
   let installer = newSkillInstaller(officeDir)
 
@@ -3167,6 +3171,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let findToolInstance = newFindTools(toolsRegistry)
   findToolInstance.setTags(@["utility", "core"])
   findToolInstance.setSearchHint("discover and activate hidden tools")
+  # Register mcp as a sub-tool of `tools` (folded — Phase 3).
+  findToolInstance.registerSubTool("mcp", mcpToolInstance)
   toolsRegistry.register(findToolInstance)
   # (Graph query collapsed into `social method=query` — see registration above.)
 

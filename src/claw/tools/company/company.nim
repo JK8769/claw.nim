@@ -53,6 +53,12 @@ type
     companyName*: string              ## from workspace dir basename
     agentsConfig*: seq[NamedAgentConfig]
     trustLevel*: int                  ## refreshed per turn — gates writes
+    businessDomains*: Table[string, Tool]  ## domain → handler tool. Lets
+                                           ## templates register sub-namespaces
+                                           ## under company.business (e.g.
+                                           ## "solar" → SolarTool, "payment"
+                                           ## → PaymentTool). Routed by
+                                           ## doBusiness as `business.<dom>.<op>`.
 
 proc newCompanyTool*(workspace, companyName: string,
                      agents: seq[NamedAgentConfig]): CompanyTool =
@@ -60,12 +66,19 @@ proc newCompanyTool*(workspace, companyName: string,
     workspace: workspace,
     companyName: companyName,
     agentsConfig: agents,
-    trustLevel: 100  # default safe — overwritten per-turn via setRequesterContext
+    trustLevel: 100,  # default safe — overwritten per-turn via setRequesterContext
+    businessDomains: initTable[string, Tool]()
   )
 
 proc setRequesterContext*(t: CompanyTool, trustLevel: int) =
   ## Refresh trust per turn — gates trust-tier checks in method handlers.
   t.trustLevel = trustLevel
+
+proc registerBusinessDomain*(t: CompanyTool, domain: string, handler: Tool) =
+  ## Register a sub-namespace under company.business. Calls to
+  ## `company method=business.<domain>.<op>` route to handler.execute()
+  ## with the op substituted as the handler's `method` arg.
+  t.businessDomains[domain.toLowerAscii] = handler
 
 method name*(t: CompanyTool): string = "company"
 
@@ -354,15 +367,19 @@ proc doBusinessOverview(t: CompanyTool): string =
   }
   envelope.pretty()
 
-proc doBusiness(t: CompanyTool, subpath: string, args: Table[string, JsonNode]): string =
-  ## subpath can be: "" (default to overview), "overview", "revenue", etc.,
-  ## OR a deeper dotted path like "solar.plant_list" or "payment.balance"
-  ## (Phase 2 — template-registered domains).
+proc doBusiness(t: CompanyTool, subpath: string, args: Table[string, JsonNode]): Future[string] {.async.} =
+  ## subpath can be:
+  ##   "" or "overview"           → doBusinessOverview
+  ##   "revenue" / "performance"  → Admin-gated stubs (Phase 2)
+  ##   "customers"                → Staff-gated stub (Phase 2)
+  ##   "<domain>.<op>"            → routed to registered businessDomains[<domain>]
   if subpath == "" or subpath == "overview":
     return doBusinessOverview(t)
 
   let dotIdx = subpath.find('.')
   let topOp = if dotIdx < 0: subpath else: subpath[0 ..< dotIdx]
+  let rest = if dotIdx < 0: "" else: subpath[dotIdx + 1 .. ^1]
+
   case topOp.toLowerAscii
   of "revenue", "performance":
     let gate = t.requireAdmin("business." & topOp)
@@ -372,15 +389,20 @@ proc doBusiness(t: CompanyTool, subpath: string, args: Table[string, JsonNode]):
     let gate = t.requireStaff("business.customers")
     if gate.len > 0: return gate
     return "Error: 'business.customers' is Phase 2 — for now use `social my_customers`."
-  of "payment":
-    let gate = t.requireStaff("business.payment")
-    if gate.len > 0: return gate
-    return "Error: 'business.payment' is Phase 2 — for now use the standalone `payment` tool. Will fold here once company.business sub-methods stabilize."
   else:
-    # Unknown top-op — could be a template-registered domain (e.g. solar)
+    # Try registered business domains (e.g. solar, payment).
+    let domain = topOp.toLowerAscii
+    if t.businessDomains.hasKey(domain):
+      var subArgs = initTable[string, JsonNode]()
+      subArgs["method"] = %rest  # pass the rest of the path as the handler's method
+      for k, v in args.pairs:
+        if k != "method": subArgs[k] = v
+      return await t.businessDomains[domain].execute(subArgs)
+    var available: seq[string]
+    for d in t.businessDomains.keys: available.add(d)
+    let availStr = if available.len > 0: " Registered domains: " & available.join(", ") else: ""
     return "Error: 'business." & subpath & "' — domain '" & topOp &
-           "' not registered. Phase 2 will support template-extensible " &
-           "domains (e.g. business.solar.plant_list via the solar template)."
+           "' not registered." & availStr
 
 # ── dispatch ───────────────────────────────────────────────────────
 
@@ -408,7 +430,7 @@ method execute*(t: CompanyTool, args: Table[string, JsonNode]): Future[string] {
   of "memos":     return doMemos(t, rest, args)
   of "workforce": return doWorkforce(t, rest, args)
   of "labs":      return doLabs(t, rest, args)
-  of "business":  return doBusiness(t, rest, args)
+  of "business":  return await doBusiness(t, rest, args)
   else:
     return "Error: unknown method '" & methodPath &
            "'. Top-level methods: info | memos | workforce | labs | business. " &
