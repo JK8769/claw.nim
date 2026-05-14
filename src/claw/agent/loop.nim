@@ -18,8 +18,10 @@ import ../tools/solar_unified
 import ../tools/fs_unified
 import ../tools/file_unified
 import ../tools/finder_unified
-import ../tools/system/[shell, clock, jq]
-import ../tools/agent/[focus, subagent, memory_unified, todo_unified, workstation_unified, find]
+import ../tools/system/[clock, system]
+import ../tools/shell/shell
+import ../tools/agent/[focus, subagent, memory_unified, todo_unified, find]
+import ../tools/workstation/workstation
 import ../tools/knowledge_unified
 import ../tools/comm/[mail_unified, chat_unified, delegate, lark]
 import ../tools/channel_unified
@@ -27,7 +29,6 @@ import ../tools/payment_unified
 import ../tools/collaborate_unified
 import ../tools/web/[web_unified, browser_unified, playwright]
 import ../tools/search_unified
-import ../tools/dev/git
 import ../tools/sched/schedule
 # (admin/* tools folded into other tools:
 #   set_api_key   → provider action=set_key
@@ -37,10 +38,8 @@ import ../tools/provider_unified
 import ../tools/model_unified
 import ../tools/capability_unified
 import ../tools/social_unified
-import ../tools/visual/screenshot
 # image_info.nim retained as a helper module (imageMetaForFile is
 # imported by fs_unified.nim for the image-aware fs info extension).
-import ../tools/hardware/hardware_unified
 import ../tools/mcp/mcp_unified
 import ../tools/skill/skill_unified
 import ../services/scheduler as cron_service
@@ -2904,7 +2903,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newFinderTool(workspace, officeDir, allowedPaths),
             ["filesystem", "search", "data", "core"],
             "discover files and content: glob path search and ripgrep content search (action=files|content)")
-  regTagged(newExecTool(workspace), ["system", "dev", "automation", "core"], "run shell commands and scripts")
+  regTagged(newShellTool(workspace), ["system", "dev", "automation", "core"], "process invocation: run command (sync or background); manage bg processes (read/kill/list)")
   regTagged(newClockTool(), ["utility", "core"], "get current date and time")
   # The per-agent todo store lives at <officeDir>/notes/todo.jsonl;
   # pass officeDir not workspace, otherwise the tool writes to the
@@ -2930,7 +2929,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(mailTool,
             ["comm", "mail", "messaging", "core"],
             "mail send reply forward archive track internal email shipment memo parcel")
-  regTagged(newWorkstationTool(officeDir), ["agent", "core", "workstation"], "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds")
+  regTagged(newWorkstationTool(officeDir), ["agent", "core", "workstation"], "GitHub-like local platform: overview/repo/project/item/audit (per-agent under <office>/workstation/)")
 
   # Channel — vendor-level transport navigator (read-only). Lists enabled
   # channel vendors and their feature matrices (text length, markdown,
@@ -2963,9 +2962,10 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
             "search the web — find pages by query, returns title/url/snippet")
 
   # --- Dev tools ---
-  regTagged(newGitTool(workspace, cfg.agents.security.allowed_paths, officeDir), ["git", "devops", "vcs"], "git version control operations")
+  # `git` tool dropped — use `shell run cmd="git ..."` per Claude Code convention.
+  # Workflow discipline encoded in agent competencies, not in a separate tool.
   # (pushover folded into channels/pushover.nim — agents reach it via `chat send vendor=pushover`)
-  regTagged(newScreenshotTool(workspace), ["visual", "utility"], "capture screenshots of display")
+  regTagged(newSystemTool(workspace), ["system", "host", "core"], "host machine substrate: capture screenshot, host info, transports/introspection (Phase 2 stubs)")
   let allowedDomainsStr = getEnv("BROWSER_ALLOWED_DOMAINS", "")
   var allowedBrowserDomains: seq[string] = @[]
   if allowedDomainsStr.len > 0:
@@ -2990,7 +2990,9 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   regTagged(newFocusTool(subagentManager), ["agent", "automation"], "concentrate on a subtask with a constrained tool surface (intra-agent)")
 
   # --- Hardware (unified) ---
-  regTagged(newUnifiedHardwareTool(cfg.peripherals.boards), ["hardware", "sensors", "i2c", "spi"], "I2C SPI board info memory read write hardware peripherals")
+  # hardware tool dropped — i2c/spi/mem_read/mem_write are embedded-only (option A).
+  # Host-level board info lives in `system action=info`. If on-device peripheral
+  # I/O is needed, install a separate skill.
   regTagged(newDelegateTool(workspace, cfg.agents.named, askPeer = askPeer), ["agent", "delegation"], "delegate tasks to other named agents")
   # Collaborate — multi-agent orchestration over delegate. The navigator
   # of the social/delegate/collaborate trio: fan_out (parallel) or
@@ -3039,7 +3041,8 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   # redeem-invite all collapsed into the unified `social` tool, registered
   # below near the contextBuilder creation site since `social` needs the
   # ContextBuilder for its guest-rename path.)
-  regTagged(newJqTool(workspace), ["data", "utility"], "transform JSON data with jq expressions")
+  # json_query / jq tool dropped — use `shell run cmd="jq ..."` per the
+  # primitives-not-wrappers convention. Same pattern as git.
 
   # Solar — vendor-agnostic facade for multi-vendor solar power
   # stations. Substrate in tools/solar/solar_adapter.nim; agent surface

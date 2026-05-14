@@ -181,9 +181,16 @@ const AllTools*: seq[ToolSpec] = @[
        description = "Untimed batch queue (defer/done). Heartbeat scans pending items. For time-anchored work use `schedule`; for immediate constrained work use `focus`.",
        tags = @["agent", "core"], domain = "agent",
        default = true, heartbeatSafe = true, category = "self-management"),
+  # Navigator leg of the system / shell / workstation trio. Per-agent
+  # GitHub-like local platform: overview / repo / project / item / audit.
+  # Heartbeat-driven hygiene lives in the workstation-keeper competency.
   spec(name = "workstation",
-       description = "audit a project under workstation/active/ for README↔disk drift, broken symlinks, dirty git, empty scaffolds (action=verify_project)",
-       tags = @["agent", "core", "workstation"], domain = "agent",
+       description = "Per-agent GitHub-like local platform. overview/repo/project/item/audit. Repos = code containers; projects = work trackers with schemaless items; audit = health check (project or workstation scope).",
+       tags = @["agent", "core", "workstation"],
+       searchKeywords = @["workstation", "project", "repo", "repository",
+                          "kanban", "board", "tracker", "items",
+                          "github", "audit", "verify", "drift", "overview"],
+       domain = "agent",
        default = true, heartbeatSafe = true, category = "self-management"),
   # `knowledge` — the ship in memory/knowledge/skill trio. Surface:
   # consolidate (write/append) | lookup (read) | list | rank (agent
@@ -329,44 +336,40 @@ const AllTools*: seq[ToolSpec] = @[
        domain = "admin",
        default = true, heartbeatSafe = false, category = "admin"),
 
-  # Dev / utilities
-  spec(name = "git", description = "structured git operations (status, diff, log, branch, commit, add, checkout, stash)",
-       tags = @["git", "devops", "vcs"],
-       searchKeywords = @["commit", "push", "pull", "branch", "diff", "status",
-                           "log", "checkout", "stash", "merge", "rebase",
-                           "version control", "repository", "repo"],
-       domain = "dev",
-       default = true, heartbeatSafe = false, category = "dev"),
-  spec(name = "json_query", description = "transform JSON data with jq expressions",
-       tags = @["data", "utility"],
-       searchKeywords = @["json", "jq", "parse", "filter", "extract", "transform",
-                           "query", "select"],
+  # ── system / shell / workstation trio ─────────────────────────
+  # system     = sea  (host machine substrate — capture, info, transports)
+  # shell      = ship (process invocation primitive — run/read/kill/list)
+  # workstation = navigator (GitHub-like local platform — declared above)
+  #
+  # Per Claude Code convention: tools are primitives, workflows live in
+  # prompts/competencies. Dropped: separate `git` and `json_query` tools
+  # (use `shell run cmd="git ..."` / `shell run cmd="jq ..."`); separate
+  # `screenshot` (now `system action=capture`); separate `hardware`
+  # i2c/spi/mem (option A: deleted entirely — host-focused tooling).
+
+  spec(name = "system",
+       description = "Host machine substrate. Display capture + host info today; transports (uart/bluetooth/usb), introspection (processes/metrics/services/signal/clipboard/notify) declared and stubbed for Phase 2. For embedded peripheral I/O (i2c/spi/gpio) install a separate skill.",
+       tags = @["system", "host", "core"],
+       searchKeywords = @["screenshot", "screen capture", "display", "host info",
+                           "machine info", "hostname", "uname", "cpu",
+                           "uart", "serial", "tty", "flash firmware", "console",
+                           "bluetooth", "ble", "usb", "lsusb",
+                           "processes", "ps", "top", "metrics",
+                           "services", "systemd", "launchd",
+                           "signal", "kill", "clipboard", "pasteboard",
+                           "notify", "notification"],
        domain = "system",
-       default = true, heartbeatSafe = false, category = "utility"),
+       default = true, heartbeatSafe = false, category = "system"),
 
-  # ── Opt-in (not in defaults) ──────────────────────────────────
-
-  # System
-  spec(name = "exec",
-       description = "run shell commands and scripts (broad system access; opt-in via skill)",
+  spec(name = "shell",
+       description = "Process invocation: run command (foreground or background via flag); manage background processes (read/kill/list). One primitive for sync + async execution. For typed git/jq, use shell run cmd=... per Claude Code convention (tools are primitives; workflows live in prompts).",
        tags = @["system", "dev", "automation", "core"],
-       searchKeywords = @["shell", "bash", "command", "run", "execute", "script",
-                           "terminal", "subprocess", "cli"],
-       domain = "system",
+       searchKeywords = @["shell", "exec", "run", "command", "bash", "sh",
+                           "background", "bg", "process", "pid", "kill",
+                           "git", "jq", "make", "build", "test", "deploy",
+                           "subprocess", "spawn process"],
+       domain = "shell",
        default = false, heartbeatSafe = true, category = "system"),
-
-  # Visual
-  spec(name = "screenshot", description = "capture screenshots of display",
-       tags = @["visual", "utility"],
-       searchKeywords = @["capture", "screen", "display", "snap", "picture of screen"],
-       domain = "visual",
-       default = false, heartbeatSafe = false, category = "visual"),
-
-  # Hardware
-  spec(name = "hardware",
-       description = "I2C / SPI / board info / memory read+write hardware peripherals",
-       tags = @["hardware", "sensors", "i2c", "spi"], domain = "hardware",
-       default = false, heartbeatSafe = false, category = "hardware"),
 
   # Vendor / channel-specific
   # (lark_cli is no longer agent-facing — kept as a Nim API for the

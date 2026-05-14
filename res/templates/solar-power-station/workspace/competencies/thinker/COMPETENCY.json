@@ -10,17 +10,19 @@
       "id": "snapshot_knowledge",
       "title": "Auto-snapshot knowledge/ wiki if dirty",
       "read": {
-        "tool": "exec",
+        "tool": "shell",
         "args": {
-          "command": "DIR=${OFFICE_DIR}/knowledge; if [ -d $DIR/.git ]; then cd $DIR && git status -s 2>/dev/null | head -1; fi"
+          "action": "run",
+          "cmd": "DIR=${OFFICE_DIR}/knowledge; if [ -d $DIR/.git ]; then cd $DIR && git status -s 2>/dev/null | head -1; fi"
         }
       },
       "act": {
         "when": "result_not_empty",
         "auto": {
-          "tool": "exec",
+          "tool": "shell",
           "args": {
-            "command": "cd ${OFFICE_DIR}/knowledge && git add -A && git commit -q -m 'Heartbeat snapshot {datetime}' 2>&1 | tail -1"
+            "action": "run",
+            "cmd": "cd ${OFFICE_DIR}/knowledge && git add -A && git commit -q -m 'Heartbeat snapshot {datetime}' 2>&1 | tail -1"
           }
         }
       }
@@ -29,9 +31,10 @@
       "id": "knowledge_promotion_candidates",
       "title": "Cross-project knowledge promotion candidates",
       "read": {
-        "tool": "exec",
+        "tool": "shell",
         "args": {
-          "command": "grep -rEh 'TODO|LEARN|NOTE:|FACT:' ${OFFICE_DIR}/workstation/active/*/README.md 2>/dev/null | head -20"
+          "action": "run",
+          "cmd": "grep -rEh 'TODO|LEARN|NOTE:|FACT:' ${OFFICE_DIR}/workstation/active/*/README.md 2>/dev/null | head -20"
         }
       },
       "act": {
@@ -43,9 +46,10 @@
       "id": "extract_from_recent_archives",
       "title": "Recently-archived projects — extract durable lessons",
       "read": {
-        "tool": "exec",
+        "tool": "shell",
         "args": {
-          "command": "find ${OFFICE_DIR}/workstation/archive -name 'README.md' -mtime -7 2>/dev/null | head -5"
+          "action": "run",
+          "cmd": "find ${OFFICE_DIR}/workstation/archive -name 'README.md' -mtime -7 2>/dev/null | head -5"
         }
       },
       "act": {
@@ -57,9 +61,10 @@
       "id": "reflect_on_recent_experiences",
       "title": "Weekly reflection — synthesize patterns from recent partner experiences",
       "read": {
-        "tool": "exec",
+        "tool": "shell",
         "args": {
-          "command": "find ${OFFICE_DIR}/memory -name 'nc_*.jsonl' -mtime -7 2>/dev/null | head -10"
+          "action": "run",
+          "cmd": "find ${OFFICE_DIR}/memory -name 'nc_*.jsonl' -mtime -7 2>/dev/null | head -10"
         }
       },
       "act": {
@@ -71,9 +76,10 @@
       "id": "consolidate_journal",
       "title": "Monthly narrative — consolidate reflections into heart journal",
       "read": {
-        "tool": "exec",
+        "tool": "shell",
         "args": {
-          "command": "test -f ${OFFICE_DIR}/heart/HEART.md && find ${OFFICE_DIR}/memory -name 'self.jsonl' -mtime -30 -exec wc -l {} \\; 2>/dev/null | head -3"
+          "action": "run",
+          "cmd": "test -f ${OFFICE_DIR}/heart/HEART.md && find ${OFFICE_DIR}/memory -name 'self.jsonl' -mtime -30 -exec wc -l {} \\; 2>/dev/null | head -3"
         }
       },
       "act": {
@@ -85,9 +91,10 @@
       "id": "audit_self_visibility",
       "title": "Quarterly visibility audit — check for over-shares in self.jsonl",
       "read": {
-        "tool": "exec",
+        "tool": "shell",
         "args": {
-          "command": "if [ -f ${OFFICE_DIR}/memory/self.jsonl ]; then grep -c '\"visibility\":\"shared\"' ${OFFICE_DIR}/memory/self.jsonl 2>/dev/null; fi"
+          "action": "run",
+          "cmd": "if [ -f ${OFFICE_DIR}/memory/self.jsonl ]; then grep -c '\"visibility\":\"shared\"' ${OFFICE_DIR}/memory/self.jsonl 2>/dev/null; fi"
         }
       },
       "act": {

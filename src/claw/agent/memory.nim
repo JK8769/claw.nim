@@ -370,7 +370,7 @@ proc getMemoryContext*(ms: MemoryStore, senderNcId: string,
 ##
 ## `verify` action layers on top: tokenizes a claim, runs recallAll
 ## per keyword, returns evidence with provenance. The cognitive
-## analog of `workstation verify_project` — tool produces evidence,
+## analog of `workstation audit scope=project` — tool produces evidence,
 ## agent draws conclusions.
 
 type

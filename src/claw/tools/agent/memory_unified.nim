@@ -71,7 +71,7 @@ method description*(t: UnifiedMemoryTool): string =
   "  recent   — time-window shortcut: `days=N` (e.g. last 7 days).\n" &
   "  verify   — given a `claim`, sweep all stores for evidence with " &
   "provenance. Returns supporting hits with source+ts+excerpt. " &
-  "The cognitive analog of `workstation verify_project` — tool " &
+  "The cognitive analog of `workstation audit scope=project` — tool " &
   "produces evidence, you draw conclusions.\n\n" &
   "Scopes (pick via `scope=...`):\n" &
   "  sender (default) — partner's nc_<id>.jsonl (write/recall/list/forget)\n" &

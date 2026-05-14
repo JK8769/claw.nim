@@ -76,6 +76,9 @@ competency "technical-communication":
 competency "thinker":
   description "The agent's meta-cognitive practice — tends memory + knowledge + heart together. Heartbeat duties: snapshot wiki, surface knowledge promotion candidates, weekly reflection on partner experiences (with stripEntityIdentifiers backstop), monthly journal consolidation, quarterly visibility audit."
 
+competency "workstation-keeper":
+  description "Tends the agent's workstation (repos + projects + items) so it stays clean over time. Heartbeat duties: weekly cross-project audit, weekly stale-done cleanup, monthly stale-repo archive review, monthly link-health check. Pairs with the workstation tool — tool primitive on demand; periodic discipline here. Same shape as thinker over the cognitive stores."
+
 # ── Solar adapter (L1 — vendor-neutral facade) ───────────────
 # Exposes the `solar` tool that fans out across installed inverter
 # vendors and routes per-plant queries automatically. Agents that
@@ -163,7 +166,8 @@ agent "Analyst":
   uses "solar-adapter"
   # Analyst practices the analytical disciplines.
   practices "solar-operator", "data-analyst",
-            "technical-communication", "thinker"
+            "technical-communication", "thinker",
+            "workstation-keeper"
 
   reportsTo "Operator":
     role "boss"

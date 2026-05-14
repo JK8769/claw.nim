@@ -1,0 +1,70 @@
+{
+  "name": "workstation-keeper",
+  "description": "Tends the agent's workstation (repos + projects + items) so it stays clean over time. Heartbeat duties: weekly cross-project audit, weekly stale-done cleanup, monthly stale-repo archive review, monthly link-health check. Pairs with the `workstation` tool (audit / overview / repo / project / item) — agent-invoked CRUD lives there; periodic discipline lives here. Same pattern as `thinker` over the cognitive stores.",
+  "skills": [],
+  "summary": "",
+  "has_handbook": true,
+  "loading": "lazy",
+  "heartbeat": [
+    {
+      "id": "weekly_workstation_audit",
+      "title": "Weekly cross-project audit — surface drift",
+      "read": {
+        "tool": "workstation",
+        "args": {
+          "action": "audit",
+          "scope": "workstation"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Audit returned a workstation-wide health report. Look for `needs_attention` and `missing` projects. For each: investigate, then either fix the drift (port missing files, clean dirty git, reify empty scaffolds) or `workstation project op=archive` if the project is dead. Don't let the workstation accumulate cruft — entropy compounds."
+      }
+    },
+    {
+      "id": "weekly_clean_done_items",
+      "title": "Weekly stale-done cleanup — items in 'done' >14d",
+      "read": {
+        "tool": "shell",
+        "args": {
+          "action": "run",
+          "cmd": "find ${OFFICE_DIR}/workstation/projects -name '*.json' -mtime +14 -path '*/items/*' 2>/dev/null | xargs -I{} sh -c 'grep -l \\\"\\\"status\\\": \\\"done\\\"\\\" \\\"$1\\\" 2>/dev/null' _ {} | head -10"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Items in 'done' status for >14 days are candidates for archive. For each: confirm the work is genuinely complete and the historical record is valuable, then `workstation item op=remove` (Phase 2) or leave them as a record. Don't let the items dir bloat indefinitely; old dones add visual noise to active project views."
+      }
+    },
+    {
+      "id": "monthly_archive_stale_repos",
+      "title": "Monthly stale-repo review — repos with no commits >90d",
+      "read": {
+        "tool": "shell",
+        "args": {
+          "action": "run",
+          "cmd": "for r in ${OFFICE_DIR}/workstation/repos/*/; do if [ -d \"$r/.git\" ]; then last=$(git -C \"$r\" log -1 --format=%cr 2>/dev/null); echo \"${r##*/repos/}: $last\"; fi; done | grep -E '(months|year)' | head -10"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Repos with no commits in 3+ months are candidates for archive. For each: check if it's a finished/abandoned project worth preserving as a record (`workstation repo op=archive` — Phase 2, currently means manually moving to a `_archive/` dir) or if it's still active and just dormant. Don't archive without confirmation — sometimes long-quiet repos hold reference work."
+      }
+    },
+    {
+      "id": "monthly_link_health",
+      "title": "Monthly link-health check — broken refs in project metadata",
+      "read": {
+        "tool": "shell",
+        "args": {
+          "action": "run",
+          "cmd": "for p in ${OFFICE_DIR}/workstation/projects/*/PROJECT.json; do if [ -f \"$p\" ]; then proj=${p%/PROJECT.json}; proj=${proj##*/projects/}; cnt=$(find \"${p%/PROJECT.json}/items\" -name '*.json' 2>/dev/null | wc -l); echo \"$proj: $cnt items\"; fi; done"
+        }
+      },
+      "act": {
+        "when": "result_not_empty",
+        "hint": "Projects with 0 items may be dead drafts; projects with very high item counts (>50) may need splitting or the open-items pruned. For each: `workstation project op=close` (Phase 2) on dead drafts or surface large projects for review."
+      }
+    }
+  ]
+}
