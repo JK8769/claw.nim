@@ -6,14 +6,14 @@
 ##
 ## Actions:
 ##
-##   action=list   — list directory entries (preserves list_dir verbatim)
-##   action=exists — bool check on a file or directory          [NEW]
-##   action=info   — size, mtime, type, permissions             [NEW]
-##   action=mkdir  — create directory (optional `parents=true`) [NEW]
-##   action=delete — remove file/dir (optional `recursive=true` [NEW]
+##   method=list   — list directory entries (preserves list_dir verbatim)
+##   method=exists — bool check on a file or directory          [NEW]
+##   method=info   — size, mtime, type, permissions             [NEW]
+##   method=mkdir  — create directory (optional `parents=true`) [NEW]
+##   method=delete — remove file/dir (optional `recursive=true` [NEW]
 ##                   for non-empty directories)
-##   action=move   — rename or move a path                      [NEW]
-##   action=copy   — copy a file or directory                   [NEW]
+##   method=move   — rename or move a path                      [NEW]
+##   method=copy   — copy a file or directory                   [NEW]
 ##
 ## Dependency surface:
 ##   • workspaceDir  — company workspace root (path-safety boundary)
@@ -80,7 +80,7 @@ method parameters*(t: FsTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["list", "exists", "info", "mkdir", "delete", "move", "copy"],
         "description": "Operation to perform"
@@ -106,7 +106,7 @@ method parameters*(t: FsTool): Table[string, JsonNode] =
         "description": "delete only — remove non-empty directories recursively (default false)"
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -331,9 +331,9 @@ proc doCopy(t: FsTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: FsTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (list | exists | info | mkdir | delete | move | copy)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "list":   return doList(t, args)
   of "exists": return doExists(t, args)

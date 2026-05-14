@@ -41,7 +41,7 @@ import ../../logger
 
 const ToolSpec* = spec(
   name = "skill",
-  description = "skill management (action=list|load|unload session skills, install plugins, learn workstation skills)",
+  description = "skill management (method=list|load|unload session skills, install plugins, learn workstation skills)",
   tags = @["admin", "skills", "workstation"],
   searchKeywords = @["load skill", "unload skill", "list skills",
                       "playbook", "procedure", "consult skill",
@@ -93,7 +93,7 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["list", "load", "unload", "install", "learn"],
         "description": "Operation to perform"
@@ -151,7 +151,7 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
         "description": "learn only — optional user-query → tool-call → reply examples"
       }
     },
-    "required": %*["action"]
+    "required": %*["method"]
   }.toTable
 
 # ── install ──────────────────────────────────────────────────────
@@ -392,7 +392,7 @@ proc doLoad(t: SkillTool, args: Table[string, JsonNode]): string =
     infoCF("tool", "Lazy skill loaded for session",
            {"skill": s.name, "path": s.path}.toTable)
     return "Loaded skill '" & s.name & "' — its body will appear in your system " &
-           "prompt starting next turn. Stays loaded until `skill action=unload`."
+           "prompt starting next turn. Stays loaded until `skill method=unload`."
   # Then handbook (competency)
   let hbHit = t.skillsLoader.competencyByName(name)
   if hbHit.isSome:
@@ -409,9 +409,9 @@ proc doLoad(t: SkillTool, args: Table[string, JsonNode]): string =
            {"competency": c.name, "path": c.handbookPath}.toTable)
     return "Loaded handbook '" & c.name & "' — its body will appear in your system " &
            "prompt under # Handbooks starting next turn. Stays loaded until " &
-           "`skill action=unload`."
+           "`skill method=unload`."
   return "Error: '" & name & "' not found as a skill or competency handbook. " &
-         "Call `skill action=list` to see what's available."
+         "Call `skill method=list` to see what's available."
 
 proc doUnload(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name") or args["name"].getStr().strip().len == 0:
@@ -435,12 +435,12 @@ proc doUnload(t: SkillTool, args: Table[string, JsonNode]): string =
   infoCF("tool", "Lazy " & dropKind & " unloaded from session",
          {"name": name}.toTable)
   return "Unloaded " & dropKind & " '" & name & "'. Catalog stub remains visible; " &
-         "load again with `skill action=load name=" & name & "`."
+         "load again with `skill method=load name=" & name & "`."
 
 method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (list | load | unload | install | learn)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "list":    return doList(t, args)
   of "load":    return doLoad(t, args)

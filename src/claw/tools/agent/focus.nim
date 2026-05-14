@@ -7,7 +7,7 @@
 ##
 ## For cross-agent dispatch (handing work to a NAMED peer), use
 ## `delegate`. For pool-style coordination, use `collaborate
-## action=assign`. focus is intra-agent only.
+## method=assign`. focus is intra-agent only.
 
 import std/[asyncdispatch, json, tables, strutils, locks, times]
 import ../types
@@ -64,7 +64,7 @@ method description*(t: FocusTool): string =
           "different mental mode — same agent wearing a different hat.\n\n" &
           "For cross-agent dispatch (handing work to a peer), use the " &
           "`delegate` tool. For pool-style work distribution, use " &
-          "`collaborate action=assign`.\n\n" &
+          "`collaborate method=assign`.\n\n" &
           "Pass `await: true` to block on the result and return it " &
           "directly (cognitively simplest). Pass `await: false` (or " &
           "omit) for fire-and-forget — the result arrives later as a " &

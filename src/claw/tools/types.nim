@@ -1,6 +1,22 @@
-import std/[json, tables, asyncdispatch]
+import std/[json, tables, asyncdispatch, strutils]
 
 import ../agent/cortex
+
+# ── Method/action dispatch helper ─────────────────────────────────
+#
+# Reads the dispatch field from args. Prefers `method` (canonical), falls
+# back to `action` (legacy alias) for backward-compat during migration.
+# Strips whitespace; lowercases for canonical comparison.
+#
+# When this returns "", the tool should report a missing-dispatch error
+# (the caller is best-positioned to write the error string with their
+# tool's specific examples).
+proc getMethodArg*(args: Table[string, JsonNode]): string =
+  if args.hasKey("method"):
+    return args["method"].getStr().strip()
+  if args.hasKey("action"):
+    return args["action"].getStr().strip()
+  ""
 
 type
   ToolContext* = object

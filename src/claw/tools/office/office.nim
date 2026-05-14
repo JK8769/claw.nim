@@ -68,7 +68,7 @@ method parameters*(t: OfficeTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["clock", "calendar", "info", "state", "occupant", "stats"],
         "description": "Office query to perform. All read-only, self-only."
@@ -82,7 +82,7 @@ method parameters*(t: OfficeTool): Table[string, JsonNode] =
         "description": "stats (optional) — time window: 'today' | 'last_7d' | 'last_30d' | 'all'. Default: 'all'."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -270,11 +270,11 @@ proc doStats(t: OfficeTool, args: Table[string, JsonNode]): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: OfficeTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (clock | calendar | info | state | occupant | stats)"
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
-  let action = args["action"].getStr().toLowerAscii()
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "clock":    return doClock(t, args)
   of "calendar": return doCalendar(t)

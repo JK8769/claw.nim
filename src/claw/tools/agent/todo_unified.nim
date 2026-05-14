@@ -12,7 +12,7 @@
 ##   - "do this NOW with a constrained hat" → focus
 ##
 ## Calendar-style (date-tagged) scheduling moved to the `schedule` tool
-## as `action=add due=...` (notes.org backend) and `action=complete`.
+## as `method=add due=...` (notes.org backend) and `method=complete`.
 
 import std/[asyncdispatch, json, tables, strutils]
 import ../types
@@ -54,7 +54,7 @@ method parameters*(t: TodoTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["defer", "done"],
         "description": "Operation to perform. Untimed only — for time-anchored work use the `schedule` tool."
@@ -77,7 +77,7 @@ method parameters*(t: TodoTool): Table[string, JsonNode] =
         "description": "Todo id from the heartbeat prompt's pending list, format `t-<8 hex>` (done action)."
       }
     },
-    "required": %*["action"]
+    "required": %*["method"]
   }.toTable
 
 # ── action handlers ───────────────────────────────────────────────
@@ -134,16 +134,16 @@ proc doDone(t: TodoTool, args: Table[string, JsonNode]): string =
 method execute*(t: TodoTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (defer | done). For time-anchored work use the `schedule` tool."
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "defer":     return doDefer(t, args)
   of "done":      return doDone(t, args)
   of "schedule", "done_note":
     return "Error: action '" & action & "' moved to the `schedule` tool. " &
-           "Use `schedule action=add due=... summary=...` for date-tagged " &
-           "TODOs, or `schedule action=complete summary=...` to mark one done."
+           "Use `schedule method=add due=... summary=...` for date-tagged " &
+           "TODOs, or `schedule method=complete summary=...` to mark one done."
   else:
     return "Error: Unknown action '" & action &
            "'. Use: defer | done. (For time-anchored work use the `schedule` tool.)"

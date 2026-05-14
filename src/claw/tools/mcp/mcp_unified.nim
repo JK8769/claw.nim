@@ -46,7 +46,7 @@ method parameters*(t: UnifiedMcpTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["forge", "persist", "purge", "persist_skill"],
         "description": "MCP operation to perform"
@@ -88,11 +88,11 @@ method parameters*(t: UnifiedMcpTool): Table[string, JsonNode] =
         "description": "Path to SKILL.md or skill folder (for persist_skill)"
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 method execute*(t: UnifiedMcpTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  let action = if args.hasKey("action"): args["action"].getStr() else: ""
+  let action = if (args.hasKey("method") or args.hasKey("action")): getMethodArg(args) else: ""
 
   # Forward context to sub-tools
   t.forgeTool.sessionKey = t.sessionKey

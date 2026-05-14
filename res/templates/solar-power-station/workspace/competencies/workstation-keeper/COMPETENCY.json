@@ -12,7 +12,7 @@
       "read": {
         "tool": "workstation",
         "args": {
-          "action": "audit",
+          "method": "audit",
           "scope": "workstation"
         }
       },
@@ -27,7 +27,7 @@
       "read": {
         "tool": "shell",
         "args": {
-          "action": "run",
+          "method": "run",
           "cmd": "find ${OFFICE_DIR}/workstation/projects -name '*.json' -mtime +14 -path '*/items/*' 2>/dev/null | xargs -I{} sh -c 'grep -l \\\"\\\"status\\\": \\\"done\\\"\\\" \\\"$1\\\" 2>/dev/null' _ {} | head -10"
         }
       },
@@ -42,7 +42,7 @@
       "read": {
         "tool": "shell",
         "args": {
-          "action": "run",
+          "method": "run",
           "cmd": "for r in ${OFFICE_DIR}/workstation/repos/*/; do if [ -d \"$r/.git\" ]; then last=$(git -C \"$r\" log -1 --format=%cr 2>/dev/null); echo \"${r##*/repos/}: $last\"; fi; done | grep -E '(months|year)' | head -10"
         }
       },
@@ -57,7 +57,7 @@
       "read": {
         "tool": "shell",
         "args": {
-          "action": "run",
+          "method": "run",
           "cmd": "for p in ${OFFICE_DIR}/workstation/projects/*/PROJECT.json; do if [ -f \"$p\" ]; then proj=${p%/PROJECT.json}; proj=${proj##*/projects/}; cnt=$(find \"${p%/PROJECT.json}/items\" -name '*.json' 2>/dev/null | wc -l); echo \"$proj: $cnt items\"; fi; done"
         }
       },

@@ -1,7 +1,7 @@
 ## feishu_add_app — chat-driven Feishu app registration helper.
 ##
 ## Formerly an agent-facing `feishu_add_app` tool; folded into
-## `channel action=add_app vendor=feishu`. The detection + dispatch
+## `channel method=add_app vendor=feishu`. The detection + dispatch
 ## logic stays here as a callable proc; channel_unified imports it.
 ##
 ## Trust gate: SuperAdmin only. Binding a new channel to this company
@@ -20,7 +20,7 @@ proc runFeishuAddApp*(graph: WorldGraph,
                       agentName: string): string =
   ## Register a new Feishu app with this company. Returns a human-readable
   ## message (success or error). All inputs validated; subprocess error
-  ## paths surfaced. Used by `channel action=add_app vendor=feishu` —
+  ## paths surfaced. Used by `channel method=add_app vendor=feishu` —
   ## the channel tool's add_app handler calls this proc directly.
 
   # SuperAdmin gate — modifying BASE.nims + storing channel credentials

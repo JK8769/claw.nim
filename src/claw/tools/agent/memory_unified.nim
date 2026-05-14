@@ -27,7 +27,7 @@ import ../../agent/memory
 
 const ToolSpec* = spec(
   name = "memory",
-  description = "cross-source memory: query past experiences, reflections, conversations, heartbeats (action=store|recall|list|forget|recent|verify; scope=sender|self|sessions|heart|all). For timeless facts use the `knowledge` tool — different epistemic category (memory = sea / raw past; knowledge = ship / facts).",
+  description = "cross-source memory: query past experiences, reflections, conversations, heartbeats (method=store|recall|list|forget|recent|verify; scope=sender|self|sessions|heart|all). For timeless facts use the `knowledge` tool — different epistemic category (memory = sea / raw past; knowledge = ship / facts).",
   tags = @["memory", "core"],
   domain = "agent",
   default = true,
@@ -86,7 +86,7 @@ method parameters*(t: UnifiedMemoryTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["store", "recall", "list", "forget", "recent", "verify"]
       },
@@ -131,7 +131,7 @@ method parameters*(t: UnifiedMemoryTool): Table[string, JsonNode] =
         "description": "Default text (back-compat). json returns structured envelope for programmatic consumption."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 proc renderHits*(hits: seq[MemoryHit], format, title: string): string =
@@ -186,7 +186,7 @@ method execute*(t: UnifiedMemoryTool, args: Table[string, JsonNode]): Future[str
   if t.store == nil:
     return "Error: memory store not configured."
 
-  let action = if args.hasKey("action"): args["action"].getStr() else: ""
+  let action = if (args.hasKey("method") or args.hasKey("action")): getMethodArg(args) else: ""
   let scope = extractScope(args)
 
   case action

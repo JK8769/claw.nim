@@ -8,17 +8,17 @@
 ##
 ## Also designed to be called by the framework itself as a cheap
 ## feature-gate: before serving an image to a chat, ask
-## `capability action=has model=<current> tag=vision` and refuse early
+## `capability method=has model=<current> tag=vision` and refuse early
 ## if the answer is no.
 ##
-##   action=list  — every distinct capability tag in the catalog,
+##   method=list  — every distinct capability tag in the catalog,
 ##                  case-folded and deduped (the navigator's full
 ##                  instrument panel).
-##   action=find  — which models offer this capability? Returns model
+##   method=find  — which models offer this capability? Returns model
 ##                  ids with their providers. Accepts the same narrowing
-##                  filters as `model action=list` (provider, vendor,
+##                  filters as `model method=list` (provider, vendor,
 ##                  family).
-##   action=has   — boolean: does <model> have <tag>? Cheap, fast,
+##   method=has   — boolean: does <model> have <tag>? Cheap, fast,
 ##                  framework-callable. Returns "yes"/"no" plus a brief
 ##                  explanation when no.
 ##
@@ -88,7 +88,7 @@
 ##   ADD (in the same admin block):
 ##     spec(name = "provider",
 ##          description = "LLM providers (the 'sea'): list/verify/info " &
-##                        "(action=list|verify|info). Read-only — keys stay on disk.",
+##                        "(method=list|verify|info). Read-only — keys stay on disk.",
 ##          tags = @["admin", "providers", "diagnostics", "core"],
 ##          searchKeywords = @["llm", "api", "key", "endpoint", "openai",
 ##                              "anthropic", "deepseek", "ollama", "auth",
@@ -97,7 +97,7 @@
 ##          default = true, heartbeatSafe = false, category = "admin"),
 ##     spec(name = "model",
 ##          description = "LLM models (the 'ship'): list/info/current " &
-##                        "(action=list|info|current). Includes capabilities, " &
+##                        "(method=list|info|current). Includes capabilities, " &
 ##                        "context, pricing; current = caller agent's primary.",
 ##          tags = @["diagnostics", "providers", "models", "core"],
 ##          searchKeywords = @["llm", "model", "vision", "tool-use", "reasoning",
@@ -106,7 +106,7 @@
 ##          domain = "admin",
 ##          default = true, heartbeatSafe = false, category = "admin"),
 ##     spec(name = "capability",
-##          description = "find models by capability (action=list|find|has). " &
+##          description = "find models by capability (method=list|find|has). " &
 ##                        "Framework-callable feature gate (e.g. vision check " &
 ##                        "before serving an image).",
 ##          tags = @["diagnostics", "models", "capability", "core"],
@@ -129,7 +129,7 @@ import ../env_file
 const ToolSpec* = spec(
   name = "capability",
   description = "Find models by capability AND use them as tools " &
-                "(action=list|find|has|route|invoke). " &
+                "(method=list|find|has|route|invoke). " &
                 "invoke = call a specialist model (vision, audio) and " &
                 "get text back without your primary model needing the " &
                 "capability natively. Framework-callable feature gate + " &
@@ -189,7 +189,7 @@ method parameters*(t: CapabilityTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["list", "find", "has", "route", "invoke"],
         "description": "Operation to perform"
@@ -244,7 +244,7 @@ method parameters*(t: CapabilityTool): Table[string, JsonNode] =
                        "tried one and wants the next-best alternative."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -361,7 +361,7 @@ proc doFind(t: CapabilityTool, args: Table[string, JsonNode]): string =
 
   if arr.len == 0:
     return "No models found with capability '" & tag &
-           "' (after filters). Use `capability action=list` to see " &
+           "' (after filters). Use `capability method=list` to see " &
            "available tags."
   $(%*{
     "tag": tag,
@@ -444,7 +444,7 @@ proc doHas(t: CapabilityTool, args: Table[string, JsonNode]): string =
 #
 # Architecture: this is the "framework picks a specialist for you" layer.
 # An agent whose primary model is text-only can still handle images, audio,
-# etc. by calling `capability action=invoke tag=vision input=/path prompt=...`
+# etc. by calling `capability method=invoke tag=vision input=/path prompt=...`
 # — the framework selects a vision-capable model, makes the HTTP call with
 # multimodal content, and returns plain text. The agent's primary model
 # (and the Message type's content_blocks plumbing) doesn't need to change.
@@ -740,7 +740,7 @@ proc selectModel(t: CapabilityTool, tag, prefModel, prefProvider: string,
   # Nothing usable.
   return (ModelChoice(), cands,
           "every model with tag '" & tag & "' was skipped — see " &
-          "candidate list for reasons (run action=route for details)")
+          "candidate list for reasons (run method=route for details)")
 
 # ---------------------------------------------------------------------------
 # route — dry-run: which model WOULD invoke pick?
@@ -1040,9 +1040,9 @@ proc doInvoke(t: CapabilityTool, args: Table[string, JsonNode]): Future[string] 
 # ---------------------------------------------------------------------------
 
 method execute*(t: CapabilityTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (list | find | has | route | invoke)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "list":   return doList(t)
   of "find":   return doFind(t, args)

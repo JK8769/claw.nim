@@ -16,7 +16,7 @@ import ../logger  # warnCF — fan-out error paths in doPlantList
 const ToolSpec* = spec(
   name = "solar",
   description = "Solar power station fleet — multi-vendor facade " &
-                "(action=plant_list|plant_now|plant_history|" &
+                "(method=plant_list|plant_now|plant_history|" &
                 "inverter_list|inverter_alarms). Fans out for list ops, " &
                 "routes per-plant ops by plant→vendor cache.",
   tags = @["solar", "fleet", "domain"],
@@ -64,27 +64,27 @@ method parameters*(t: SolarTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["plant_list", "plant_now", "plant_history",
                  "inverter_list", "inverter_alarms"],
         "description": "Operation to perform"
       },
-      # --- action=plant_now / plant_history ---
+      # --- method=plant_now / plant_history ---
       "id": {
         "type": "string",
         "description":
           "plant_now / plant_history: the plant's vendor-prefixed ID, " &
           "e.g. 'SG-12345'. Routes the call to the vendor that owns the plant."
       },
-      # --- action=inverter_list / inverter_alarms ---
+      # --- method=inverter_list / inverter_alarms ---
       "plant_id": {
         "type": "string",
         "description":
           "inverter_list / inverter_alarms: vendor-prefixed plant ID " &
           "(e.g. 'SG-12345')."
       },
-      # --- action=plant_history ---
+      # --- method=plant_history ---
       "from": {
         "type": "string",
         "format": "date",
@@ -98,11 +98,11 @@ method parameters*(t: SolarTool): Table[string, JsonNode] =
           "plant_history only — ISO-8601 end date inclusive (e.g. '2026-05-13')."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
-# action=plant_list — fan out across every vendor and merge the arrays.
+# method=plant_list — fan out across every vendor and merge the arrays.
 # ---------------------------------------------------------------------------
 
 proc doPlantList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
@@ -149,7 +149,7 @@ proc forwardArgsAsPlantId(args: Table[string, JsonNode],
     result["plant_id"] = args[sourceKey]
 
 # ---------------------------------------------------------------------------
-# action=plant_now — route by plant → vendor.
+# method=plant_now — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
 proc doPlantNow(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
@@ -157,7 +157,7 @@ proc doPlantNow(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.a
   return await routeByPlantId(t.reg, "plant_now", forwarded)
 
 # ---------------------------------------------------------------------------
-# action=plant_history — route by plant → vendor.
+# method=plant_history — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
 proc doPlantHistory(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
@@ -166,14 +166,14 @@ proc doPlantHistory(t: SolarTool, args: Table[string, JsonNode]): Future[string]
   return await routeByPlantId(t.reg, "plant_history", forwarded)
 
 # ---------------------------------------------------------------------------
-# action=inverter_list — route by plant → vendor.
+# method=inverter_list — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
 proc doInverterList(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   return await routeByPlantId(t.reg, "inverter_list", args)
 
 # ---------------------------------------------------------------------------
-# action=inverter_alarms — route by plant → vendor.
+# method=inverter_alarms — route by plant → vendor.
 # ---------------------------------------------------------------------------
 
 proc doInverterAlarms(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
@@ -184,10 +184,10 @@ proc doInverterAlarms(t: SolarTool, args: Table[string, JsonNode]): Future[strin
 # ---------------------------------------------------------------------------
 
 method execute*(t: SolarTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required " &
            "(plant_list | plant_now | plant_history | inverter_list | inverter_alarms)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "plant_list":      return await doPlantList(t, args)
   of "plant_now":       return await doPlantNow(t, args)

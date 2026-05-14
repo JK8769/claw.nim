@@ -1,7 +1,7 @@
 ---
 name: customer-onboarding
 version: 1.0.0
-description: "Verify and invite a new customer for solar plant monitoring: check Known Entities first; if not present, mint via `social action=invite`; quote the tool result verbatim. Anti-fabrication discipline: no nc: ids asserted from memory."
+description: "Verify and invite a new customer for solar plant monitoring: check Known Entities first; if not present, mint via `social method=invite`; quote the tool result verbatim. Anti-fabrication discipline: no nc: ids asserted from memory."
 loading: lazy
 operations:
   - verify
@@ -33,7 +33,7 @@ asserts an `nc:` id from memory without verification.
 - An operator asks "is X already a customer?"
 - Before any operation that would mint a new identity in the graph
 
-The customer's own redeem flow uses `social action=redeem` directly,
+The customer's own redeem flow uses `social method=redeem` directly,
 not this skill — this skill is operator-facing.
 
 ## Workflow
@@ -58,10 +58,10 @@ not this skill — this skill is operator-facing.
    ```
 
 4. **If Known Entities doesn't match**, optionally call
-   `social action=query` for a second-source check (search by
+   `social method=query` for a second-source check (search by
    display name in case the identifier resolution was incomplete).
 
-5. **Call `social action=invite`** with the resolved identifier:
+5. **Call `social method=invite`** with the resolved identifier:
    - If the customer is already onboarded (the tool detects this),
      it returns details about their existing identity — quote the
      response verbatim and STOP.
@@ -83,8 +83,8 @@ registered" without seeing the literal evidence this turn, STOP.
 Acceptable paths:
 
 - Quote the open_id you DO see, ask the operator to confirm
-- Call `social action=query` to look up the name
-- Call `social action=invite` and let it fail-loudly if the
+- Call `social method=query` to look up the name
+- Call `social method=invite` and let it fail-loudly if the
   identity already exists
 
 The framework cannot distinguish your guess from a verified

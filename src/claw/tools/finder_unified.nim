@@ -2,14 +2,14 @@
 ##
 ## Two actions:
 ##
-##   action=files   — glob-style path search. Example:
-##                      finder action=files pattern="**/*.csv"
+##   method=files   — glob-style path search. Example:
+##                      finder method=files pattern="**/*.csv"
 ##                    Returns workspace-relative paths, newline-separated.
 ##
-##   action=content — content search. Shells out to `rg` (ripgrep) when
+##   method=content — content search. Shells out to `rg` (ripgrep) when
 ##                    available for speed + regex; falls back to a pure-Nim
 ##                    recursive walk + substring match. Example:
-##                      finder action=content pattern="TODO" in="**/*.nim"
+##                      finder method=content pattern="TODO" in="**/*.nim"
 ##                    Returns matches as `path:line:matched_text`.
 ##                    Capped at 200 matches.
 ##
@@ -96,7 +96,7 @@ method parameters*(t: FinderTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["files", "content"],
         "description": "Operation to perform"
@@ -195,7 +195,7 @@ proc matchGlob(pattern, relPath: string): bool =
   go(0, 0)
 
 # ---------------------------------------------------------------------------
-# action=files
+# method=files
 # ---------------------------------------------------------------------------
 
 proc isPathGated(t: FinderTool, absPath: string): bool =
@@ -249,7 +249,7 @@ proc doFiles(t: FinderTool, args: Table[string, JsonNode]): string =
   results.join("\n")
 
 # ---------------------------------------------------------------------------
-# action=content — ripgrep + fallback
+# method=content — ripgrep + fallback
 # ---------------------------------------------------------------------------
 
 proc rgAvailable(): bool =
@@ -365,9 +365,9 @@ proc doContent(t: FinderTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: FinderTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (files | content)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "files":   return doFiles(t, args)
   of "content": return doContent(t, args)

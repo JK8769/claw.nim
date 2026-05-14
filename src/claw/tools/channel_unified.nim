@@ -6,8 +6,8 @@
 ## mail consult that to make format-promotion decisions without hardcoding
 ## "if vendor == feishu" anywhere.
 ##
-##   action=list           — every channel registered + running flag
-##   action=capabilities   — feature matrix for one vendor (text length,
+##   method=list           — every channel registered + running flag
+##   method=capabilities   — feature matrix for one vendor (text length,
 ##                           markdown, card kind, file/voice/react/edit/
 ##                           delete/threading, formatting list)
 ##
@@ -74,7 +74,7 @@ method parameters*(t: ChannelTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["list", "capabilities",
                  "docs", "sheets", "calendar", "tasks",
@@ -119,7 +119,7 @@ method parameters*(t: ChannelTool): Table[string, JsonNode] =
                        "should receive inbound messages on this app."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── Action handlers ─────────────────────────────────────────────────
@@ -220,9 +220,9 @@ proc doAddApp(t: ChannelTool, args: Table[string, JsonNode]): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: ChannelTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return """{"error":"missing_action"}"""
-  let action = args["action"].getStr().toLowerAscii()
+  let action = getMethodArg(args).toLowerAscii()
   case action:
   of "list":
     return doList()

@@ -1,7 +1,7 @@
 ---
 name: alarm-response
 version: 1.0.0
-description: "Classify active plant alarms by severity, group by plant for operator efficiency, escalate critical ones immediately. Workflow over solar action=inverter_alarms + delegate."
+description: "Classify active plant alarms by severity, group by plant for operator efficiency, escalate critical ones immediately. Workflow over solar method=inverter_alarms + delegate."
 loading: lazy
 operations:
   - scan
@@ -32,15 +32,15 @@ grouped for operator efficiency, escalated when critical.
 - **Scheduled**: heartbeat-driven, e.g. every hour during daylight.
 - **On-demand**: when the operator asks "any alarms?" or a
   customer reports an issue.
-- **Reactive**: when a `solar action=plant_now` call returns
+- **Reactive**: when a `solar method=plant_now` call returns
   `alarms_count > 0` and the agent decides to investigate.
 
 ## Workflow
 
-1. Call `solar action=plant_list()` — get all plants with their current
+1. Call `solar method=plant_list()` — get all plants with their current
    `alarms_count`. Filter to plants where count > 0.
 2. For each plant with active alarms, call
-   `solar action=inverter_alarms(plant_id)` to get alarm details.
+   `solar method=inverter_alarms(plant_id)` to get alarm details.
 3. **Classify each alarm**:
    - **Critical**: plant offline, fault preventing production,
      fire/safety code. Escalate immediately.
@@ -62,7 +62,7 @@ grouped for operator efficiency, escalated when critical.
      alarm details, brief context)
 6. **For high+medium**: include in the next scheduled operator
    summary.
-7. **Low**: log via `memory action=store scope=self` for audit;
+7. **Low**: log via `memory method=store scope=self` for audit;
    no notification.
 
 ## Output (operator-facing summary)

@@ -85,7 +85,7 @@ method parameters*(t: ScheduleTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["add", "create", "list", "remove", "update",
                  "enable", "disable", "complete"],
@@ -138,7 +138,7 @@ method parameters*(t: ScheduleTool): Table[string, JsonNode] =
         "description": "CRON: if true, send message directly to channel; if false, agent processes the message. Default: true."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── notes.org calendar validators (formerly in todo_unified) ──────
@@ -319,8 +319,8 @@ proc completeNote(t: ScheduleTool, args: Table[string, JsonNode]): string =
          $matchLine & " no longer present. Check notes.org integrity."
 
 method execute*(t: ScheduleTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"): return "Error: action is required"
-  let action = args["action"].getStr()
+  if not (args.hasKey("method") or args.hasKey("action")): return "Error: action is required"
+  let action = getMethodArg(args)
 
   case action:
   of "add", "create":

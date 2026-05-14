@@ -6,9 +6,9 @@
 ## standard `mcp_<vendor>_<op>` dispatch. Each vendor is a payment-rail
 ## skill (nkn-suite for NKN, future: btc, lightning, usdc-base, etc.).
 ##
-##   action=balance  vendor=X address=…   — wallet balance lookup
-##   action=status   vendor=X [tx_hash=…] — chain reachability + tx lookup
-##   action=history  vendor=X address=… [since=…] — recent transactions
+##   method=balance  vendor=X address=…   — wallet balance lookup
+##   method=status   vendor=X [tx_hash=…] — chain reachability + tx lookup
+##   method=history  vendor=X address=… [since=…] — recent transactions
 ##
 ## Phase 1 (this code): READ-ONLY ops. No transfer / send / write
 ## actions yet — those need an approval-flow design pass and a
@@ -78,7 +78,7 @@ method parameters*(t: PaymentTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["balance", "status", "history"],
         "description": "Operation. balance/status/history are read-only."
@@ -154,9 +154,9 @@ proc doHistory(t: PaymentTool, args: Table[string, JsonNode]): Future[string] {.
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: PaymentTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return """{"error":"missing_action"}"""
-  let action = args["action"].getStr().toLowerAscii()
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "balance": return await doBalance(t, args)
   of "status":  return await doStatus(t, args)

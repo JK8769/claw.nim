@@ -2,12 +2,12 @@
 ##
 ## Consolidates the 4 existing per-file content tools:
 ##
-##   action=read   — read file contents (preserves read_file; ADD
+##   method=read   — read file contents (preserves read_file; ADD
 ##                   optional offset/limit for line-based chunking)
-##   action=write  — create or replace a file (preserves write_file)
-##   action=edit   — find/replace one occurrence (preserves edit_file;
+##   method=write  — create or replace a file (preserves write_file)
+##   method=edit   — find/replace one occurrence (preserves edit_file;
 ##                   ADD replace_all flag for global substitution)
-##   action=append — append content to end of file (preserves
+##   method=append — append content to end of file (preserves
 ##                   append_file)
 ##
 ## Dependency surface:
@@ -29,9 +29,9 @@
 ##
 ## TODO (v2): multimodal read — handle PDF (use anthropic-skills:pdf
 ## pipeline or shell out to `pdftotext`) and image (return inline as
-## base64 with mime-type for vision-capable LLMs). Today, action=read
+## base64 with mime-type for vision-capable LLMs). Today, method=read
 ## treats every file as plain UTF-8 text. Until multimodal lands,
-## callers should use `capability action=invoke tag=vision input=<path>`
+## callers should use `capability method=invoke tag=vision input=<path>`
 ## for images and the PDF skill for PDFs.
 
 import std/[os, json, asyncdispatch, tables, strutils]
@@ -83,7 +83,7 @@ method parameters*(t: FileTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["read", "write", "edit", "append"],
         "description": "Operation to perform"
@@ -92,7 +92,7 @@ method parameters*(t: FileTool): Table[string, JsonNode] =
         "type": "string",
         "description": "File path (all actions)"
       },
-      # --- action=read ---
+      # --- method=read ---
       "offset": {
         "type": "integer",
         "description": "read only — 1-based line offset to start reading from (default 1 = top of file)"
@@ -101,12 +101,12 @@ method parameters*(t: FileTool): Table[string, JsonNode] =
         "type": "integer",
         "description": "read only — max number of lines to return (default: all)"
       },
-      # --- action=write / action=append ---
+      # --- method=write / method=append ---
       "content": {
         "type": "string",
         "description": "write/append only — content to write or append"
       },
-      # --- action=edit ---
+      # --- method=edit ---
       "old": {
         "type": "string",
         "description": "edit only — exact text to find and replace"
@@ -267,11 +267,11 @@ proc doAppend(t: FileTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: FileTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (read | write | edit | append)"
   if not args.hasKey("path"):
     return "Error: 'path' is required"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "read":   return doRead(t, args)
   of "write":  return doWrite(t, args)

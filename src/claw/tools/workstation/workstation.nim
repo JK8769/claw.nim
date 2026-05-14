@@ -82,7 +82,7 @@ method parameters*(t: WorkstationTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["overview", "repo", "project", "item", "audit"],
         "description": "Top-level action. Most take a sub `op` arg."
@@ -129,7 +129,7 @@ method parameters*(t: WorkstationTool): Table[string, JsonNode] =
         "description": "list ops — substring/key=value filter (e.g. status=in_progress)."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── Path helpers ──────────────────────────────────────────────────
@@ -761,9 +761,9 @@ proc doAudit(t: WorkstationTool, args: Table[string, JsonNode]): string =
 method execute*(t: WorkstationTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (overview | repo | project | item | audit)"
-  let action = args["action"].getStr().toLowerAscii()
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "overview": return doOverview(t)
   of "repo":     return doRepo(t, args)

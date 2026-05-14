@@ -21,7 +21,7 @@
 ##
 ## Actual machinery lives in `web.nim::WebSearchTool`; this file is
 ## the standalone surface that lets agents call `search query=...`
-## directly instead of `web action=search query=...`.
+## directly instead of `web method=search query=...`.
 
 import std/[asyncdispatch, json, tables]
 import ../lib/curl as curly
@@ -70,7 +70,7 @@ method description*(t: SearchTool): string =
   "  • Researching a topic or looking up current information\n" &
   "  • Finding documentation, articles, or references\n" &
   "  • Discovery (you don't know the URL yet)\n\n" &
-  "Use `web action=fetch url=...` to retrieve a specific URL's content. " &
+  "Use `web method=fetch url=...` to retrieve a specific URL's content. " &
   "Use `browser` for JS-rendered pages, logins, or multi-step interaction."
 
 method parameters*(t: SearchTool): Table[string, JsonNode] =

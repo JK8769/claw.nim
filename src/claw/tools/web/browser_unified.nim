@@ -24,7 +24,7 @@ import playwright
 
 const ToolSpec* = spec(
   name = "browser",
-  description = "browser interaction (action=open URL or action=automate via Playwright CLI)",
+  description = "browser interaction (method=open URL or method=automate via Playwright CLI)",
   tags = @["browser", "web", "ui", "automation"],
   domain = "web",
   default = true,
@@ -60,7 +60,7 @@ method parameters*(t: BrowserTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["open", "automate"],
         "description": "Operation to perform"
@@ -74,13 +74,13 @@ method parameters*(t: BrowserTool): Table[string, JsonNode] =
         "description": "automate only — playwright-cli command (e.g. 'goto https://example.com', 'snapshot', 'click e5')"
       }
     },
-    "required": %*["action"]
+    "required": %*["method"]
   }.toTable
 
 method execute*(t: BrowserTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (open | automate)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "open":
     return await t.openTool.execute(args)

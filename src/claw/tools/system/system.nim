@@ -77,7 +77,7 @@ method parameters*(t: SystemTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["capture", "info",
                  "uart", "bluetooth", "usb",
@@ -90,7 +90,7 @@ method parameters*(t: SystemTool): Table[string, JsonNode] =
         "description": "capture (optional) — output filename. Default: screenshot.png in workspace."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── action handlers ─────────────────────────────────────────────────
@@ -152,9 +152,9 @@ proc phase2Stub(action: string): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: SystemTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required"
-  let action = args["action"].getStr().toLowerAscii()
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "capture":   return await doCapture(t, args)
   of "info":      return doInfo(t)

@@ -140,7 +140,7 @@ method parameters*(t: ShellTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["run", "read", "kill", "list"],
         "description": "run = execute (sync or bg); read/kill/list manage bg processes."
@@ -182,7 +182,7 @@ method parameters*(t: ShellTool): Table[string, JsonNode] =
         "description": "kill — POSIX signal name (TERM | KILL | INT | HUP). Default TERM, escalates to KILL after 3s if process still alive."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── Safety guard ────────────────────────────────────────────────────
@@ -447,8 +447,8 @@ proc doList(t: ShellTool): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: ShellTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"): return "Error: 'action' is required"
-  let action = args["action"].getStr().toLowerAscii()
+  if not (args.hasKey("method") or args.hasKey("action")): return "Error: 'action' is required"
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "run":  return await doRun(t, args)
   of "read": return doRead(t, args)

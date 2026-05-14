@@ -35,13 +35,13 @@ Reduces vendor-API load and makes historical queries faster
 
 ## Workflow
 
-1. Call `solar action=plant_list()` — get all plants with timezones.
+1. Call `solar method=plant_list()` — get all plants with timezones.
 2. For each plant, determine the date range to sync:
    - If cache exists at `<office>/data/yield/<plant_id>.csv`:
      from `last_synced_date + 1` to `today - 1`
    - If no cache: from `Plant.install_date` (or a sensible
      start) to `today - 1` (initial backfill)
-3. Call `solar action=plant_history(plant_id, from, to)` per plant.
+3. Call `solar method=plant_history(plant_id, from, to)` per plant.
 4. Validate the response against the YieldPoint schema. Pay
    attention to `data_quality`:
    - `final` → cache it
@@ -51,7 +51,7 @@ Reduces vendor-API load and makes historical queries faster
 5. Append to the per-plant cache file. Update manifest at
    `<office>/data/yield/manifest.json` with `last_synced` per
    plant.
-6. Emit summary via `memory action=store scope=self` so the next
+6. Emit summary via `memory method=store scope=self` so the next
    turn can recall sync status.
 
 ## Output summary
@@ -83,7 +83,7 @@ Reduces vendor-API load and makes historical queries faster
 ## Anti-patterns
 
 - Don't call `mcp_<vendor>_plant_history` directly — use
-  `solar action=plant_history`. The fleet adapter handles vendor routing
+  `solar method=plant_history`. The fleet adapter handles vendor routing
   and gives you cross-vendor uniformity.
 - Don't sync today's data — it's still provisional. Wait until
   settlement (typically next day's morning local).

@@ -15,20 +15,20 @@
 ##                    caller posts to a TEAM board; whoever's
 ##                    qualified pulls. State machine: To Do → In
 ##                    Progress → Completed.
-##                Same recursion as `capability action=invoke` over LLM
+##                Same recursion as `capability method=invoke` over LLM
 ##                models: a single tool call coordinates many specialist
 ##                calls under the hood.
 ##
 ## Two actions in this draft (Phase A+B):
 ##
-##   action=fan_out  — dispatch the SAME task to N agents in parallel.
+##   method=fan_out  — dispatch the SAME task to N agents in parallel.
 ##                     Returns one structured envelope with each agent's
 ##                     reply (or a [TIMEOUT] marker for any that didn't
 ##                     return inside the timeout window). Use to gather
 ##                     diverse perspectives, run parallel research, or
 ##                     compare answers across specialists before deciding.
 ##
-##   action=pipeline — sequential A → B → C: each stage receives the prior
+##   method=pipeline — sequential A → B → C: each stage receives the prior
 ##                     stage's output as context plus the original task,
 ##                     and returns its own output. Returns the final stage's
 ##                     output plus an audit trail summarizing each stage.
@@ -45,18 +45,18 @@
 ##
 ## TODOs left for v2 (deliberately out of scope here):
 ##
-##   • action=consensus — fan_out + a follow-up "decide" call that asks
+##   • method=consensus — fan_out + a follow-up "decide" call that asks
 ##                        a designated arbiter (or the calling agent's
 ##                        own model) to reconcile divergent replies. The
 ##                        skeleton is fan_out + one extra `askPeer`; the
 ##                        hard part is prompt engineering for the arbiter
 ##                        and policy on tie-breaks.
-##   • action=route     — pick THE ONE best agent for a task based on
+##   • method=route     — pick THE ONE best agent for a task based on
 ##                        skills/role match and dispatch to only that one.
-##                        Same primitive as `capability action=route` but
+##                        Same primitive as `capability method=route` but
 ##                        over agents instead of models. Useful when the
 ##                        caller doesn't know who to delegate to and would
-##                        otherwise have to call `social action=query`
+##                        otherwise have to call `social method=query`
 ##                        first to read the team graph.
 ##   • Error-recovery semantics — pipeline currently aborts on first
 ##                        failure. v2 should support `on_error="skip"`
@@ -95,7 +95,7 @@
 ## right after the `delegate` spec):
 ##
 ##   spec(name = "collaborate",
-##        description = "multi-agent orchestration (action=fan_out|pipeline). " &
+##        description = "multi-agent orchestration (method=fan_out|pipeline). " &
 ##                      "fan_out: same task to N agents in parallel; pipeline: " &
 ##                      "sequential A→B→C with each stage seeing the prior output. " &
 ##                      "Goes through the delegate primitive — peers run their " &
@@ -138,7 +138,7 @@ const ToolSpec* = spec(
   domain = "comm",
   default = true,
   heartbeatSafe = false,  # makes N parallel LLM calls — never on the heartbeat
-                          # hot path. Mirrors how `capability action=invoke` is
+                          # hot path. Mirrors how `capability method=invoke` is
                           # heartbeat-unsafe even though `has`/`route` aren't.
   externalAllowed = false,  # internal coordination tool. External callers
                              # going through `delegate` already cap at depth=1
@@ -258,7 +258,7 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["fan_out", "pipeline", "consensus", "route",
                  "assign", "claim", "submit"],
@@ -332,7 +332,7 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
         "type": "string",
         "description": "consensus only — capability tag of the model that " &
                        "synthesizes the responses. Default 'reasoning'. " &
-                       "Routes via the same path as `capability action=invoke`."
+                       "Routes via the same path as `capability method=invoke`."
       },
       "show_raw": {
         "type": "boolean",
@@ -378,7 +378,7 @@ method parameters*(t: CollaborateTool): Table[string, JsonNode] =
                        "the briefings dir exists."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -1060,7 +1060,7 @@ proc doConsensus(t: CollaborateTool,
 #
 # Pure inspection — does NOT dispatch the task. The caller takes the
 # recommendation and calls `delegate` themselves. Mirrors the
-# `capability action=route` vs `capability action=invoke` separation:
+# `capability method=route` vs `capability method=invoke` separation:
 # preview the routing, then commit (or override) explicitly.
 
 const Stopwords = [
@@ -1301,7 +1301,7 @@ proc doRoute(t: CollaborateTool, args: Table[string, JsonNode]): string =
             "   score " & $top.score)
   lines.add("   why: " & top.breakdown)
   lines.add("")
-  lines.add("To dispatch: collaborate action=fan_out agents=[\"" &
+  lines.add("To dispatch: collaborate method=fan_out agents=[\"" &
             top.name & "\"] task=...   (or use delegate for a single peer)")
 
   if explain:
@@ -1445,7 +1445,7 @@ method execute*(t: CollaborateTool, args: Table[string, JsonNode]): Future[strin
   # capability defaulting style; reduces friction for the LLM's first
   # tool call.
   let action =
-    if args.hasKey("action"): args["action"].getStr().strip().toLowerAscii()
+    if (args.hasKey("method") or args.hasKey("action")): getMethodArg(args).strip().toLowerAscii()
     else: "fan_out"
   case action
   of "fan_out", "fanout", "fan-out":

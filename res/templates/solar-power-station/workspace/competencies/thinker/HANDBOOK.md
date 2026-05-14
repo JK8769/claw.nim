@@ -32,9 +32,9 @@ Mechanical hygiene; no thinking required.
 ### 2. knowledge_promotion_candidates (weekly)
 Scan project READMEs for `TODO|LEARN|NOTE:|FACT:` markers. For each,
 ask: *does this apply BEYOND this project?* If yes → call
-`knowledge action=consolidate`. If no → leave it. Then optionally
-rank with `knowledge action=rank` so the most-important facts surface
-in `knowledge action=top`.
+`knowledge method=consolidate`. If no → leave it. Then optionally
+rank with `knowledge method=rank` so the most-important facts surface
+in `knowledge method=top`.
 
 ### 3. extract_from_recent_archives (weekly)
 Recently-archived projects (last 7 days) are a goldmine for
@@ -42,10 +42,10 @@ retrospective insight. Scan their READMEs; promote any cross-project
 lessons to knowledge.
 
 ### 4. reflect_on_recent_experiences (weekly)
-Read recent partner experiences (`memory action=recent days=7`).
+Read recent partner experiences (`memory method=recent days=7`).
 Look for PATTERNS — recurring frustrations, what's working, what's
 drifting. Write ONE reflection per pattern via
-`memory action=store category=reflection`.
+`memory method=store category=reflection`.
 
 **Critical discipline — write in generic terms.** Not "Lubin asked
 for X"; instead "a customer asked for X". Not "nc:5 and nc:7
@@ -54,10 +54,10 @@ framework runs `stripEntityIdentifiers` on store (mechanical backstop
 for nc:id / channel-id leaks), but **semantic anonymization is the
 agent's prompt-craft job**. Reflections that turn out to be
 TIMELESS FACTS (not period-bound observations) belong in knowledge —
-promote those via `knowledge action=consolidate` instead.
+promote those via `knowledge method=consolidate` instead.
 
 ### 5. consolidate_journal (monthly)
-Pull the month's reflections (`memory action=recent days=30 scope=self`).
+Pull the month's reflections (`memory method=recent days=30 scope=self`).
 Write a narrative paragraph for the month — what shifted, what
 patterns emerged, what's being carried forward. Append to
 `heart/journal.md` (create if missing). Identity-shaping prose;
@@ -69,7 +69,7 @@ Skim `mvShared` entries in self.jsonl. Should any of these actually
 be private? Shared entries surface to lower-trust callers; private
 stays gated to high-trust. If a shared entry includes specifics about
 a partner, judgment about a person, or sensitive context — re-tag
-via `memory action=forget` + re-store with `visibility=private`. The
+via `memory method=forget` + re-store with `visibility=private`. The
 visibility tags are the intra-boundary protection (boundary
 protection happens at office-scoping); this audit catches drift over
 time.
@@ -80,10 +80,10 @@ The shape of what you're noticing dictates where it lands:
 
 | Shape | Goes to | Action |
 |---|---|---|
-| "X happened with this partner" (episodic event) | memory partner file | `memory action=store scope=sender` (rare; usually framework auto-captures) |
-| "I noticed something about my own work" (one-off observation) | memory self.jsonl | `memory action=store scope=self category=core` |
-| "I'm seeing a pattern across partners/sessions" (synthesis) | memory self.jsonl as reflection | `memory action=store scope=self category=reflection` (auto entity-strip) |
-| "This is a timeless fact about the domain" | knowledge wiki | `knowledge action=consolidate topic=… insight=…` |
+| "X happened with this partner" (episodic event) | memory partner file | `memory method=store scope=sender` (rare; usually framework auto-captures) |
+| "I noticed something about my own work" (one-off observation) | memory self.jsonl | `memory method=store scope=self category=core` |
+| "I'm seeing a pattern across partners/sessions" (synthesis) | memory self.jsonl as reflection | `memory method=store scope=self category=reflection` (auto entity-strip) |
+| "This is a timeless fact about the domain" | knowledge wiki | `knowledge method=consolidate topic=… insight=…` |
 | "I want to capture how I'm shifting / what I'm carrying" | heart journal | append to `heart/journal.md` |
 | "I noticed a behavioural rule I should always follow" | memory MEMORY.md | the always-on reflex layer |
 

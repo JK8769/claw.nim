@@ -34,20 +34,20 @@ vendor implementation must satisfy (see `vendor/CONTRACT.md`):
 
 | Action | Behavior |
 |---|---|
-| `solar action=plant_list` | Fan out to every installed vendor's `<vendor>_plant_list`; merge results into one array; each plant tagged with `vendor` for routing. |
-| `solar action=plant_now plant_id=…` | Look up plant→vendor mapping; dispatch to `<vendor>_plant_now`. |
-| `solar action=plant_history plant_id=… from=… to=…` | Same routing; vendor's history call. |
-| `solar action=inverter_list plant_id=…` | Same routing. |
-| `solar action=inverter_alarms plant_id=…` | Same routing. |
+| `solar method=plant_list` | Fan out to every installed vendor's `<vendor>_plant_list`; merge results into one array; each plant tagged with `vendor` for routing. |
+| `solar method=plant_now plant_id=…` | Look up plant→vendor mapping; dispatch to `<vendor>_plant_now`. |
+| `solar method=plant_history plant_id=… from=… to=…` | Same routing; vendor's history call. |
+| `solar method=inverter_list plant_id=…` | Same routing. |
+| `solar method=inverter_alarms plant_id=…` | Same routing. |
 
 ## Plant → vendor routing
 
 Lazy-populated in-memory cache:
 
-1. First `solar action=plant_list` call fans out across vendors and
+1. First `solar method=plant_list` call fans out across vendors and
    stamps `plant_id → vendor` for every returned plant.
 2. Subsequent per-plant calls consult the cache. Miss → call
-   `solar action=plant_list` transparently to populate, then retry.
+   `solar method=plant_list` transparently to populate, then retry.
 3. Plant IDs are vendor-prefixed per the contract (`SG-`, `HW-`,
    `GW-`, …), so the lookup is unambiguous.
 
@@ -68,7 +68,7 @@ Lazy-populated in-memory cache:
 ## When to use
 
 This skill is a **dependency** of the workflow skills, not an
-end-user skill. Agents typically don't `skill action=load
+end-user skill. Agents typically don't `skill method=load
 name=solar-adapter` directly — they load the workflow skill
 (`daily-yield-sync`, `monthly-report`, etc.) which depends on the
 `solar` tool that the adapter provides.

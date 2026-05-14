@@ -391,7 +391,7 @@ method execute*(t: CompanyTool, args: Table[string, JsonNode]): Future[string] {
   # Hard guard: external customers (Guest tier) blocked from every method.
   if t.trustLevel <= TrustGuest:
     return "Error: company-level methods are not available at Guest trust. " &
-           "External customers can use `chat`, `mail`, and `social action=redeem` " &
+           "External customers can use `chat`, `mail`, and `social method=redeem` " &
            "to interact with the company; internal directory and operations are restricted."
 
   let methodPath = args["method"].getStr().strip()

@@ -13,7 +13,7 @@ requires:
     - mcp
     - delegate
     - skill
-    - file       # action=write — for capturing workflows as SKILL.md
+    - file       # method=write — for capturing workflows as SKILL.md
     - shell
   deps:
     - package: nim
@@ -26,7 +26,7 @@ requires:
 This skill is about the agent's relationship to its tools. Five faces:
 
 - **What you have** — knowing your active surface
-- **What's hidden** — discovering tools by intent (tools action=find)
+- **What's hidden** — discovering tools by intent (tools method=find)
 - **What a peer has** — delegating instead of authoring
 - **What doesn't exist yet** — forging new MCP tools
 - **What's worth saving** — capturing workflows as skills
@@ -76,16 +76,16 @@ Every agent gets a universal default set (~25 framework tools the manifest marks
 | **Competency** | Layer 3, role discipline (skills + handbook + duties) |
 | **Heart** | Layer 4, per-agent personal state |
 
-The decision tree below (memory → active → tools action=find → delegate → forge → learn) is one specific application of this architecture — discovering and acquiring capabilities. The same layering applies when you're deciding where to put new knowledge.
+The decision tree below (memory → active → tools method=find → delegate → forge → learn) is one specific application of this architecture — discovering and acquiring capabilities. The same layering applies when you're deciding where to put new knowledge.
 
 ## The decision tree, in order
 
-1. **Memory check.** `memory action=recall scope=all query="..."` — you might already remember how you did this. Cheapest, cited.
+1. **Memory check.** `memory method=recall scope=all query="..."` — you might already remember how you did this. Cheapest, cited.
 2. **Active list.** Scan your current tool list. Don't search for what's already in front of you.
-3. **Hidden discovery.** `tools action=find query="..."` — most tools are hidden by default to save context. Search by **INTENT**, not tool name; the framework's `searchKeywords` field maps task vocabulary to tool names (e.g., "remind" → `schedule`, "modify" → `file action=edit`).
+3. **Hidden discovery.** `tools method=find query="..."` — most tools are hidden by default to save context. Search by **INTENT**, not tool name; the framework's `searchKeywords` field maps task vocabulary to tool names (e.g., "remind" → `schedule`, "modify" → `file method=edit`).
 4. **Peer delegation.** `delegate agent=X prompt="..."` — if a peer agent has the capability and you don't, ask them. Cheaper than forging; respects trust boundaries.
-5. **Forge new.** `mcp action=forge ...` — create a new MCP tool. Heavy: writes Nim, compiles, registers a server, adds tokens to your context. Reserve for genuinely new capabilities you'll use ≥3 times.
-6. **Capture as skill.** `skill action=learn ...` — when an ad-hoc workflow has been useful 3+ times, the workflow itself deserves a SKILL.md. Forge creates *capability*; learn creates *discoverability*.
+5. **Forge new.** `mcp method=forge ...` — create a new MCP tool. Heavy: writes Nim, compiles, registers a server, adds tokens to your context. Reserve for genuinely new capabilities you'll use ≥3 times.
+6. **Capture as skill.** `skill method=learn ...` — when an ad-hoc workflow has been useful 3+ times, the workflow itself deserves a SKILL.md. Forge creates *capability*; learn creates *discoverability*.
 
 ## Searching by intent — task-vocabulary → tool
 
@@ -93,34 +93,34 @@ You don't always know the right tool name. Search by what you want to DO:
 
 | Intent | Try keywords | Likely match |
 |---|---|---|
-| modify a file | `modify`, `change`, `update`, `rewrite` | `file action=edit` |
-| remember something | `remember`, `save`, `note`, `store` | `memory` action=store |
-| recall past events | `history`, `past`, `recall`, `earlier` | `memory` action=recall scope=all |
+| modify a file | `modify`, `change`, `update`, `rewrite` | `file method=edit` |
+| remember something | `remember`, `save`, `note`, `store` | `memory` method=store |
+| recall past events | `history`, `past`, `recall`, `earlier` | `memory` method=recall scope=all |
 | remind me later | `remind`, `later`, `timer`, `delay` | `schedule` |
-| fetch a webpage | `fetch`, `download`, `url`, `http` | `web` action=fetch |
-| search the internet | `search`, `google`, `lookup` | `web` action=search |
-| open a website | `browser`, `open`, `site` | `browser` action=open |
-| interact with a page | `click`, `automate`, `navigate`, `form` | `browser` action=automate |
-| run a shell command | `shell`, `bash`, `run`, `execute` | `shell` action=run |
-| commit code | `commit`, `push`, `branch`, `diff` | `shell` action=run cmd="git ..." |
-| extract from JSON | `json`, `parse`, `filter`, `query` | `shell` action=run cmd="jq ..." |
-| describe an image | `describe image`, `vision`, `ocr` | `capability` action=invoke tag=vision |
-| verify a claim | `verify`, `prove`, `evidence` | `memory` action=verify or `workstation` action=audit scope=project |
+| fetch a webpage | `fetch`, `download`, `url`, `http` | `web` method=fetch |
+| search the internet | `search`, `google`, `lookup` | `web` method=search |
+| open a website | `browser`, `open`, `site` | `browser` method=open |
+| interact with a page | `click`, `automate`, `navigate`, `form` | `browser` method=automate |
+| run a shell command | `shell`, `bash`, `run`, `execute` | `shell` method=run |
+| commit code | `commit`, `push`, `branch`, `diff` | `shell` method=run cmd="git ..." |
+| extract from JSON | `json`, `parse`, `filter`, `query` | `shell` method=run cmd="jq ..." |
+| describe an image | `describe image`, `vision`, `ocr` | `capability` method=invoke tag=vision |
+| verify a claim | `verify`, `prove`, `evidence` | `memory` method=verify or `workstation` method=audit scope=project |
 
-If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try a different intent angle. If `tools action=find` still returns no useful results, the capability genuinely doesn't exist — proceed to delegate or forge.
+If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try a different intent angle. If `tools method=find` still returns no useful results, the capability genuinely doesn't exist — proceed to delegate or forge.
 
 ## When to forge — and when NOT
 
 **Forge when** all of these hold:
-- No existing claw tool or MCP server covers the capability (verified via `tools action=find`, not assumed)
+- No existing claw tool or MCP server covers the capability (verified via `tools method=find`, not assumed)
 - The need is a **computation / API wrapper / hardware access** — not a sequence of existing tools
 - You'll use it ≥3 times (forging costs tokens and compile time; one-shots aren't worth it)
 - Your agent has `workstation: true`
 
 **Don't forge for:**
 - One-shot computations → use `exec` with `nim e` or `python -c`
-- Wrapping an HTTP API → use `web action=request` directly
-- **Chaining existing tools** → that's a workstation skill, call `skill action=learn` instead
+- Wrapping an HTTP API → use `web method=request` directly
+- **Chaining existing tools** → that's a workstation skill, call `skill method=learn` instead
 
 ## When to delegate (vs forge yourself)
 
@@ -144,7 +144,7 @@ If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try
 
 **Don't learn when:**
 - It's a one-off or rare combination
-- The "skill" is really just a memory entry — use `memory action=store` instead
+- The "skill" is really just a memory entry — use `memory method=store` instead
 - You can't articulate clear triggers — wait until the pattern crystallizes
 
 ## Forge mechanics: one server, many servers?
@@ -161,7 +161,7 @@ Each MCP server is a separate process. Each tool has its own schema visible to t
 
 ## The forge call
 
-`mcp action=forge` has two modes:
+`mcp method=forge` has two modes:
 
 **`logic_only: true` (recommended)** — you write tool logic; forge wraps the server/transport boilerplate:
 
@@ -221,32 +221,32 @@ Three distinct lifecycle ops; the difference matters for safety:
 
 | Op | Effect on registration | Effect on `bin/` | Effect on `src/` |
 |---|---|---|---|
-| `mcp action=forge` | (re-)registers, stops + restarts the server | replaces with new build | preserved (new code overwrites if you `code:` arg) |
-| `mcp action=purge` | unregisters, stops the server | removes binary | **PRESERVES source** (safe "stop") |
-| `mcp action=purge delete_source=true` | unregisters | removes binary | **DELETES source dir** (use with care) |
+| `mcp method=forge` | (re-)registers, stops + restarts the server | replaces with new build | preserved (new code overwrites if you `code:` arg) |
+| `mcp method=purge` | unregisters, stops the server | removes binary | **PRESERVES source** (safe "stop") |
+| `mcp method=purge delete_source=true` | unregisters | removes binary | **DELETES source dir** (use with care) |
 
 **Atomic builds:** if the new compile fails, no files are promoted — the old version stays active and your workstation stays clean. Failed temp artifacts are auto-cleaned. Only successful builds replace the running tool.
 
 ### Building from disk source
 
-The `code:` arg is OPTIONAL. If you've edited the source file directly at `workstation/mcp/<name>/src/<name>.nim` (e.g., via `file action=write`), call `mcp action=forge name=<name>` with no `code:` — the existing source on disk is the build target. Same atomic-build guarantees.
+The `code:` arg is OPTIONAL. If you've edited the source file directly at `workstation/mcp/<name>/src/<name>.nim` (e.g., via `file method=write`), call `mcp method=forge name=<name>` with no `code:` — the existing source on disk is the build target. Same atomic-build guarantees.
 
 ## Common pattern: forge → learn
 
 Forge a tool, then teach yourself when to use it.
 
-1. `mcp action=forge` → new MCP server with your compute primitives
-2. `skill action=learn` → SKILL.md that tells future-you when to reach for those primitives and how to combine them with `reply` / `mail` / etc.
+1. `mcp method=forge` → new MCP server with your compute primitives
+2. `skill method=learn` → SKILL.md that tells future-you when to reach for those primitives and how to combine them with `reply` / `mail` / etc.
 
 The forge creates *capability*. The learn creates *discoverability*.
 
 ## Anti-patterns
 
-- **Don't forge for tools that already exist via composition.** Run `tools action=find` first.
+- **Don't forge for tools that already exist via composition.** Run `tools method=find` first.
 - **Don't search for tools you already have active.** Check your tool list.
 - **Don't delegate when the peer doesn't have the capability either.** Ask them what they have first.
 - **Don't learn-as-skill for one-off workflows.** Wait for the 3rd repetition.
 - **Don't fall back to `exec` when a structured tool already does the job.** `git`, `web`, `mcp` etc. carry safety wrappers `exec` skips.
-- **Don't blindly call random tools to "see what they do."** `tools action=find` returns descriptions without burning iterations.
+- **Don't blindly call random tools to "see what they do."** `tools method=find` returns descriptions without burning iterations.
 
 Practiced over time, the decision tree above becomes invisible — but writing it out keeps the discipline visible while it's still being learned.

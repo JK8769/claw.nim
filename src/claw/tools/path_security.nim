@@ -84,7 +84,7 @@ proc resolveAndCheckPath*(path, workspaceDir: string, allowedPaths: seq[string],
   # at the `isResolvedPathAllowed` call below — that's the SSoT for path
   # acceptance. The prior early-return-on-empty-allowedPaths was wrong:
   # it rejected absolute paths under workspace too, which broke tools
-  # like `capability action=invoke input=/absolute/path/under/workspace`.
+  # like `capability method=invoke input=/absolute/path/under/workspace`.
   var resolved = ""
   try:
     resolved = absolutePath(fullPath)

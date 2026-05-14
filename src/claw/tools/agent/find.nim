@@ -76,7 +76,7 @@ method description*(t: FindTools): string =
   "for " & $DefaultToolTTL & " turns.\n" &
   "  forge / update / share / remove — Phase 2 (surface locked, " &
   "implementation pending). Today, use `mcp` for MCP server lifecycle " &
-  "and `skill action=learn` for workstation-tier authoring.\n\n" &
+  "and `skill method=learn` for workstation-tier authoring.\n\n" &
   "Foundation tools (the framework's built-ins) are always available; " &
   "this tool manages discovery + lifecycle for the additional tier."
 
@@ -84,7 +84,7 @@ method parameters*(t: FindTools): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": %*{
+      "method": %*{
         "type": "string",
         "enum": ["find", "forge", "update", "share", "remove"],
         "description": "Operation. find (Phase 1) | forge / update / share / remove (Phase 2 stubs)."
@@ -94,7 +94,7 @@ method parameters*(t: FindTools): Table[string, JsonNode] =
         "description": "find — keywords (e.g. 'browser login', 'git commit', 'cron schedule')."
       }
     },
-    "required": %*["action"]
+    "required": %*["method"]
   }.toTable
 
 proc doFind(t: FindTools, args: Table[string, JsonNode]): string =
@@ -119,12 +119,12 @@ proc phase2Stub(action: string): string =
   "Error: '" & action & "' is in the action set but not yet implemented " &
   "(planned for Phase 2). Surface locked so agents can plan against the " &
   "future API. Today: use `mcp` for MCP server lifecycle, `skill " &
-  "action=learn` for workstation-tier authoring."
+  "method=learn` for workstation-tier authoring."
 
 method execute*(t: FindTools, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
-    return "Error: 'action' is required (find | forge | update | share | remove)"
-  let action = args["action"].getStr().toLowerAscii()
+  if not (args.hasKey("method") or args.hasKey("action")):
+    return "Error: 'method' is required (find | forge | update | share | remove)"
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "find": return doFind(t, args)
   of "forge", "update", "share", "remove":

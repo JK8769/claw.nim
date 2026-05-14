@@ -38,7 +38,7 @@ import ../../channels/access
 const ToolSpec* = spec(
   name = "mail",
   description = "Persistent / async messaging — three transport kinds " &
-                "(action=send|reply|forward|archive|track, " &
+                "(method=send|reply|forward|archive|track, " &
                 "kind=internal|email|shipment). Capability-driven format " &
                 "selection; routing per kind via cortex (internal=agent " &
                 "name; email/shipment=social.route address lookup).",
@@ -95,14 +95,14 @@ method description*(t: MailTool): string =
   "  • respond to current partner       → use `chat reply`\n" &
   "  • SYNC task that returns a result  → use `delegate` (waits)\n" &
   "  • bridge guest ↔ internal staff    → use `chat forward`\n\n" &
-  "Always call `mail action=archive` after acting on an internal mail, " &
+  "Always call `mail method=archive` after acting on an internal mail, " &
   "otherwise the MAILBOX ALERT fires on every future heartbeat."
 
 method parameters*(t: MailTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["send", "reply", "forward", "archive", "track"],
         "description": "Operation to perform"
@@ -193,7 +193,7 @@ method parameters*(t: MailTool): Table[string, JsonNode] =
                        "to archive (basename only; path components stripped)."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── shared address-resolution helpers ──────────────────────────────
@@ -255,7 +255,7 @@ proc resolveExternalRecipient(t: MailTool, toAlias, vendorOverride, kind: string
   if candidates.len == 0:
     let kindName = if kind == KindEmail: "email-kind" else: "shipment-kind"
     return ("", "", "No " & kindName & " address recorded for " & toAlias &
-                    ". Add via `social action=update id=" & toAlias & "`.")
+                    ". Add via `social method=update id=" & toAlias & "`.")
   if vendorOverride.len > 0:
     for c in candidates:
       if c.vendor == vendorOverride and not isUnreachable(ent, c.vendor):
@@ -568,13 +568,13 @@ proc resolveKind(action: string, args: Table[string, JsonNode]): (string, string
   of "archive": return (KindInternal, "")    # only internal has archive
   of "track":   return (KindShipment, "")    # only shipment has track
   else:
-    return ("", "Error: 'kind' is required for action=" & action &
+    return ("", "Error: 'kind' is required for method=" & action &
                 " (internal | email | shipment).")
 
 method execute*(t: MailTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (send | reply | forward | archive | track)."
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   let (kind, kindErr) = resolveKind(action, args)
   if kindErr.len > 0: return kindErr
 

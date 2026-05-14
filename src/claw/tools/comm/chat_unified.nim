@@ -7,16 +7,16 @@
 ## the format-selection logic uses the capability matrix declared by
 ## each channel impl.
 ##
-##   action=send      — push a message to a recipient (nc:id)
+##   method=send      — push a message to a recipient (nc:id)
 ##                       Resolves vendor + address via cortex (same
 ##                       routing logic as `social route`). Optional
 ##                       `vendor=Y` overrides the routing pick.
-##   action=reply     — answer the current inbound message (uses the
+##   method=reply     — answer the current inbound message (uses the
 ##                       inbound's channel + chat_id from tool context;
 ##                       no recipient lookup needed). Accepts optional
 ##                       `progress=[items]` for plan-state checkpoints
 ##                       and `interim=true` when more updates are coming.
-##   action=forward   — forward content to a recipient (vendor + address
+##   method=forward   — forward content to a recipient (vendor + address
 ##                       resolved like `send`)
 ##
 ## Format selection: capability-driven. If `caps.card.isSome` and the
@@ -78,7 +78,7 @@ type
       ## `chat reply` call that includes `progress=[...]`. The agent
       ## loop reads this for iteration-budget scaling: more items =
       ## more iterations granted (TodoWrite-style). Mirrors the
-      ## former ReplyTool.items field; migration from reply.action=
+      ## former ReplyTool.items field; migration from reply.method=
       ## progress kept the shape intact.
 
 proc newChatTool*(): ChatTool =
@@ -108,7 +108,7 @@ method parameters*(t: ChatTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["send", "reply", "forward"],
         "description": "Operation to perform"
@@ -161,7 +161,7 @@ method parameters*(t: ChatTool): Table[string, JsonNode] =
         "description": "reply only — true when more updates are coming (this " &
                        "is a status checkpoint, not a final answer). Default " &
                        "false (terminal reply, ends the turn). Maps to the " &
-                       "old `reply action=progress` semantics."
+                       "old `reply method=progress` semantics."
       }
     },
     "required": %["action", "text"]
@@ -392,11 +392,11 @@ proc doForward(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.asy
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (send | reply | forward)."
   if not args.hasKey("text"):
     return "Error: 'text' is required."
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "send":    return await doSend(t, args)
   of "reply":   return await doReply(t, args)

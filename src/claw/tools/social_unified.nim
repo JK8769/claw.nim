@@ -5,19 +5,19 @@
 ##
 ## Consolidates five previously-split tools:
 ##
-##   action=query     — JSE graph query (replaces query_graph)
-##   action=who       — convenience lookup of one entity by nc:id
-##   action=update    — modify a Person's display name (replaces
+##   method=query     — JSE graph query (replaces query_graph)
+##   method=who       — convenience lookup of one entity by nc:id
+##   method=update    — modify a Person's display name (replaces
 ##                       update_contact); routes to the graph for nc:id
 ##                       callers and to the per-agent guest ledger for
 ##                       guest callers
-##   action=customers — list customers the caller has personally
+##   method=customers — list customers the caller has personally
 ##                       onboarded (replaces my_customers)
-##   action=invite    — mint a customer invitation (CREATE a pin code);
+##   method=invite    — mint a customer invitation (CREATE a pin code);
 ##                       replaces create_customer_invite. Supports both
 ##                       share-the-code and auto-bind (Feishu @mention)
 ##                       modes
-##   action=redeem    — redeem a customer invitation pin code (CONSUME);
+##   method=redeem    — redeem a customer invitation pin code (CONSUME);
 ##                       replaces the misnamed customer/invite.nim
 ##                       (RedeemInviteTool)
 ##
@@ -103,13 +103,13 @@ method parameters*(t: SocialTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["query", "who", "update", "customers", "invite", "redeem",
                  "route", "discover", "mark_unreachable"],
         "description": "Operation to perform"
       },
-      # --- action=route / discover / mark_unreachable ---
+      # --- method=route / discover / mark_unreachable ---
       "to": {
         "type": "string",
         "description": "route/discover/mark_unreachable — recipient nc:id (e.g. 'nc:7')"
@@ -138,7 +138,7 @@ method parameters*(t: SocialTool): Table[string, JsonNode] =
                        "'bounce', 'auth_failed', 'user_blocked'). Stored " &
                        "with a timestamp in entity.custom.unreachable[vendor]."
       },
-      # --- action=query ---
+      # --- method=query ---
       "expression": {
         "type": "array",
         "items": { "type": "string" },  # explicit item type for OpenAI compat
@@ -146,19 +146,19 @@ method parameters*(t: SocialTool): Table[string, JsonNode] =
                        "Example: [\"filter\", \"Person\"] or " &
                        "[\"relationships\", \"nc:1\", \"serves\"]"
       },
-      # --- action=who ---
+      # --- method=who ---
       "id": {
         "type": "string",
         "description": "who only — nc:id of the entity to look up (e.g. 'nc:5')"
       },
-      # --- action=update ---
+      # --- method=update ---
       "name": {
         "type": "string",
         "description": "update only — the user's real/preferred display " &
                        "name (e.g. '杰瑞', 'Tom'). Must be non-empty, 1–80 " &
                        "characters, and contain no double-quote characters."
       },
-      # --- action=invite ---
+      # --- method=invite ---
       "customer_name": {
         "type": "string",
         "description": "invite only — display name for the customer " &
@@ -223,14 +223,14 @@ method parameters*(t: SocialTool): Table[string, JsonNode] =
           }
         }
       },
-      # --- action=redeem ---
+      # --- method=redeem ---
       "code": {
         "type": "string",
         "description": "redeem only — the 6-character Pin Code provided by " &
                        "the user (e.g., 'A4B-9X2')"
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -1027,9 +1027,9 @@ proc doMarkUnreachable(t: SocialTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: SocialTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (query | who | update | customers | invite | redeem | route | discover | mark_unreachable)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "query":            return doQuery(t, args)
   of "who":              return doWho(t, args)

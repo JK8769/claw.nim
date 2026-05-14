@@ -4,15 +4,15 @@
 ## meta/llama-3.3-70b-instruct, claude-3-5-sonnet-latest). This tool lets
 ## the agent ask:
 ##
-##   action=list    — every model available to this company, with
+##   method=list    — every model available to this company, with
 ##                    capabilities/context/pricing. (PRESERVES the
 ##                    `model_list` tool's full filter set verbatim:
 ##                    capability, vendor, match, refresh.)
-##   action=info    — show one model's full details (vendor, family,
+##   method=info    — show one model's full details (vendor, family,
 ##                    context_length, max_output_tokens, modality,
 ##                    capabilities, license, release_date, description,
 ##                    canonical link / providers offering it, pricing).
-##   action=current — show the model the CALLING agent is currently
+##   method=current — show the model the CALLING agent is currently
 ##                    using as its primary (looked up via the agent's
 ##                    NamedAgentConfig.models[0]; falls back to cfg
 ##                    defaults if not explicitly set). Same shape as
@@ -36,7 +36,7 @@ import ../env_file
 const ToolSpec* = spec(
   name = "model",
   description = "LLM models (the 'ship' you sail on): list/info/current " &
-                "(action=list|info|current). Includes capabilities, " &
+                "(method=list|info|current). Includes capabilities, " &
                 "context, pricing; current = the agent's primary model.",
   tags = @["diagnostics", "providers", "models", "core"],
   searchKeywords = @["llm", "model", "vision", "tool-use", "reasoning",
@@ -75,7 +75,7 @@ method parameters*(t: ModelTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["list", "info", "current"],
         "description": "Operation to perform"
@@ -129,7 +129,7 @@ method parameters*(t: ModelTool): Table[string, JsonNode] =
                        "(e.g. 'deepseek/deepseek-v4-flash')."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -432,7 +432,7 @@ proc doInfo(t: ModelTool, args: Table[string, JsonNode]): string =
   let view = lookupModel(id)
   if view == nil:
     return "Error: model '" & id & "' not found in the catalog. Use " &
-           "`model action=list` to see what's available."
+           "`model method=list` to see what's available."
   $view
 
 # ---------------------------------------------------------------------------
@@ -473,7 +473,7 @@ proc doCurrent(t: ModelTool): string =
       "model": newJNull(),
       "note": "agent has no explicit model set; gateway resolves it from " &
               "the company default chain at startup. Use `model " &
-              "action=list` to see what's available."
+              "method=list` to see what's available."
     })
   let view = lookupModel(modelId)
   if view == nil:
@@ -493,9 +493,9 @@ proc doCurrent(t: ModelTool): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: ModelTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (list | info | current)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "list":    return doList(t, args)
   of "info":    return doInfo(t, args)

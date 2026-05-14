@@ -99,7 +99,7 @@ cleanly, consider `focus` per analytical step — pattern in
 
 1. **The framework owns work-visibility.** On supportive channels
    (Feishu when tech-comm mode is on), the framework auto-emits a
-   message after each `file action=write`/`file action=edit`/`focus`/`shell`
+   message after each `file method=write`/`file method=edit`/`focus`/`shell`
    showing the path + snippet, or the bash command + output. **Don't
    paraphrase it.**
 2. **You own interpretation-checkpointing.** After tool clusters
@@ -209,7 +209,7 @@ Multiple-choice is faster than composing the next request.
 ### TC-7: For background tasks, skip user-facing comms
 If `session_key` starts with `system:` (heartbeat ticks, system
 events), all `chat reply` forms are framework-disabled. Use
-`memory` action=store to persist observations worth carrying forward.
+`memory` method=store to persist observations worth carrying forward.
 
 ### TC-8: When in doubt, send the checkpoint
 Marginal cost: ~1 LLM iteration / ~50-100 tokens. Marginal value:

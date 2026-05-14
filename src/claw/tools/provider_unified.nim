@@ -4,14 +4,14 @@
 ## company to (deepseek, openai, anthropic, ollama, …). This tool lets the
 ## agent (and operators chatting through it) ask:
 ##
-##   action=list   — which providers does this company know about, and
+##   method=list   — which providers does this company know about, and
 ##                   which have a key configured? Returns each provider's
 ##                   apiBase, models-offered count, masked key status.
-##   action=verify — does provider X's stored key still work? (PRESERVES
+##   method=verify — does provider X's stored key still work? (PRESERVES
 ##                   the `provider_auth` tool's logic verbatim — keys are
 ##                   read from <companyDir>/.env by the tool, NEVER passed
 ##                   in from the LLM and NEVER returned to it.)
-##   action=info   — show one provider's full def (apiBase, envKey,
+##   method=info   — show one provider's full def (apiBase, envKey,
 ##                   authHeader, verifyPath, defaultModel, local flag, and
 ##                   the per-provider catalog of models offered).
 ##
@@ -35,7 +35,7 @@ import ../env_file
 const ToolSpec* = spec(
   name = "provider",
   description = "LLM providers (the 'sea' you sail on): list/verify/info " &
-                "(action=list|verify|info). Read-only — keys stay on disk.",
+                "(method=list|verify|info). Read-only — keys stay on disk.",
   tags = @["admin", "providers", "diagnostics", "core"],
   searchKeywords = @["llm", "api", "key", "endpoint", "openai", "anthropic",
                       "deepseek", "ollama", "auth", "verify", "credentials",
@@ -73,7 +73,7 @@ method parameters*(t: ProviderTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["list", "verify", "info", "set_key"],
         "description": "Operation to perform"
@@ -92,7 +92,7 @@ method parameters*(t: ProviderTool): Table[string, JsonNode] =
                        "cased). Persisted to ~/.claw/.env."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ---------------------------------------------------------------------------
@@ -272,9 +272,9 @@ proc doSetKey(t: ProviderTool, args: Table[string, JsonNode]): string =
 # ---------------------------------------------------------------------------
 
 method execute*(t: ProviderTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (list | verify | info | set_key)"
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "list":    return doList(t)
   of "verify":  return doVerify(t, args)

@@ -88,7 +88,7 @@ method parameters*(t: KnowledgeTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["consolidate", "lookup", "list", "rank", "top",
                  "update", "deprecate", "link"],
@@ -138,7 +138,7 @@ method parameters*(t: KnowledgeTool): Table[string, JsonNode] =
                        "(the source), records: from `topic` → to `to`."
       }
     },
-    "required": %["action"]
+    "required": %["method"]
   }.toTable
 
 # ── format / kebab validation ──────────────────────────────────────
@@ -679,10 +679,10 @@ proc doLink(t: KnowledgeTool, args: Table[string, JsonNode]): string =
 # ── dispatch ────────────────────────────────────────────────────────
 
 method execute*(t: KnowledgeTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (consolidate | lookup | list | " &
            "rank | top | update | deprecate | link)"
-  let action = args["action"].getStr().toLowerAscii()
+  let action = getMethodArg(args).toLowerAscii()
   case action
   of "consolidate": return doConsolidate(t, args)
   of "lookup":      return doLookup(t, args)

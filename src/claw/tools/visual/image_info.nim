@@ -1,4 +1,4 @@
-## image_info — image-metadata helpers used by `fs action=info`.
+## image_info — image-metadata helpers used by `fs method=info`.
 ##
 ## Formerly an agent-facing tool; folded into the fs surface (`fs info`
 ## now auto-detects image files and includes format + dimensions when

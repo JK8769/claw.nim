@@ -32,7 +32,7 @@ import http_request
 
 const ToolSpec* = spec(
   name = "web",
-  description = "HTTP fetching (action=fetch|request); SSRF-protected. " &
+  description = "HTTP fetching (method=fetch|request); SSRF-protected. " &
                 "For search engines use the standalone `search` tool.",
   tags = @["web", "http", "data"],
   domain = "web",
@@ -72,7 +72,7 @@ method parameters*(t: WebTool): Table[string, JsonNode] =
   {
     "type": %"object",
     "properties": %*{
-      "action": {
+      "method": {
         "type": "string",
         "enum": ["fetch", "request"],
         "description": "Operation to perform"
@@ -100,19 +100,19 @@ method parameters*(t: WebTool): Table[string, JsonNode] =
         "description": "request only — request body"
       }
     },
-    "required": %*["action"]
+    "required": %*["method"]
   }.toTable
 
 method execute*(t: WebTool, args: Table[string, JsonNode]): Future[string] {.async.} =
-  if not args.hasKey("action"):
+  if not (args.hasKey("method") or args.hasKey("action")):
     return "Error: 'action' is required (fetch | request). " &
            "For search engine queries use the standalone `search` tool."
-  let action = args["action"].getStr()
+  let action = getMethodArg(args)
   case action
   of "fetch":   return await t.fetchTool.execute(args)
   of "request": return await t.httpTool.execute(args)
   of "search":
-    return "Error: `web action=search` was moved to the standalone " &
+    return "Error: `web method=search` was moved to the standalone " &
            "`search` tool. Call `search query=...` instead."
   else:
     return "Error: Unknown action '" & action &

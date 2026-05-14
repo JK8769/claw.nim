@@ -39,14 +39,14 @@ possible; falls through to the live API for gaps.
 ## Workflow
 
 1. Identify the customer and their `plant_ids` from the cortex
-   graph (`social action=query` or `social action=who id=nc:N`)
+   graph (`social method=query` or `social method=who id=nc:N`)
    or the operator's prompt.
 2. Send `chat reply text="Generating <month> report for <customer>
    — pulling cached data..." interim=true` (capability-driven: rich
    plan-state card on Feishu/Telegram, plain checklist elsewhere).
 3. For each plant, pull historical yield:
    - First try the cache (`<office>/data/yield/<plant_id>.csv`)
-   - Fill gaps via `solar action=plant_history(plant_id, from, to)`
+   - Fill gaps via `solar method=plant_history(plant_id, from, to)`
 4. Compute key metrics:
    - **Total month yield** (kWh)
    - **Average daily yield** (kWh/day)
@@ -89,7 +89,7 @@ Three options for next step:
 
 ## Failure modes
 
-- **Cache missing days** → query `solar action=plant_history` for the
+- **Cache missing days** → query `solar method=plant_history` for the
   gap. If the API also can't fill it, note the missing range in
   the report (don't fabricate).
 - **Generation service down** → reply with the markdown summary
