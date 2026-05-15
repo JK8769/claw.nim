@@ -21,6 +21,11 @@ type
     foundationSkills*: string      ## Tier 1: <co>/foundation/skills/ (snapshot of claw distribution)
     openClawExtensions*: string    ## third-party OpenClaw plugins
     workstationSkills*: string     ## Tier 3: <officeDir>/workstation/skills/
+    toolUsageIndex*: Table[string, seq[string]]
+      ## Reverse lookup: tool name → seq of skill names that reference it in
+      ## requires.tools. Built lazily by `rebuildToolUsageIndex`; refreshed on
+      ## skill mutations (learn / update / remove). Lets `tools method=show`
+      ## answer "Used by:" and `tools method=remove` refuse to orphan skills.
     loadedLazySkills*: HashSet[string]
       ## Session-scoped: names of `loading: lazy` skills the agent has called
       ## `skill method=load` on. The prompt builder inlines their bodies on
@@ -45,9 +50,37 @@ proc newSkillsLoader*(workspace, projectCompetencies, companySkills, foundationS
     foundationSkills: foundationSkills,
     openClawExtensions: openClawExtensions,
     workstationSkills: workstationSkills,
+    toolUsageIndex: initTable[string, seq[string]](),
     loadedLazySkills: initHashSet[string](),
     loadedLazyHandbooks: initHashSet[string]()
   )
+
+proc parseRequiresTools*(content: string): seq[string] =
+  ## Extract tool names from the YAML frontmatter's `requires.tools` list.
+  ## Returns empty seq if there's no frontmatter or no tools section.
+  ## Shared by:
+  ##   - skill_unified.update validation (catch broken refs at write time)
+  ##   - rebuildToolUsageIndex (the reverse-lookup map below)
+  ##   - boot-time orphan-reference check (loop.nim)
+  result = @[]
+  if not content.startsWith("---"): return
+  let endIdx = content.find("\n---", 4)
+  if endIdx < 0: return
+  let frontmatter = content[4 ..< endIdx]
+  var inTools = false
+  for line in frontmatter.splitLines:
+    let stripped = line.strip()
+    if stripped == "tools:":
+      inTools = true
+      continue
+    if not inTools: continue
+    let trimmed = line.strip(leading = true, trailing = false)
+    if trimmed.startsWith("- "):
+      let toolName = trimmed[2 .. ^1].strip()
+      if toolName.len > 0: result.add(toolName)
+    elif stripped.len > 0 and not stripped.startsWith("#"):
+      # Left the tools block (next sibling key like `env:`)
+      break
 
 proc parseListValue(val: string): seq[string] =
   ## Parse a YAML list field of the form `[a, b, c]` or `a, b, c` into
@@ -175,6 +208,37 @@ proc listSkills*(sl: SkillsLoader): seq[SkillInfo] =
   findSkillsRecursive(sl.projectCompetencies, "workspace", result, 0)
   if sl.openClawExtensions != "":
     findSkillsRecursive(sl.openClawExtensions, "openclaw", result, 0)
+
+proc rebuildToolUsageIndex*(sl: SkillsLoader) =
+  ## Walk every discoverable skill, parse its `requires.tools`, and populate
+  ## `toolUsageIndex` (tool name → seq of skill names referencing it).
+  ## Idempotent — safe to call after any skill mutation. Callers:
+  ##   - agent/loop.nim at gateway boot (initial population + orphan check)
+  ##   - skill_unified.learn / update / remove (keep the index fresh)
+  sl.toolUsageIndex.clear()
+  for s in sl.listSkills():
+    if not fileExists(s.path): continue
+    let toolNames = parseRequiresTools(readFile(s.path))
+    for t in toolNames:
+      let key = t.strip()
+      if key.len == 0: continue
+      if not sl.toolUsageIndex.hasKey(key):
+        sl.toolUsageIndex[key] = @[]
+      if s.name notin sl.toolUsageIndex[key]:
+        sl.toolUsageIndex[key].add(s.name)
+
+proc skillsUsingTool*(sl: SkillsLoader, toolName: string): seq[string] =
+  ## Reverse lookup: which skills declare `toolName` in their requires.tools?
+  ## Tolerant of `-` vs `_` variants (registry sanitization differs from skill
+  ## SKILL.md conventions).
+  let canonical = toolName.strip()
+  let alt = canonical.replace("-", "_")
+  let alt2 = canonical.replace("_", "-")
+  result = @[]
+  for variant in [canonical, alt, alt2]:
+    if sl.toolUsageIndex.hasKey(variant):
+      for n in sl.toolUsageIndex[variant]:
+        if n notin result: result.add(n)
 
 proc loadSkill*(sl: SkillsLoader, name: string): (string, bool) =
   ## Loads a specific skill by name, searching through all discovered skills.

@@ -50,11 +50,19 @@ type
     subTools*: Table[string, Tool]  ## sub-tool dispatch (e.g. "mcp" → UnifiedMcpTool).
                                     ## Routed by execute() as `tools method=mcp.<op>`.
     officeDir*: string              ## per-agent office for gotcha overlays.
+    usedByAccessor*: proc (toolName: string): seq[string] {.closure.}
+                                    ## Closure to skill-dependency reverse lookup.
+                                    ## Resolves at call-time so the loader can
+                                    ## refresh its index without notifying us.
+                                    ## Nil-tolerant — when absent, dependency
+                                    ## guards short-circuit to "no dependents".
 
-proc newFindTools*(registry: ToolRegistry, officeDir: string = ""): FindTools =
+proc newFindTools*(registry: ToolRegistry, officeDir: string = "",
+                    usedByAccessor: proc (n: string): seq[string] {.closure.} = nil): FindTools =
   FindTools(registry: registry, activated: initTable[string, int](),
              subTools: initTable[string, Tool](),
-             officeDir: officeDir)
+             officeDir: officeDir,
+             usedByAccessor: usedByAccessor)
 
 proc registerSubTool*(t: FindTools, name: string, handler: Tool) =
   ## Register a sub-namespace under tools (e.g. "mcp" routes
@@ -321,25 +329,36 @@ proc doRemove(t: FindTools, args: Table[string, JsonNode]): string =
            "via this surface. (You can `tools method=add_gotcha` to record " &
            "learned failures.)"
 
+  # Dependency check: refuse if any skill references this tool, unless
+  # the caller explicitly passes force=true. Saves the agent from silently
+  # orphaning skills (which would fail at runtime when the workflow fires).
+  let force = args.getOrDefault("force", %false).getBool()
+  if t.usedByAccessor != nil:
+    let dependents = t.usedByAccessor(name)
+    if dependents.len > 0 and not force:
+      return "Error: CLI tool '" & name & "' is referenced by skill(s): " &
+             dependents.join(", ") & ".\n" &
+             "  - Update those skills' `requires.tools` first " &
+             "(via `skill method=update` or `skill method=share content_change=...`), OR\n" &
+             "  - Re-run with `force=true` to delete anyway (the skills will " &
+             "fail at the call site until their requires.tools is fixed).\n" &
+             "  - To inspect: `tools method=show name=" & name & "`"
+
   let keepSource = if args.hasKey("delete_source"):
                       not args["delete_source"].getBool(false)
                    else: true
   let (ok, msg) = removeCliTool(t.officeDir, name, keepSource = keepSource)
   if not ok: return msg
 
-  t.registry.unregisterMcpServer(name)
-  ## ^^ harmless if it wasn't an MCP server. The registry also exposes a
-  ## plain unregister path internally via session cleanup; for CLI tools
-  ## we rely on `allowOverride` semantics — the next forge with the same
-  ## name replaces the entry. To force immediate removal from the live
-  ## table we'd need a public `unregister(name)` on ToolRegistry; for now
-  ## the agent should restart the session if they want it gone NOW.
+  # Drop the registration immediately so the agent can re-forge under the
+  # same name in this session (otherwise re-forge would refuse "tool
+  # already exists"). Also clears any TTL state.
+  t.registry.unregister(name)
   if name in t.activated: t.activated.del(name)
   infoCF("tool", "CLI tool removed",
          {"name": name, "office": t.officeDir,
           "keep_source": $keepSource}.toTable)
-  msg & "\n  - Catalog entry will clear on next gateway restart " &
-        "(in-session it stays registered as a stale stub)."
+  msg & "\n  - Unregistered from this session — re-forge with `tools method=forge` is immediately available."
 
 # ── share (propose for company-tier promotion) ───────────────────────
 #
@@ -418,6 +437,21 @@ proc doShow(t: FindTools, args: Table[string, JsonNode]): string =
   if not found:
     return "Error: tool '" & name & "' not registered. Use `tools method=find query=...` to discover."
   var body = "# " & tool.name & "\n\n" & tool.description
+
+  # Reverse lookup: which skills declare this tool in requires.tools?
+  # Shown above the overlay so it's the first thing the reader sees —
+  # answers "where is this tool actually used in our playbooks?"
+  if t.usedByAccessor != nil:
+    let dependents = t.usedByAccessor(tool.name)
+    if dependents.len > 0:
+      body.add("\n\n---\n\n")
+      body.add("# Used by skills\n\n")
+      body.add("This tool is declared in `requires.tools` of:\n")
+      for skillName in dependents:
+        body.add("  - " & skillName & "\n")
+      body.add("\n`tools method=remove` will refuse to delete this tool " &
+               "unless those skills are updated or `force=true` is passed.")
+
   let includeOverlay = if args.hasKey("include_overlay"):
                           args["include_overlay"].getBool(true) else: true
   if includeOverlay and t.officeDir.len > 0:

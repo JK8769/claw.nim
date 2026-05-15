@@ -3169,7 +3169,16 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let larkTool = newLarkCliTool()
 
   # --- Discovery & meta ---
-  let findToolInstance = newFindTools(toolsRegistry, officeDir)
+  # The `usedByAccessor` closure wires the skills-loader's reverse index
+  # into FindTools so `tools method=show` can render "Used by skills:"
+  # and `tools method=remove` can refuse to orphan dependents. Resolved
+  # at call-time (not capture-time) so refreshes from skill.learn / update
+  # / remove are visible without any explicit notification dance.
+  let findToolInstance = newFindTools(toolsRegistry, officeDir,
+    usedByAccessor = proc (n: string): seq[string] =
+      let sl = contextBuilder.skillsLoader
+      if sl.isNil: return @[]
+      sl.skillsUsingTool(n))
   findToolInstance.setTags(@["utility", "core"])
   findToolInstance.setSearchHint("discover and activate hidden tools")
   # Register mcp as a sub-tool of `tools` (folded — Phase 3).
@@ -3295,6 +3304,24 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
     except Exception as e:
       warnCF("agent", "Failed to register CLI tool",
         {"name": cliTool.toolName, "error": e.msg}.toTable)
+
+  # Phase 403: Build the skill→tool reverse index, then lint each skill's
+  # requires.tools against the live registry. Orphan references log warnings
+  # so the operator/agent can see broken dependencies before they fail at
+  # runtime — e.g. a tool that was removed by a previous session, or a
+  # company-tier skill referencing a foundation tool that's been renamed.
+  contextBuilder.skillsLoader.rebuildToolUsageIndex()
+  for toolName, dependents in contextBuilder.skillsLoader.toolUsageIndex.pairs:
+    let (_, regHit) = toolsRegistry.get(toolName)
+    if not regHit:
+      # The skill might use the underscore variant; the registry sanitizes
+      # names so check both. Only warn if BOTH forms miss.
+      let (_, altHit) = toolsRegistry.get(toolName.replace("-", "_"))
+      let (_, altHit2) = toolsRegistry.get(toolName.replace("_", "-"))
+      if not altHit and not altHit2:
+        warnCF("agent", "Orphan requires.tools reference",
+               {"tool": toolName, "agent": agentName,
+                "referenced_by": dependents.join(", ")}.toTable)
 
   # Browser unified tool — wraps system-browser launch (always available)
   # plus Playwright CLI automation (only if npx is installed).

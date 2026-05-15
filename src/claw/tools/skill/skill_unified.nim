@@ -96,8 +96,8 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
       "method": {
         "type": "string",
         "enum": ["list", "show", "load", "unload", "install", "learn",
-                 "update", "add_gotcha", "share"],
-        "description": "Operation. list/show=read; load/unload=session; install/learn/update=mutate (workstation-owned for update); add_gotcha=append-only learned failure to a per-agent overlay (works on ANY skill including foundation); share=propose a workstation skill for company-tier promotion (operator-reviewed)."
+                 "update", "remove", "add_gotcha", "share"],
+        "description": "Operation. list/show=read; load/unload=session; install/learn/update/remove=mutate (workstation-owned for update/remove); add_gotcha=append-only learned failure to a per-agent overlay (works on ANY skill including foundation); share=propose for company-tier promotion or refinement (operator-reviewed)."
       },
       "name": {
         "type": "string",
@@ -170,6 +170,14 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
       "content_change": {
         "type": "string",
         "description": "share only — OPTIONAL new SKILL.md body. Triggers propose-update mode: writes the proposed body to <project>/workspace/proposals/skills/<name>/SKILL.md.proposed alongside the existing canonical, so the operator can review the diff before merging. Use this when the target skill is already at company tier and you want to refine it. Omit when promoting a workstation-tier skill as-is."
+      },
+      "bundle_tools": {
+        "type": "boolean",
+        "description": "share only — when true, also bundle any workstation-tier CLI tools the skill references in `requires.tools` (spec + script copied into <proposal>/tools/<name>/). The proposed skill would otherwise reference tools invisible to other agents; bundling lets the operator promote the pair atomically. Default false."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "remove only — bypass the refusal-on-loaded check; remove anyway. Catalog stub clears on next gateway boot; in-session, the agent may need to call `skill unload` first to free the prompt slot."
       }
     },
     "required": %*["method"]
@@ -336,6 +344,8 @@ proc doLearn(t: SkillTool, args: Table[string, JsonNode]): string =
     writeFile(skillFile, buf)
   except CatchableError as e:
     return "Error: failed to write SKILL.md: " & e.msg
+  if t.skillsLoader != nil:
+    t.skillsLoader.rebuildToolUsageIndex()
 
   infoCF("tool", "Workstation skill authored",
     {"name": name, "path": skillFile,
@@ -541,33 +551,6 @@ proc doShow(t: SkillTool, args: Table[string, JsonNode]): string =
       except CatchableError: discard
   body
 
-proc parseRequiresTools(content: string): seq[string] =
-  ## Extract tool names from the YAML frontmatter's `requires.tools` list.
-  ## Returns empty seq if there's no frontmatter or no tools section.
-  ## Used by doUpdate to validate references against the live registry —
-  ## same discipline learn enforces on its explicit `tools` arg.
-  result = @[]
-  if not content.startsWith("---"): return
-  let endIdx = content.find("\n---", 4)
-  if endIdx < 0: return
-  let frontmatter = content[4 ..< endIdx]
-  var inTools = false
-  for line in frontmatter.splitLines:
-    let stripped = line.strip()
-    if stripped == "tools:":
-      inTools = true
-      continue
-    if not inTools: continue
-    # Item line: starts with "- " (after any indentation).
-    let trimmed = line.strip(leading = true, trailing = false)
-    if trimmed.startsWith("- "):
-      let toolName = trimmed[2 .. ^1].strip()
-      if toolName.len > 0:
-        result.add(toolName)
-    elif stripped.len > 0 and not stripped.startsWith("#"):
-      # Left the tools block (next sibling key like `env:`).
-      break
-
 proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name"):
     return "Error: 'name' is required for update"
@@ -612,6 +595,8 @@ proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
     writeFile(s.path, content)
   except CatchableError as e:
     return "Error: failed to write SKILL.md: " & e.msg
+  if t.skillsLoader != nil:
+    t.skillsLoader.rebuildToolUsageIndex()
   infoCF("tool", "Workstation skill updated",
          {"name": s.name, "path": s.path, "bytes": $content.len,
           "tools": $declaredTools.len}.toTable)
@@ -620,6 +605,43 @@ proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
          "  - " & $declaredTools.len & " tool reference(s) in requires.tools (all validated)\n" &
          "  - Body refreshes in next session (or call `skill method=load name=" &
          s.name & "` if it's lazy and you want it now)."
+
+proc doRemove(t: SkillTool, args: Table[string, JsonNode]): string =
+  ## Delete a workstation-tier skill the agent authored. Non-workstation
+  ## tiers (foundation/company/distribution) are framework- or
+  ## operator-controlled and reject removal — to retire a company-tier
+  ## skill, the operator removes the directory directly, or the agent
+  ## proposes its removal via a `share content_change=""` empty body.
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for remove"
+  let name = args["name"].getStr().strip()
+  let hit = t.resolveSkillName(name)
+  if hit.isNone:
+    return "Error: skill '" & name & "' not found."
+  let s = hit.get
+  if s.source != "workstation":
+    return "Error: 'remove' only works on workstation-tier skills (yours, " &
+           "private). Skill '" & s.name & "' is " & s.source & "-tier — " &
+           "operators/framework manage its lifecycle. Open a proposal via " &
+           "`skill method=share` instead, or ask the operator to remove it."
+  let skillDir = s.path.parentDir
+  if not dirExists(skillDir):
+    return "Error: skill directory missing at " & skillDir
+  try:
+    removeDir(skillDir)
+  except CatchableError as e:
+    return "Error: failed to remove skill: " & e.msg
+  # Cleanup loaded state + index.
+  if t.skillsLoader != nil:
+    t.skillsLoader.loadedLazySkills.excl(s.name)
+    t.skillsLoader.loadedLazySkills.excl(s.name.replace("_", "-"))
+    t.skillsLoader.rebuildToolUsageIndex()
+  infoCF("tool", "Workstation skill removed",
+         {"name": s.name, "path": skillDir}.toTable)
+  return "Removed workstation skill '" & s.name & "' at " & skillDir & "\n" &
+         "  - Per-agent overlay (gotchas) at <office>/skills_overlay/" &
+         s.name & "/ is PRESERVED — delete manually if no longer wanted.\n" &
+         "  - Catalog stub clears on next gateway boot."
 
 proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
   ## Two modes, gated by the presence of `content_change`:
@@ -683,6 +705,10 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
   # proposals directory lives one level above (the shared workspace).
   let projectWorkspace = t.officeDir.parentDir.parentDir
   let proposalsDir = projectWorkspace / "proposals" / "skills" / s.name
+  let bundleTools = args.getOrDefault("bundle_tools", %false).getBool()
+  var bundled: seq[string] = @[]   ## workstation tools copied into proposal
+  var dangling: seq[string] = @[]  ## workstation tools NOT bundled (warned)
+
   try:
     if not dirExists(proposalsDir): createDir(proposalsDir)
     let canonicalBody = readFile(s.path)
@@ -703,6 +729,28 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
     if fileExists(overlayPath):
       writeFile(proposalsDir / "gotchas.md", readFile(overlayPath))
 
+    # Workstation-tier-tool linkage: for any tool the proposed skill body
+    # references AND that lives in this agent's workstation/cli/, either
+    # bundle it (when bundle_tools=true) or surface it in `dangling` so
+    # the response warns the operator/agent the proposal references tools
+    # other agents can't yet see.
+    let bodyForToolScan =
+      if mode == "propose-update": args["content_change"].getStr()
+      else: canonicalBody
+    let toolsInBody = skill_loader.parseRequiresTools(bodyForToolScan)
+    for toolName in toolsInBody:
+      let wsDir = t.officeDir / "workstation" / "cli" / toolName
+      if not dirExists(wsDir): continue   # framework/company-tier — nothing to bundle
+      if bundleTools:
+        let bundleDir = proposalsDir / "tools" / toolName
+        if not dirExists(bundleDir): createDir(bundleDir)
+        for fname in ["tool.json", "run"]:
+          let src = wsDir / fname
+          if fileExists(src): copyFile(src, bundleDir / fname)
+        bundled.add(toolName)
+      else:
+        dangling.add(toolName)
+
     var manifest = newJObject()
     manifest["name"] = %s.name
     manifest["description"] = %s.description
@@ -713,6 +761,8 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
     manifest["source_office"] = %t.officeDir
     manifest["rationale"] = %rationale
     manifest["has_overlay"] = %fileExists(overlayPath)
+    manifest["bundled_tools"] = %bundled
+    manifest["dangling_workstation_tools"] = %dangling
     writeFile(proposalsDir / "manifest.json", manifest.pretty(2))
   except CatchableError as e:
     return "Error: failed to write proposal: " & e.msg
@@ -720,21 +770,36 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
   infoCF("tool", "Skill share proposed",
          {"skill": s.name, "mode": mode, "tier": s.source,
           "proposal_dir": proposalsDir,
-          "rationale_bytes": $rationale.len}.toTable)
+          "rationale_bytes": $rationale.len,
+          "bundled": $bundled.len,
+          "dangling": $dangling.len}.toTable)
+
+  # Compose response with a clear warning when workstation tools dangle.
+  var trailer = ""
+  if bundled.len > 0:
+    trailer.add("\n  - Bundled workstation tools: " & bundled.join(", ") &
+                " (operator promotes alongside the skill).")
+  if dangling.len > 0:
+    trailer.add("\n  - ⚠ Skill references workstation-tier tools other " &
+                "agents can't see: " & dangling.join(", ") & ".\n" &
+                "    Re-run `skill method=share ... bundle_tools=true` to " &
+                "include them in the proposal — otherwise the operator may " &
+                "reject (the promoted skill would be unusable).")
   if mode == "promote":
     return "Proposed workstation skill '" & s.name & "' for company-tier " &
            "promotion.\n" &
            "  - Manifest: " & proposalsDir / "manifest.json" & "\n" &
            "  - SKILL.md: " & proposalsDir / "SKILL.md" & "\n" &
            "  - Operator will review and (if approved) promote to " &
-           "<project>/workspace/skills/<name>/."
+           "<project>/workspace/skills/<name>/." & trailer
   else:
     return "Proposed refinement to " & s.source & "-tier skill '" & s.name &
            "'.\n" &
            "  - Manifest:         " & proposalsDir / "manifest.json" & "\n" &
            "  - Canonical now:    " & proposalsDir / "SKILL.md" & "\n" &
            "  - Proposed change:  " & proposalsDir / "SKILL.md.proposed" & "\n" &
-           "  - Operator will diff and (if approved) overwrite the canonical."
+           "  - Operator will diff and (if approved) overwrite the canonical." &
+           trailer
 
 proc doAddGotcha(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name"):
@@ -794,8 +859,9 @@ method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.a
       return "Error: 'name' is required for learn"
     return doLearn(t, args)
   of "update":     return doUpdate(t, args)
+  of "remove":     return doRemove(t, args)
   of "add_gotcha": return doAddGotcha(t, args)
   of "share":      return doShare(t, args)
   else:
     return "Error: Unknown method '" & action &
-           "'. Use: list | show | load | unload | install | learn | update | add_gotcha | share"
+           "'. Use: list | show | load | unload | install | learn | update | remove | add_gotcha | share"
