@@ -1,7 +1,7 @@
 ## claw — AI agent framework CLI.
 ## Single binary: gateway mode (long-running) + management commands (one-shot).
 
-import std/[os, strutils, json, tables, osproc, posix, sequtils, times, algorithm, unicode, sets]
+import std/[os, strutils, json, tables, osproc, posix, sequtils, times, algorithm, unicode, sets, hashes]
 import docopt
 import claw/[config, doctor, protocol, version as version_mod, context, env_file]
 import claw/agent/context as agent_context
@@ -71,6 +71,8 @@ Usage:
   claw skill unshare <name>
   claw skill install <ref> [--as=<alias>]
   claw skill add [<name>]
+  claw skill reseed <name> [--force]
+  claw skill diff <name>
   claw doctor [--no-color]
   claw version
   claw --version
@@ -3603,6 +3605,158 @@ when isMainModule:
           echo "  + env " & varName & "=" & value
 
       echo "✓ Installed '" & destName & "'."
+
+  # Re-seed a template-tier skill from the framework distribution.
+  # Restores the canonical SKILL.md (and any other seed files) over the
+  # operator's local copy. Asks for confirmation unless --force.
+  elif args.isCommand("skill", "reseed"):
+    let name = $args["<name>"]
+    let force = bool(args["--force"])
+    let companyDir = getNimClawDir()
+    let dest = companyDir / "workspace" / "skills" / name
+
+    # Resolve the framework seed.
+    let foundationJsonPath = prov_registry.findDistributionResource("res" / "foundation.json")
+    if foundationJsonPath.len == 0:
+      echo "Error: cannot locate framework's res/foundation.json — is claw installed correctly?"
+      quit(1)
+    let reg = parseJson(readFile(foundationJsonPath))
+    let entry = reg{"skills"}{name}
+    if entry.isNil:
+      echo "Error: '" & name & "' is not a foundation-registered skill — " &
+           "nothing to reseed. (Reseed works on template-tier skills shipped " &
+           "by the framework, not company-authored skills.)"
+      quit(1)
+    let policy = entry{"tier_policy"}.getStr("invariant").toLowerAscii()
+    if policy != "template":
+      echo "Error: '" & name & "' is " & policy & "-tier — reseed only works " &
+           "on template-tier skills. Invariant-tier skills are auto-mirrored " &
+           "to <co>/foundation/skills/ on every `claw company update`."
+      quit(1)
+    let relPath = entry{"path"}.getStr("")
+    # foundationJsonPath sits at <framework>/res/foundation.json — its
+    # grandparent is the framework root, and relPath starts with "res/...".
+    let frameworkRoot = foundationJsonPath.parentDir.parentDir
+    let seedSrc = frameworkRoot / relPath
+    if not dirExists(seedSrc):
+      echo "Error: seed source missing at " & seedSrc
+      quit(1)
+
+    if not dirExists(dest):
+      echo "Error: '" & name & "' is not currently installed at " & dest &
+           ". Run `claw company update` to seed it, or `claw create` for a new company."
+      quit(1)
+
+    if not force:
+      echo "About to overwrite " & dest & " with the framework seed from " & seedSrc
+      echo "Local edits (gotchas overlay lives separately and is NOT touched) will be LOST."
+      stdout.write("Continue? [y/N] ")
+      let resp = readLine(stdin).strip().toLowerAscii()
+      if resp != "y" and resp != "yes":
+        echo "Aborted."
+        quit(1)
+
+    removeDir(dest)
+    copyDir(seedSrc, dest)
+    # Refresh meta inline (mirrors writeTemplateMeta in clawdsl.nim).
+    # Hash the PRISTINE seed, not the installed copy — see clawdsl.nim
+    # comment on writeTemplateMeta for why this matters.
+    let seedSkillMd = seedSrc / "SKILL.md"
+    var seedHash = ""
+    if fileExists(seedSkillMd): seedHash = $hash(readFile(seedSkillMd))
+    let seedVersion = block:
+      let md = seedSrc / "SKILL.md"
+      var v = ""
+      if fileExists(md):
+        for line in readFile(md).splitLines:
+          let s = line.strip()
+          if s.startsWith("version:"):
+            v = s["version:".len .. ^1].strip().strip(chars = {'"', '\''})
+            break
+      v
+    let meta = %*{
+      "name": name,
+      "seed_version": seedVersion,
+      "seed_hash": seedHash,
+      "seed_source": seedSrc
+    }
+    writeFile(dest / ".template-meta.json", pretty(meta, 2))
+    echo "✓ Reseeded '" & name & "' from " & seedSrc &
+         " (seed_version=" & seedVersion & ")"
+
+  # Show the diff between an installed template-tier skill and the
+  # framework's current seed. Reports "no change" if the operator hasn't
+  # diverged from the seed they installed against.
+  elif args.isCommand("skill", "diff"):
+    let name = $args["<name>"]
+    let companyDir = getNimClawDir()
+    let installed = companyDir / "workspace" / "skills" / name
+    if not dirExists(installed):
+      echo "Error: '" & name & "' is not installed at " & installed
+      quit(1)
+
+    let foundationJsonPath = prov_registry.findDistributionResource("res" / "foundation.json")
+    if foundationJsonPath.len == 0:
+      echo "Error: cannot locate framework's res/foundation.json"
+      quit(1)
+    let reg = parseJson(readFile(foundationJsonPath))
+    let entry = reg{"skills"}{name}
+    if entry.isNil:
+      echo "Note: '" & name & "' is not a framework-registered skill — " &
+           "no upstream seed to compare against. (This is a company-authored " &
+           "skill; diff against your VCS instead.)"
+      quit(0)
+    let policy = entry{"tier_policy"}.getStr("invariant").toLowerAscii()
+    if policy != "template":
+      echo "Note: '" & name & "' is " & policy & "-tier — the framework " &
+           "manages its content directly. Operator edits aren't expected."
+      quit(0)
+    let relPath = entry{"path"}.getStr("")
+    let frameworkRoot = foundationJsonPath.parentDir.parentDir
+    let seedSrc = frameworkRoot / relPath
+    if not dirExists(seedSrc):
+      echo "Error: seed source missing at " & seedSrc
+      quit(1)
+
+    # Two pieces of context first: seed_version comparison + hash check.
+    let metaPath = installed / ".template-meta.json"
+    var installedSeedVer = "(not recorded)"
+    var installedSeedHash = ""
+    if fileExists(metaPath):
+      try:
+        let m = parseJson(readFile(metaPath))
+        installedSeedVer = m{"seed_version"}.getStr(installedSeedVer)
+        installedSeedHash = m{"seed_hash"}.getStr("")
+      except: discard
+
+    var frameworkVer = ""
+    let seedMd = seedSrc / "SKILL.md"
+    if fileExists(seedMd):
+      for line in readFile(seedMd).splitLines:
+        let s = line.strip()
+        if s.startsWith("version:"):
+          frameworkVer = s["version:".len .. ^1].strip(chars = {'"', '\''}).strip()
+          break
+
+    var currentHash = ""
+    let curMd = installed / "SKILL.md"
+    if fileExists(curMd): currentHash = $hash(readFile(curMd))
+
+    echo "Skill:              " & name
+    echo "Installed seed:     " & installedSeedVer
+    echo "Framework seed:     " & frameworkVer
+    if installedSeedHash.len > 0:
+      let edited = currentHash != installedSeedHash
+      echo "Operator edits:     " & (if edited: "YES (your SKILL.md diverges from the seed you installed)" else: "no")
+    else:
+      echo "Operator edits:     unknown (no .template-meta.json; either pre-Phase-2 install or manually placed)"
+    echo ""
+    echo "Diff against framework seed:"
+    let cmd = "diff -u " & quoteShell(installed / "SKILL.md") &
+              " " & quoteShell(seedSrc / "SKILL.md")
+    let exitCode = execCmd(cmd)
+    if exitCode == 0:
+      echo "(identical)"
 
   # Doctor
   elif args["doctor"]:

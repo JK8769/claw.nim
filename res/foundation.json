@@ -1,16 +1,17 @@
 {
-  "schema_version": 1,
-  "description": "Foundation-tier skills shipped with the claw distribution. Every company gets these auto-mirrored into its foundation/skills/ dir on `claw co create` / `claw co update`. Content lives under res/foundation/<name>/.",
+  "schema_version": 2,
+  "description": "Skills shipped with the claw distribution. Each entry's `tier_policy` controls how it's installed: 'invariant' = mirror into <co>/foundation/skills/ on every co update (framework owns it); 'template' = seed-copy into <co>/workspace/skills/ once at co create, operator owns it from then on (only re-seeded on explicit `claw skill reseed`). Default when omitted is 'invariant' for backwards compatibility. Content lives under res/foundation/<name>/.",
 
   "skills": {
     "tools": {
       "path": "res/foundation/tools",
-      "description": "Manage your capability surface: discover hidden tools by intent, delegate to peers, forge new MCP tools when nothing fits, capture reusable workflows as skills. Universal — granted to every agent.",
+      "tier_policy": "template",
+      "description": "Pedagogy for the agent's craft surface: when to forge vs compose, decision trees, gotchas-flywheel discipline. Seeded into <co>/workspace/skills/tools/ at create time so each company can refine the lore as agents accumulate experience (without forking the framework). Underlying tool API (find/forge/update/share/remove) stays framework-canonical in the binary.",
       "requires": {
         "tools": ["find_tools", "mcp", "delegate", "skill", "file", "shell"],
         "deps": [{"package": "nim", "manager": "system"}],
         "env": []
       }
-    },
+    }
   }
 }

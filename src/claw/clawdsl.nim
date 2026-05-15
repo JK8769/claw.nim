@@ -2,7 +2,7 @@
 ## Import this in a .nims file and run with `nim e MyCompany.nims`.
 ## Generates ~/.nimclaw-<OrgName>/ with BASE.json, workspace, skills, etc.
 
-import std/[json, os, strutils, tables, options, sets, sequtils]
+import std/[json, os, strutils, tables, options, sets, sequtils, hashes]
 import tools/registry/manifest
 import providers/registry as provider_registry
 
@@ -1525,11 +1525,24 @@ proc foundationSkillNames(): seq[string] =
     for name, _ in skills.pairs:
       result.add(name)
 
+proc readSkillVersionFromDir(skillDir: string): string  ## forward decl — body below
+
+proc tierPolicy(entry: JsonNode): string =
+  ## Read a skill entry's tier_policy. Defaults to "invariant" for back-compat
+  ## with schema_version 1 entries that omit the field.
+  let v = entry{"tier_policy"}.getStr("")
+  if v.len == 0: return "invariant"
+  v.toLowerAscii()
+
 proc populateFoundation(foundationDir: string) =
-  ## Copy every foundation-tier skill from its `path` (res/foundation/<name>/
+  ## Copy every INVARIANT-tier skill from its `path` (res/foundation/<name>/
   ## by convention) into <co>/foundation/skills/<name>/. MIRROR semantics —
   ## existing destination content is overwritten. Users shouldn't edit
-  ## foundation/ directly; to customize, copy into workspace/skills/ instead.
+  ## foundation/ directly; to customize, request a template-tier reclassify
+  ## upstream, or copy the skill into workspace/skills/ manually.
+  ##
+  ## TEMPLATE-tier skills are skipped — those land in <co>/workspace/skills/
+  ## via `populateTemplates`, with operator-owned semantics from then on.
   let reg = readFoundationRegistry()
   let skills = reg{"skills"}
   if skills == nil or skills.kind != JObject: return
@@ -1537,6 +1550,7 @@ proc populateFoundation(foundationDir: string) =
   mkDir targetRoot
   var count = 0
   for name, entry in skills.pairs:
+    if tierPolicy(entry) != "invariant": continue
     let relPath = entry{"path"}.getStr("")
     if relPath.len == 0:
       echo "  ! foundation skill '" & name & "' missing `path` in res/foundation.json"
@@ -1550,7 +1564,152 @@ proc populateFoundation(foundationDir: string) =
     cpDir src, dest
     inc count
   if count > 0:
-    echo "  + foundation/ populated with " & $count & " foundation-tier skill(s)"
+    echo "  + foundation/ populated with " & $count & " invariant-tier skill(s)"
+
+proc skillSeedHash(skillDir: string): string =
+  ## Stable identity for a seeded skill, derived from SKILL.md only. Subsequent
+  ## edits to scripts or supporting files don't bump the hash — pedagogy lives
+  ## in SKILL.md and that's what drift detection cares about.
+  let md = skillDir / "SKILL.md"
+  if not fileExists(md): return ""
+  $hash(readFile(md))
+
+proc writeTemplateMeta(installedDir, name, seedSrcDir: string) =
+  ## Stamp the seed-copy with the framework version + hash. The
+  ## .template-meta.json sits alongside SKILL.md and is what `co update`
+  ## reads to decide auto-upgrade vs operator-edited drift.
+  ##
+  ## CRUCIAL: seed_hash is the hash of the PRISTINE seed (from seedSrcDir),
+  ## not the installed copy. This way drift detection treats `currentHash
+  ## == seed_hash` as "workspace matches upstream exactly" — which is the
+  ## only safe condition for auto-upgrade. The migration path benefits
+  ## directly: a promoted-from-foundation skill carries pre-migration
+  ## edits, so its currentHash will NOT match the pristine seed_hash, and
+  ## drift detection correctly surfaces those edits the moment the
+  ## framework next bumps the version.
+  let seedVersion = readSkillVersionFromDir(seedSrcDir)
+  let seedHash = skillSeedHash(seedSrcDir)
+  let meta = %*{
+    "name": name,
+    "seed_version": seedVersion,
+    "seed_hash": seedHash,
+    "seed_source": seedSrcDir
+  }
+  writeFile(installedDir / ".template-meta.json", pretty(meta, 2))
+
+proc populateTemplates(workspaceSkillsDir, foundationSkillsDir: string) =
+  ## Seed every TEMPLATE-tier skill into <co>/workspace/skills/<name>/ —
+  ## operator-owned from that point. Idempotent: never overwrites a
+  ## directory the operator already has.
+  ##
+  ## Migration: if a legacy <co>/foundation/skills/<name>/ exists for a
+  ## now-template-tier skill (older claw versions mirrored everything to
+  ## foundation), promote it to workspace and drop the foundation copy.
+  ## The lookup order is workspace > foundation, so a stale foundation
+  ## copy would just shadow harmlessly, but removing it keeps the layout
+  ## honest.
+  let reg = readFoundationRegistry()
+  let skills = reg{"skills"}
+  if skills == nil or skills.kind != JObject: return
+  mkDir workspaceSkillsDir
+  var seeded = 0
+  var migrated = 0
+  for name, entry in skills.pairs:
+    if tierPolicy(entry) != "template": continue
+    let relPath = entry{"path"}.getStr("")
+    if relPath.len == 0:
+      echo "  ! template skill '" & name & "' missing `path` in res/foundation.json"
+      continue
+    let seedSrc = getCurrentDir() / relPath
+    if not dirExists(seedSrc):
+      echo "  ! template skill '" & name & "' source missing at " & seedSrc
+      continue
+    let dest = workspaceSkillsDir / name
+    let legacyFoundation = foundationSkillsDir / name
+
+    if dirExists(dest):
+      # Operator already owns it — leave alone. (Drift detection handled
+      # separately on `co update`.)
+      continue
+
+    if dirExists(legacyFoundation):
+      # Migration path: this company was created before tools became a
+      # template. Promote the existing foundation copy so operator edits,
+      # gotcha overlays, and version history follow them.
+      cpDir legacyFoundation, dest
+      rmDir legacyFoundation
+      writeTemplateMeta(dest, name, seedSrc)
+      echo "  ↑ Promoted '" & name & "' from foundation/ to workspace/skills/ — operator owns it now"
+      inc migrated
+      continue
+
+    # Fresh seed: copy from the framework distribution.
+    cpDir seedSrc, dest
+    writeTemplateMeta(dest, name, seedSrc)
+    echo "  + Seeded template skill '" & name & "' into workspace/skills/ (operator owns it)"
+    inc seeded
+  if seeded > 0 or migrated > 0:
+    echo "  · templates: " & $seeded & " seeded, " & $migrated & " migrated"
+
+proc detectTemplateDrift(workspaceSkillsDir: string) =
+  ## On `co update`, compare each template-tier skill's seed_version /
+  ## seed_hash against the framework's current seed. Three outcomes:
+  ##   1. Versions match → no action.
+  ##   2. Framework bumped AND operator hasn't edited (hash matches
+  ##      installed seed_hash) → silent auto-upgrade in place, update meta.
+  ##   3. Framework bumped AND operator HAS edited (hash differs) →
+  ##      print warning + diff path; never auto-merge.
+  ##
+  ## A missing .template-meta.json is treated like outcome 3: we can't tell
+  ## whether the operator edited, so we surface the divergence and let them
+  ## decide.
+  let reg = readFoundationRegistry()
+  let skills = reg{"skills"}
+  if skills == nil or skills.kind != JObject: return
+  for name, entry in skills.pairs:
+    if tierPolicy(entry) != "template": continue
+    let installedDir = workspaceSkillsDir / name
+    if not dirExists(installedDir): continue  # not seeded yet — handled by populateTemplates
+    let relPath = entry{"path"}.getStr("")
+    let seedSrc = getCurrentDir() / relPath
+    if not dirExists(seedSrc): continue
+    let frameworkVer = readSkillVersionFromDir(seedSrc)
+    let currentHash = skillSeedHash(installedDir)
+
+    let metaPath = installedDir / ".template-meta.json"
+    var installedVer = ""
+    var installedSeedHash = ""
+    if fileExists(metaPath):
+      try:
+        let m = parseJson(readFile(metaPath))
+        installedVer = m{"seed_version"}.getStr("")
+        installedSeedHash = m{"seed_hash"}.getStr("")
+      except: discard
+
+    if installedVer == frameworkVer:
+      continue  # no upstream change
+
+    if installedSeedHash.len > 0 and currentHash == installedSeedHash:
+      # Operator hasn't edited the seed — safe to refresh in place.
+      let dest = installedDir
+      rmDir dest
+      cpDir seedSrc, dest
+      writeTemplateMeta(dest, name, seedSrc)
+      echo "  ↻ Auto-upgraded template '" & name & "' (" & installedVer &
+           " → " & frameworkVer & ") — no operator edits detected"
+    else:
+      # Operator has edited (or we lack a baseline to compare). Surface
+      # the divergence; let them decide.
+      let diffPath = "/tmp/claw-seed-diff-" & name & ".patch"
+      let cmd = "diff -u " & quoteShell(installedDir / "SKILL.md") &
+                " " & quoteShell(seedSrc / "SKILL.md") &
+                " > " & quoteShell(diffPath) & " 2>/dev/null || true"
+      exec cmd
+      echo "  ⚠ Template '" & name & "' has upstream changes (" &
+           (if installedVer.len > 0: installedVer else: "?") &
+           " → " & frameworkVer & ") and local edits."
+      echo "    Review diff: " & diffPath
+      echo "    Apply seed:  `claw skill reseed " & name & "` (or merge manually)"
 
 proc readSkillVersionFromDir(skillDir: string): string =
   ## Inline version reader (parseSkillVersion is declared later in this file).
@@ -2560,6 +2719,17 @@ proc build*(s: var ClawSpec) =
 
   # 2. Scaffold workspace
   scaffoldWorkspace(s, workspace)
+
+  # 2b. Seed template-tier skills into workspace/skills/.
+  # See `populateTemplates` for the contract: idempotent, migrates legacy
+  # foundation/skills/<name>/ copies to workspace, never overwrites existing
+  # operator content. Runs on every `claw create` (= co create / co update).
+  populateTemplates(workspace / "skills", serviceDir / "foundation" / "skills")
+
+  # 2c. Detect upstream changes against operator-edited templates and either
+  # auto-upgrade (no edits) or surface a diff path (edited). Pure-no-op
+  # for the create path because populateTemplates just wrote fresh meta.
+  detectTemplateDrift(workspace / "skills")
 
   # 3. Sync SOUL.md from BASE.nims (authored `soul "..."` wins, preset
   # is the fallback). Runs for every agent, not just ones with a
