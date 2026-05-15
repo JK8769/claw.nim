@@ -205,13 +205,52 @@ proc titleCase(s: string): string =
     else:
       result.add(c)
 
+proc parseStringList(node: JsonNode): seq[string] =
+  ## Tolerant parser for list-of-string args. Accepts:
+  ##   - JArray of JString:    ["a", "b"]            (canonical)
+  ##   - JArray of mixed:      auto-stringified
+  ##   - JString JSON-encoded: "[\"a\", \"b\"]"     (LLM serialization quirk)
+  ##   - JString CSV:          "a, b, c"             (LLM frequently does this)
+  ##   - JString single:       "a"                   (one-element list)
+  ## Returns empty seq for null / missing / unrecognized shapes.
+  result = @[]
+  if node.isNil or node.kind == JNull: return
+  if node.kind == JArray:
+    for item in node:
+      let s = if item.kind == JString: item.getStr() else: $item
+      let stripped = s.strip()
+      if stripped.len > 0: result.add(stripped)
+    return
+  if node.kind == JString:
+    let raw = node.getStr().strip()
+    if raw.len == 0: return
+    # Try parsing as JSON first (handles "[\"a\",\"b\"]")
+    if raw.startsWith("["):
+      try:
+        let parsed = parseJson(raw)
+        if parsed.kind == JArray:
+          for item in parsed:
+            let s = if item.kind == JString: item.getStr() else: $item
+            let stripped = s.strip()
+            if stripped.len > 0: result.add(stripped)
+          return
+      except CatchableError: discard
+    # CSV fallback
+    if "," in raw:
+      for part in raw.split(','):
+        let stripped = part.strip()
+        if stripped.len > 0: result.add(stripped)
+      return
+    # Single string
+    result.add(raw)
+
 proc doLearn(t: SkillTool, args: Table[string, JsonNode]): string =
   let name = args["name"].getStr().strip()
   let descr = if args.hasKey("description"): args["description"].getStr().strip() else: ""
-  let triggers = if args.hasKey("triggers"): args["triggers"].to(seq[string]) else: @[]
-  let workflow = if args.hasKey("workflow"): args["workflow"].to(seq[string]) else: @[]
-  let claimedTools = if args.hasKey("tools"): args["tools"].to(seq[string]) else: @[]
-  let examples = if args.hasKey("examples"): args["examples"].to(seq[string]) else: @[]
+  let triggers = if args.hasKey("triggers"): parseStringList(args["triggers"]) else: @[]
+  let workflow = if args.hasKey("workflow"): parseStringList(args["workflow"]) else: @[]
+  let claimedTools = if args.hasKey("tools"): parseStringList(args["tools"]) else: @[]
+  let examples = if args.hasKey("examples"): parseStringList(args["examples"]) else: @[]
 
   if not isKebabCase(name):
     return "Error: 'name' must be kebab-case (lowercase letters/digits/hyphens, no leading/trailing/double hyphens). Got: '" & name & "'"
