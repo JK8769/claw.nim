@@ -1,6 +1,6 @@
 ---
 name: tools
-version: 1.1.0
+version: 1.2.0
 description: "Manage your capability surface: discover hidden tools by intent, delegate to peers, forge new MCP tools when nothing fits, capture reusable workflows as skills. Teaches the four-layer architecture (tools / skills / competencies / heart) and the elementary-primitives-plus-skill-workflows principle."
 operations:
   - find
@@ -136,14 +136,36 @@ To pair: after forging, call `skill method=learn name=<same-name>` with triggers
 
 ### Refining without diverging
 
-For any skill or tool — including framework-shipped foundation ones — accumulated learnings (failure modes, edge cases, gotchas you only discover in production) go via the **per-agent overlay**:
+Three paths exist for refining the framework's pedagogy, each with a different scope:
+
+**1. Private learning (per-agent, always-available):**
 
 ```
 skill method=add_gotcha name=<skill> gotcha="..."
 tools method=add_gotcha name=<tool>  gotcha="..."
 ```
 
-This writes to `<office>/skills_overlay/<n>/gotchas.md` (or `tools_overlay/`). The canonical SKILL.md / tool description never changes — your overlay augments YOUR view via `skill method=show` / `tools method=show`. Append-only; no risk of routing regression or framework divergence.
+Writes to `<office>/skills_overlay/<n>/gotchas.md` (append-only). Augments YOUR view via `skill method=show` — the canonical SKILL.md never changes, and the overlay auto-inlines below the skill body each session. Use for: failure modes you hit in production, edge cases worth remembering, anything that's TRUE for you but might not generalize.
+
+**2. Direct rewrite (your own workstation skills only):**
+
+```
+skill method=update name=<your-skill> content="<new SKILL.md>"
+```
+
+Only works on workstation-tier skills (ones you authored via `skill method=learn`). Replaces the canonical body. Use for: iterating on your own private playbook.
+
+**3. Propose a refinement (workspace-tier skills like THIS one):**
+
+```
+skill method=share name=<skill> content_change="<new SKILL.md>" rationale="<why>"
+```
+
+Writes the proposed change to `<workspace>/proposals/skills/<n>/SKILL.md.proposed` alongside the canonical for operator review. The operator three-way diffs and (if approved) overwrites the canonical — at which point every agent in the company inherits the refinement on the next gateway boot.
+
+Use case for path 3: you've accumulated several gotchas via path 1 and the pattern is now CLEAR enough that you'd recommend it as default rule — not just a per-agent note. Propose the rule into the canonical body. Operator decides whether your sample size + reasoning warrants codifying.
+
+Framework foundation-tier skills (rare today — most have been promoted to workspace via the template-seed mechanism) remain off-limits to paths 2 and 3. Path 1 still works on them. To propose framework-level changes, open a PR on the claw repo.
 
 ## When to delegate (vs forge yourself)
 

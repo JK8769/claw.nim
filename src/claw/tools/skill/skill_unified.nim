@@ -165,7 +165,11 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
       },
       "rationale": {
         "type": "string",
-        "description": "share only — explain WHY this skill deserves company-tier promotion (use cases, frequency, what it unlocks for other agents)."
+        "description": "share only — explain WHY (use cases, frequency, what it unlocks for other agents)."
+      },
+      "content_change": {
+        "type": "string",
+        "description": "share only — OPTIONAL new SKILL.md body. Triggers propose-update mode: writes the proposed body to <project>/workspace/proposals/skills/<name>/SKILL.md.proposed alongside the existing canonical, so the operator can review the diff before merging. Use this when the target skill is already at company tier and you want to refine it. Omit when promoting a workstation-tier skill as-is."
       }
     },
     "required": %*["method"]
@@ -578,10 +582,14 @@ proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
     return "Error: skill '" & name & "' not found. Use `skill method=learn` to author a new one."
   let s = hit.get
   if s.source != "workstation":
-    return "Error: 'update' only works on workstation-tier skills (yours, private). Skill '" &
-           s.name & "' is " & s.source & "-tier — its SKILL.md is framework-/operator-controlled. " &
-           "To accumulate learnings on it, use `skill method=add_gotcha` instead — that writes to " &
-           "your per-agent overlay without touching the canonical file."
+    return "Error: 'update' writes directly to the canonical file — only " &
+           "permitted on workstation-tier skills (yours, private). Skill '" &
+           s.name & "' is " & s.source & "-tier (operator-/framework-owned).\n" &
+           "  - To propose a refinement (operator-reviewed): " &
+           "`skill method=share name=" & s.name & " content_change=\"<new SKILL.md>\" " &
+           "rationale=\"<why>\"`\n" &
+           "  - To record a private learning instead: " &
+           "`skill method=add_gotcha name=" & s.name & " gotcha=\"...\"`"
   if not fileExists(s.path):
     return "Error: SKILL.md missing at " & s.path
 
@@ -614,17 +622,29 @@ proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
          s.name & "` if it's lazy and you want it now)."
 
 proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
-  ## Propose a workstation-tier skill for company-tier promotion. Copies
-  ## the SKILL.md to <project>/workspace/proposals/skills/<name>/ along
-  ## with a manifest carrying the rationale + author metadata. No automatic
-  ## merge — the operator decides whether to copy it under
-  ## <project>/workspace/skills/. Same pattern as `tools method=share`.
+  ## Two modes, gated by the presence of `content_change`:
+  ##
+  ##   PROMOTE  (no content_change, source MUST be workstation):
+  ##     Propose your private workstation skill for company-tier adoption.
+  ##     Writes SKILL.md + manifest to <project>/workspace/proposals/skills/
+  ##     <name>/ for operator review.
+  ##
+  ##   PROPOSE-UPDATE  (content_change present, source can be ANY non-foundation
+  ##                    tier — workstation, company, or distribution):
+  ##     Propose a refined SKILL.md against an existing skill. Writes the
+  ##     proposed body as SKILL.md.proposed alongside the canonical SKILL.md
+  ##     so the operator can three-way diff (canonical vs proposed) before
+  ##     merging. This is the path agents use to evolve the seeded `tools`
+  ##     skill (and other workspace-tier templates).
+  ##
+  ## Foundation-tier remains off-limits to share — those skills are
+  ## framework-shipped invariants. Use add_gotcha for per-agent learnings
+  ## or open a framework PR upstream.
   if not args.hasKey("name"):
     return "Error: 'name' is required for share"
   if not args.hasKey("rationale"):
-    return "Error: 'rationale' is required for share — explain WHY this " &
-           "skill deserves company-tier promotion (use cases, frequency, " &
-           "what it unlocks for other agents)."
+    return "Error: 'rationale' is required for share — explain WHY (use " &
+           "cases, frequency, what it unlocks for other agents)."
   let name = args["name"].getStr().strip()
   let rationale = args["rationale"].getStr().strip()
   if rationale.len == 0:
@@ -634,13 +654,30 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
     return "Error: skill '" & name & "' not found. Use `skill method=list` " &
            "to see what's available."
   let s = hit.get
-  if s.source != "workstation":
-    return "Error: skill '" & s.name & "' is " & s.source & "-tier — it's " &
-           "already at or above company tier; nothing to propose."
   if not fileExists(s.path):
     return "Error: SKILL.md missing at " & s.path
   if t.officeDir.len == 0:
     return "Error: tool not bound to an office workspace"
+
+  let hasContentChange = args.hasKey("content_change") and
+                         args["content_change"].getStr().strip().len > 0
+  let mode = if hasContentChange: "propose-update" else: "promote"
+
+  # Foundation-tier is always off-limits. Framework invariants change
+  # via framework releases, not agent proposals.
+  if s.source == "foundation":
+    return "Error: skill '" & s.name & "' is foundation-tier (framework " &
+           "invariant). To accumulate learnings use `skill method=add_gotcha`; " &
+           "to propose upstream framework changes, file an issue against the " &
+           "claw repo."
+
+  # Promote mode requires workstation source. Propose-update is what
+  # works on company/workspace-tier skills.
+  if mode == "promote" and s.source != "workstation":
+    return "Error: skill '" & s.name & "' is " & s.source & "-tier — it's " &
+           "already at or above company tier; nothing to PROMOTE. To propose " &
+           "a refinement, add a `content_change` arg with the new SKILL.md " &
+           "body and the operator will see your change as a proposed update."
 
   # officeDir is typically <project>/workspace/offices/<agent>; the
   # proposals directory lives one level above (the shared workspace).
@@ -648,17 +685,29 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
   let proposalsDir = projectWorkspace / "proposals" / "skills" / s.name
   try:
     if not dirExists(proposalsDir): createDir(proposalsDir)
-    let skillBody = readFile(s.path)
-    writeFile(proposalsDir / "SKILL.md", skillBody)
-    # Also include the gotchas overlay (if any) — operator may want to
-    # roll the learned failures into the canonical SKILL.md on promotion.
+    let canonicalBody = readFile(s.path)
+
+    if mode == "promote":
+      writeFile(proposalsDir / "SKILL.md", canonicalBody)
+    else:
+      # Propose-update: write canonical + proposed side-by-side. The
+      # operator's review tool (or eyeballs) diffs the two.
+      let proposedBody = args["content_change"].getStr()
+      writeFile(proposalsDir / "SKILL.md", canonicalBody)
+      writeFile(proposalsDir / "SKILL.md.proposed", proposedBody)
+
+    # Always include the gotchas overlay (if present) — operator may
+    # want to roll the learned failures into the canonical body alongside
+    # the proposed change.
     let overlayPath = t.skillOverlayPath(s.name)
     if fileExists(overlayPath):
       writeFile(proposalsDir / "gotchas.md", readFile(overlayPath))
+
     var manifest = newJObject()
     manifest["name"] = %s.name
     manifest["description"] = %s.description
-    manifest["source_tier"] = %"workstation"
+    manifest["mode"] = %mode
+    manifest["source_tier"] = %s.source
     manifest["source_path"] = %s.path
     manifest["proposed_at"] = %times.now().format("yyyy-MM-dd HH:mm")
     manifest["source_office"] = %t.officeDir
@@ -668,15 +717,24 @@ proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
   except CatchableError as e:
     return "Error: failed to write proposal: " & e.msg
 
-  infoCF("tool", "Workstation skill share proposed",
-         {"skill": s.name, "proposal_dir": proposalsDir,
+  infoCF("tool", "Skill share proposed",
+         {"skill": s.name, "mode": mode, "tier": s.source,
+          "proposal_dir": proposalsDir,
           "rationale_bytes": $rationale.len}.toTable)
-  return "Proposed workstation skill '" & s.name & "' for company-tier " &
-         "promotion.\n" &
-         "  - Manifest: " & proposalsDir / "manifest.json" & "\n" &
-         "  - SKILL.md: " & proposalsDir / "SKILL.md" & "\n" &
-         "  - Operator will review and (if approved) promote to " &
-         "<project>/workspace/skills/<name>/."
+  if mode == "promote":
+    return "Proposed workstation skill '" & s.name & "' for company-tier " &
+           "promotion.\n" &
+           "  - Manifest: " & proposalsDir / "manifest.json" & "\n" &
+           "  - SKILL.md: " & proposalsDir / "SKILL.md" & "\n" &
+           "  - Operator will review and (if approved) promote to " &
+           "<project>/workspace/skills/<name>/."
+  else:
+    return "Proposed refinement to " & s.source & "-tier skill '" & s.name &
+           "'.\n" &
+           "  - Manifest:         " & proposalsDir / "manifest.json" & "\n" &
+           "  - Canonical now:    " & proposalsDir / "SKILL.md" & "\n" &
+           "  - Proposed change:  " & proposalsDir / "SKILL.md.proposed" & "\n" &
+           "  - Operator will diff and (if approved) overwrite the canonical."
 
 proc doAddGotcha(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name"):
