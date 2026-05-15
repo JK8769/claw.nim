@@ -533,6 +533,33 @@ proc doShow(t: SkillTool, args: Table[string, JsonNode]): string =
       except CatchableError: discard
   body
 
+proc parseRequiresTools(content: string): seq[string] =
+  ## Extract tool names from the YAML frontmatter's `requires.tools` list.
+  ## Returns empty seq if there's no frontmatter or no tools section.
+  ## Used by doUpdate to validate references against the live registry —
+  ## same discipline learn enforces on its explicit `tools` arg.
+  result = @[]
+  if not content.startsWith("---"): return
+  let endIdx = content.find("\n---", 4)
+  if endIdx < 0: return
+  let frontmatter = content[4 ..< endIdx]
+  var inTools = false
+  for line in frontmatter.splitLines:
+    let stripped = line.strip()
+    if stripped == "tools:":
+      inTools = true
+      continue
+    if not inTools: continue
+    # Item line: starts with "- " (after any indentation).
+    let trimmed = line.strip(leading = true, trailing = false)
+    if trimmed.startsWith("- "):
+      let toolName = trimmed[2 .. ^1].strip()
+      if toolName.len > 0:
+        result.add(toolName)
+    elif stripped.len > 0 and not stripped.startsWith("#"):
+      # Left the tools block (next sibling key like `env:`).
+      break
+
 proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name"):
     return "Error: 'name' is required for update"
@@ -553,14 +580,32 @@ proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
            "your per-agent overlay without touching the canonical file."
   if not fileExists(s.path):
     return "Error: SKILL.md missing at " & s.path
+
+  # Validate requires.tools references against the live registry — catches
+  # broken references before they ship. Same discipline learn enforces.
+  let declaredTools = parseRequiresTools(content)
+  var unknown: seq[string] = @[]
+  for toolName in declaredTools:
+    let (_, ok) = t.registryRef.get(toolName)
+    if not ok:
+      unknown.add(toolName)
+  if unknown.len > 0:
+    return "Error: skill content references unknown tool(s): " & unknown.join(", ") & ".\n" &
+           "  - If you need to forge one of these, call " &
+           "`tools method=mcp.forge name=<name> ...` first, then retry update.\n" &
+           "  - Otherwise remove the reference or use the canonical name from " &
+           "`tools method=find` (e.g. `shell`, `memory`, `web`, etc.)."
+
   try:
     writeFile(s.path, content)
   except CatchableError as e:
     return "Error: failed to write SKILL.md: " & e.msg
   infoCF("tool", "Workstation skill updated",
-         {"name": s.name, "path": s.path, "bytes": $content.len}.toTable)
+         {"name": s.name, "path": s.path, "bytes": $content.len,
+          "tools": $declaredTools.len}.toTable)
   return "Updated workstation skill '" & s.name & "' at " & s.path & "\n" &
          "  - " & $content.len & " bytes written\n" &
+         "  - " & $declaredTools.len & " tool reference(s) in requires.tools (all validated)\n" &
          "  - Body refreshes in next session (or call `skill method=load name=" &
          s.name & "` if it's lazy and you want it now)."
 
