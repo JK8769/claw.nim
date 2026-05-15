@@ -122,6 +122,29 @@ If nothing matches: **broaden before narrowing.** Swap synonyms, drop terms, try
 - Wrapping an HTTP API → use `web method=request` directly
 - **Chaining existing tools** → that's a workstation skill, call `skill method=learn` instead
 
+### After forging: pair with a skill?
+
+A tool's description tells agents what's POSSIBLE; a paired skill tells them WHEN that tool is the right choice. Pair when:
+
+- The tool has multiple actions and the right one depends on context
+- The tool wraps a complex domain (vendor API, custom protocol, multi-step workflow)
+- Operators might want to standardize HOW the tool is used across agents
+
+Skip the pairing when the tool is a thin wrapper with a self-evident single verb (e.g. `fin-calc compound` — the name says it all).
+
+To pair: after forging, call `skill method=learn name=<same-name>` with triggers + workflow + the tool name in `tools=[...]`. The skill becomes the use-case manual; the tool stays the executable verb.
+
+### Refining without diverging
+
+For any skill or tool — including framework-shipped foundation ones — accumulated learnings (failure modes, edge cases, gotchas you only discover in production) go via the **per-agent overlay**:
+
+```
+skill method=add_gotcha name=<skill> gotcha="..."
+tools method=add_gotcha name=<tool>  gotcha="..."
+```
+
+This writes to `<office>/skills_overlay/<n>/gotchas.md` (or `tools_overlay/`). The canonical SKILL.md / tool description never changes — your overlay augments YOUR view via `skill method=show` / `tools method=show`. Append-only; no risk of routing regression or framework divergence.
+
 ## When to delegate (vs forge yourself)
 
 **Delegate when:**
