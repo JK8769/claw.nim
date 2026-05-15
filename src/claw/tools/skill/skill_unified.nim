@@ -96,8 +96,8 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
       "method": {
         "type": "string",
         "enum": ["list", "show", "load", "unload", "install", "learn",
-                 "update", "add_gotcha"],
-        "description": "Operation. list/show=read; load/unload=session; install/learn/update=mutate (workstation-owned for update); add_gotcha=append-only learned failure to a per-agent overlay (works on ANY skill including foundation)."
+                 "update", "add_gotcha", "share"],
+        "description": "Operation. list/show=read; load/unload=session; install/learn/update=mutate (workstation-owned for update); add_gotcha=append-only learned failure to a per-agent overlay (works on ANY skill including foundation); share=propose a workstation skill for company-tier promotion (operator-reviewed)."
       },
       "name": {
         "type": "string",
@@ -162,6 +162,10 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
         "type": "array",
         "items": {"type": "string"},
         "description": "learn only — optional user-query → tool-call → reply examples"
+      },
+      "rationale": {
+        "type": "string",
+        "description": "share only — explain WHY this skill deserves company-tier promotion (use cases, frequency, what it unlocks for other agents)."
       }
     },
     "required": %*["method"]
@@ -609,6 +613,71 @@ proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
          "  - Body refreshes in next session (or call `skill method=load name=" &
          s.name & "` if it's lazy and you want it now)."
 
+proc doShare(t: SkillTool, args: Table[string, JsonNode]): string =
+  ## Propose a workstation-tier skill for company-tier promotion. Copies
+  ## the SKILL.md to <project>/workspace/proposals/skills/<name>/ along
+  ## with a manifest carrying the rationale + author metadata. No automatic
+  ## merge — the operator decides whether to copy it under
+  ## <project>/workspace/skills/. Same pattern as `tools method=share`.
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for share"
+  if not args.hasKey("rationale"):
+    return "Error: 'rationale' is required for share — explain WHY this " &
+           "skill deserves company-tier promotion (use cases, frequency, " &
+           "what it unlocks for other agents)."
+  let name = args["name"].getStr().strip()
+  let rationale = args["rationale"].getStr().strip()
+  if rationale.len == 0:
+    return "Error: 'rationale' must not be empty"
+  let hit = t.resolveSkillName(name)
+  if hit.isNone:
+    return "Error: skill '" & name & "' not found. Use `skill method=list` " &
+           "to see what's available."
+  let s = hit.get
+  if s.source != "workstation":
+    return "Error: skill '" & s.name & "' is " & s.source & "-tier — it's " &
+           "already at or above company tier; nothing to propose."
+  if not fileExists(s.path):
+    return "Error: SKILL.md missing at " & s.path
+  if t.officeDir.len == 0:
+    return "Error: tool not bound to an office workspace"
+
+  # officeDir is typically <project>/workspace/offices/<agent>; the
+  # proposals directory lives one level above (the shared workspace).
+  let projectWorkspace = t.officeDir.parentDir.parentDir
+  let proposalsDir = projectWorkspace / "proposals" / "skills" / s.name
+  try:
+    if not dirExists(proposalsDir): createDir(proposalsDir)
+    let skillBody = readFile(s.path)
+    writeFile(proposalsDir / "SKILL.md", skillBody)
+    # Also include the gotchas overlay (if any) — operator may want to
+    # roll the learned failures into the canonical SKILL.md on promotion.
+    let overlayPath = t.skillOverlayPath(s.name)
+    if fileExists(overlayPath):
+      writeFile(proposalsDir / "gotchas.md", readFile(overlayPath))
+    var manifest = newJObject()
+    manifest["name"] = %s.name
+    manifest["description"] = %s.description
+    manifest["source_tier"] = %"workstation"
+    manifest["source_path"] = %s.path
+    manifest["proposed_at"] = %times.now().format("yyyy-MM-dd HH:mm")
+    manifest["source_office"] = %t.officeDir
+    manifest["rationale"] = %rationale
+    manifest["has_overlay"] = %fileExists(overlayPath)
+    writeFile(proposalsDir / "manifest.json", manifest.pretty(2))
+  except CatchableError as e:
+    return "Error: failed to write proposal: " & e.msg
+
+  infoCF("tool", "Workstation skill share proposed",
+         {"skill": s.name, "proposal_dir": proposalsDir,
+          "rationale_bytes": $rationale.len}.toTable)
+  return "Proposed workstation skill '" & s.name & "' for company-tier " &
+         "promotion.\n" &
+         "  - Manifest: " & proposalsDir / "manifest.json" & "\n" &
+         "  - SKILL.md: " & proposalsDir / "SKILL.md" & "\n" &
+         "  - Operator will review and (if approved) promote to " &
+         "<project>/workspace/skills/<name>/."
+
 proc doAddGotcha(t: SkillTool, args: Table[string, JsonNode]): string =
   if not args.hasKey("name"):
     return "Error: 'name' is required for add_gotcha"
@@ -668,6 +737,7 @@ method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.a
     return doLearn(t, args)
   of "update":     return doUpdate(t, args)
   of "add_gotcha": return doAddGotcha(t, args)
+  of "share":      return doShare(t, args)
   else:
     return "Error: Unknown method '" & action &
-           "'. Use: list | show | load | unload | install | learn | update | add_gotcha"
+           "'. Use: list | show | load | unload | install | learn | update | add_gotcha | share"

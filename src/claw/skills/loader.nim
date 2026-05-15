@@ -470,6 +470,20 @@ proc buildSkillsSummary*(sl: SkillsLoader, allowedNames: seq[string] = @[],
   lines.add("</skills>")
   return lines.join("\n")
 
+proc overlayForSkill(sl: SkillsLoader, skillName: string): string =
+  ## Read the per-agent gotchas overlay for a skill, if present. Empty
+  ## otherwise. Lives at `<workspace>/skills_overlay/<name>/gotchas.md`
+  ## (workspace IS the agent's office dir — see context.nim:121).
+  ## Append-only file written by `skill method=add_gotcha`.
+  if sl.workspace.len == 0: return ""
+  let overlayPath = sl.workspace / "skills_overlay" / skillName / "gotchas.md"
+  if not fileExists(overlayPath): return ""
+  try:
+    let raw = readFile(overlayPath).strip()
+    if raw.len == 0: return ""
+    return "\n\n### Gotchas (your accumulated learnings)\n\n" & raw
+  except CatchableError: return ""
+
 proc buildLoadedLazySkillBodies*(sl: SkillsLoader,
                                   allowedNames: seq[string]): string =
   ## Inline the FULL body of any `loading: lazy` skill the agent has
@@ -482,6 +496,11 @@ proc buildLoadedLazySkillBodies*(sl: SkillsLoader,
   ## the agent decides one is relevant to the task at hand, loading
   ## inlines the body so subsequent turns don't need a `read_file`
   ## round-trip per consultation.
+  ##
+  ## If a per-agent gotchas overlay exists for the skill, it's appended
+  ## under a `### Gotchas` heading — learned failure modes flow into
+  ## context the moment the skill body does, no extra `skill show` call
+  ## needed.
   if sl.loadedLazySkills.len == 0: return ""
   let skills = sl.listSkills()
   if skills.len == 0: return ""
@@ -499,7 +518,8 @@ proc buildLoadedLazySkillBodies*(sl: SkillsLoader,
     if not fileExists(s.path): continue
     let content = stripFrontmatter(readFile(s.path)).strip()
     if content.len == 0: continue
-    blocks.add("## " & s.name & " (loaded for this session)\n\n" & content)
+    blocks.add("## " & s.name & " (loaded for this session)\n\n" & content &
+               overlayForSkill(sl, s.name))
   if blocks.len == 0: return ""
   return "# Loaded Skill Bodies\n\nThe following skill content is " &
          "INLINED below because you called `skill method=load` on it. " &
@@ -547,7 +567,8 @@ proc buildChannelActiveSkillRecipes*(sl: SkillsLoader,
     if not fileExists(s.path): continue
     let content = stripFrontmatter(readFile(s.path)).strip()
     if content.len == 0: continue
-    blocks.add("## " & s.name & " (active for `" & currentChannel & "`)\n\n" & content)
+    blocks.add("## " & s.name & " (active for `" & currentChannel & "`)\n\n" & content &
+               overlayForSkill(sl, s.name))
   if blocks.len == 0: return ""
   return "# Channel-Active Skill Recipes\n\nThe following skill " &
          "content is INLINED below because the skill is tagged for " &

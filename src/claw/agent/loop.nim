@@ -43,6 +43,7 @@ import ../tools/social_unified
 # image_info.nim retained as a helper module (imageMetaForFile is
 # imported by fs_unified.nim for the image-aware fs info extension).
 import ../tools/mcp/mcp_unified
+import ../tools/cli/cli_tool as cli_tool_mod
 import ../tools/skill/skill_unified
 import ../services/scheduler as cron_service
 import ../lib/curl as curly
@@ -3280,7 +3281,21 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
           except Exception as e:
             warnCF("agent", "Failed to register forged MCP tool",
               {"name": toolName, "error": e.msg}.toTable)
-  
+
+  # Phase 402: Scan agent-authored CLI-script tools (Tier 3, parallel to
+  # the MCP path above). Each entry is <officeDir>/workstation/cli/<name>/
+  # with `tool.json` + `run`. Malformed entries skip with a warning so a
+  # bad tool can't take down the agent's startup.
+  for cliTool in discoverCliTools(officeDir):
+    try:
+      toolsRegistry.register(cliTool, hidden = false, allowOverride = true)
+      infoCF("agent", "Loaded forged CLI tool",
+        {"name": cliTool.toolName, "path": cliTool.scriptPath,
+         "agent": agentName}.toTable)
+    except Exception as e:
+      warnCF("agent", "Failed to register CLI tool",
+        {"name": cliTool.toolName, "error": e.msg}.toTable)
+
   # Browser unified tool — wraps system-browser launch (always available)
   # plus Playwright CLI automation (only if npx is installed).
   # Browser profile state (cookies, cache, sessions) lives in support/playwright/
