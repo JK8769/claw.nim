@@ -16,7 +16,7 @@
 ##   office   — ship  (agent's vessel — clock/calendar/state/etc.)
 ##   company  — navigator (org-level direction; cross-office views)
 
-import std/[asyncdispatch, json, tables, strutils, sets, sequtils]
+import std/[asyncdispatch, json, tables, strutils, sets, sequtils, os, times]
 import ../types, ../registry
 import ../spec
 
@@ -43,10 +43,12 @@ type
     activated*: Table[string, int]  ## tool name -> remaining TTL (turns)
     subTools*: Table[string, Tool]  ## sub-tool dispatch (e.g. "mcp" → UnifiedMcpTool).
                                     ## Routed by execute() as `tools method=mcp.<op>`.
+    officeDir*: string              ## per-agent office for gotcha overlays.
 
-proc newFindTools*(registry: ToolRegistry): FindTools =
+proc newFindTools*(registry: ToolRegistry, officeDir: string = ""): FindTools =
   FindTools(registry: registry, activated: initTable[string, int](),
-             subTools: initTable[string, Tool]())
+             subTools: initTable[string, Tool](),
+             officeDir: officeDir)
 
 proc registerSubTool*(t: FindTools, name: string, handler: Tool) =
   ## Register a sub-namespace under tools (e.g. "mcp" routes
@@ -94,12 +96,25 @@ method parameters*(t: FindTools): Table[string, JsonNode] =
     "properties": %*{
       "method": %*{
         "type": "string",
-        "enum": ["find", "forge", "update", "share", "remove"],
-        "description": "Operation. find (Phase 1) | forge / update / share / remove (Phase 2 stubs)."
+        "enum": ["find", "show", "forge", "update", "share", "remove",
+                 "add_gotcha"],
+        "description": "Operation. find=discover; show=read description; add_gotcha=append per-agent learned failure to overlay; forge/update/share/remove=Phase 2 stubs. Sub-routes: mcp.<op> (forge/persist/purge MCP servers)."
       },
       "query": %*{
         "type": "string",
         "description": "find — keywords (e.g. 'browser login', 'git commit', 'cron schedule')."
+      },
+      "name": %*{
+        "type": "string",
+        "description": "show / add_gotcha — tool name to read or annotate."
+      },
+      "gotcha": %*{
+        "type": "string",
+        "description": "add_gotcha only — one-paragraph description of the failure mode + how to avoid it. Appended to <office>/tools_overlay/<name>/gotchas.md with timestamp."
+      },
+      "include_overlay": %*{
+        "type": "boolean",
+        "description": "show only — when true (default), include the per-agent gotcha overlay below the canonical description."
       }
     },
     "required": %*["method"]
@@ -126,8 +141,76 @@ proc doFind(t: FindTools, args: Table[string, JsonNode]): string =
 proc phase2Stub(action: string): string =
   "Error: '" & action & "' is in the action set but not yet implemented " &
   "(planned for Phase 2). Surface locked so agents can plan against the " &
-  "future API. Today: use `mcp` for MCP server lifecycle, `skill " &
-  "method=learn` for workstation-tier authoring."
+  "future API. Today: use `tools method=mcp.forge` for MCP server " &
+  "authoring, `skill method=learn` for workstation-tier skill authoring."
+
+# ── show / add_gotcha ──────────────────────────────────────────────
+#
+# Mirrors skill.show / skill.add_gotcha. Per-agent overlay accumulates
+# learned gotchas about a tool without modifying the framework spec.
+#
+#   <office>/tools_overlay/<tool-name>/gotchas.md
+
+proc toolOverlayPath(t: FindTools, toolName: string): string =
+  t.officeDir / "tools_overlay" / toolName / "gotchas.md"
+
+proc doShow(t: FindTools, args: Table[string, JsonNode]): string =
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for show"
+  let name = args["name"].getStr().strip()
+  let (tool, found) = t.registry.get(name)
+  if not found:
+    return "Error: tool '" & name & "' not registered. Use `tools method=find query=...` to discover."
+  var body = "# " & tool.name & "\n\n" & tool.description
+  let includeOverlay = if args.hasKey("include_overlay"):
+                          args["include_overlay"].getBool(true) else: true
+  if includeOverlay and t.officeDir.len > 0:
+    let overlayPath = t.toolOverlayPath(tool.name)
+    if fileExists(overlayPath):
+      try:
+        body.add("\n\n---\n\n")
+        body.add("# Gotchas (per-agent overlay)\n\n")
+        body.add("> Append-only learned failures via `tools method=add_gotcha`. " &
+                 "Per-agent — does NOT modify the canonical tool spec.\n\n")
+        body.add(readFile(overlayPath))
+      except CatchableError: discard
+  body
+
+proc doAddGotcha(t: FindTools, args: Table[string, JsonNode]): string =
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for add_gotcha"
+  if not args.hasKey("gotcha"):
+    return "Error: 'gotcha' is required (one-paragraph failure mode + how to avoid it)"
+  let name = args["name"].getStr().strip()
+  let gotcha = args["gotcha"].getStr().strip()
+  if gotcha.len == 0:
+    return "Error: 'gotcha' must not be empty"
+  if t.officeDir.len == 0:
+    return "Error: tool not bound to an office workspace"
+  let (_, found) = t.registry.get(name)
+  if not found:
+    return "Error: tool '" & name & "' not registered. Use `tools method=find query=...` first."
+  let overlayPath = t.toolOverlayPath(name)
+  let overlayDir = parentDir(overlayPath)
+  try:
+    if not dirExists(overlayDir): createDir(overlayDir)
+    let now = times.now().format("yyyy-MM-dd HH:mm")
+    let isNew = not fileExists(overlayPath)
+    let entry = (if isNew: "" else: "\n\n") &
+                "## " & now & "\n\n" & gotcha & "\n"
+    let f = open(overlayPath, fmAppend)
+    defer: f.close()
+    if isNew:
+      f.write("# Gotchas overlay for tool `" & name & "`\n\n")
+      f.write("Append-only. Each entry is one learned failure mode + how " &
+              "to avoid it. Per-agent overlay; does NOT modify the canonical " &
+              "tool description.\n")
+    f.write(entry)
+  except CatchableError as e:
+    return "Error: failed to append gotcha: " & e.msg
+  return "Appended gotcha to overlay for '" & name & "' at " & overlayPath & "\n" &
+         "  - View via `tools method=show name=" & name & "` (overlay rendered below the description)\n" &
+         "  - Append-only; future sessions see it accumulated."
 
 method execute*(t: FindTools, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("method"):
@@ -140,7 +223,9 @@ method execute*(t: FindTools, args: Table[string, JsonNode]): Future[string] {.a
   let rest = if dotIdx < 0: "" else: methodPath[dotIdx + 1 .. ^1]
 
   case top
-  of "find": return doFind(t, args)
+  of "find":        return doFind(t, args)
+  of "show":        return doShow(t, args)
+  of "add_gotcha":  return doAddGotcha(t, args)
   of "forge", "update", "share", "remove":
     return phase2Stub(top)
   else:
@@ -155,4 +240,4 @@ method execute*(t: FindTools, args: Table[string, JsonNode]): Future[string] {.a
     for s in t.subTools.keys: available.add(s)
     let availStr = if available.len > 0: " | " & available.mapIt(it & ".<op>").join(" | ") else: ""
     return "Error: Unknown method '" & methodPath &
-           "'. Use: find | forge | update | share | remove" & availStr
+           "'. Use: find | show | add_gotcha | forge | update | share | remove" & availStr

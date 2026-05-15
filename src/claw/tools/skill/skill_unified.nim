@@ -31,7 +31,7 @@
 ## Note: persist_skill (used by mcp forge) is internal to mcp_unified
 ## and not exposed here.
 
-import std/[asyncdispatch, json, tables, strutils, options, os, sets]
+import std/[asyncdispatch, json, tables, strutils, options, os, sets, times]
 import ../types, ../registry
 import ../spec
 import ../../skills/installer
@@ -95,12 +95,25 @@ method parameters*(t: SkillTool): Table[string, JsonNode] =
     "properties": %*{
       "method": {
         "type": "string",
-        "enum": ["list", "load", "unload", "install", "learn"],
-        "description": "Operation to perform"
+        "enum": ["list", "show", "load", "unload", "install", "learn",
+                 "update", "add_gotcha"],
+        "description": "Operation. list/show=read; load/unload=session; install/learn/update=mutate (workstation-owned for update); add_gotcha=append-only learned failure to a per-agent overlay (works on ANY skill including foundation)."
       },
       "name": {
         "type": "string",
-        "description": "Skill name. Required for load/unload/install/learn. install: registry name or GitHub URL/owner-repo. learn: kebab-case identifier. list: omit."
+        "description": "Skill name. Required for show/load/unload/install/learn/update/add_gotcha. install: registry name or GitHub URL/owner-repo. learn: kebab-case identifier. list: omit."
+      },
+      "content": {
+        "type": "string",
+        "description": "update only — full new SKILL.md body (replaces entirely; requires the skill to be workstation-tier and authored by this agent)."
+      },
+      "gotcha": {
+        "type": "string",
+        "description": "add_gotcha only — one-paragraph description of the failure mode + how to avoid it. Appended to <office>/skills_overlay/<name>/gotchas.md with a timestamp."
+      },
+      "include_overlay": {
+        "type": "boolean",
+        "description": "show only — when true (default), include the per-agent gotchas overlay below the canonical body."
       },
       "query": {
         "type": "string",
@@ -476,14 +489,130 @@ proc doUnload(t: SkillTool, args: Table[string, JsonNode]): string =
   return "Unloaded " & dropKind & " '" & name & "'. Catalog stub remains visible; " &
          "load again with `skill method=load name=" & name & "`."
 
+# ── show / update / add_gotcha ─────────────────────────────────────
+#
+# The overlay system: gotchas accumulate in a per-agent overlay file,
+# never mutating the canonical SKILL.md. This is the Perplexity gotchas-
+# flywheel — append-only growth doesn't risk routing regression and
+# doesn't diverge from the framework version of foundation skills.
+#
+#   <office>/skills_overlay/<skill-name>/gotchas.md
+#
+# `show` returns canonical body + overlay (when include_overlay=true).
+# `add_gotcha` appends a timestamped entry to the overlay.
+# `update` rewrites the CANONICAL SKILL.md but ONLY for workstation-tier
+# skills the agent owns (foundation/distribution/company are off-limits —
+# those are framework-versioned).
+
+proc skillOverlayPath(t: SkillTool, skillName: string): string =
+  t.officeDir / "skills_overlay" / skillName / "gotchas.md"
+
+proc doShow(t: SkillTool, args: Table[string, JsonNode]): string =
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for show"
+  let name = args["name"].getStr().strip()
+  let hit = t.resolveSkillName(name)
+  if hit.isNone:
+    return "Error: skill '" & name & "' not found. Use `skill method=list`."
+  let s = hit.get
+  if not fileExists(s.path):
+    return "Error: SKILL.md missing at " & s.path
+  var body = readFile(s.path)
+  let includeOverlay = if args.hasKey("include_overlay"):
+                          args["include_overlay"].getBool(true) else: true
+  if includeOverlay:
+    let overlayPath = t.skillOverlayPath(s.name)
+    if fileExists(overlayPath):
+      try:
+        body.add("\n\n---\n\n")
+        body.add("# Gotchas (per-agent overlay)\n\n")
+        body.add("> Accumulated learned failure modes. Append-only via " &
+                 "`skill method=add_gotcha`. Per-agent overlay — does NOT " &
+                 "modify the canonical SKILL.md.\n\n")
+        body.add(readFile(overlayPath))
+      except CatchableError: discard
+  body
+
+proc doUpdate(t: SkillTool, args: Table[string, JsonNode]): string =
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for update"
+  if not args.hasKey("content"):
+    return "Error: 'content' is required for update (the full new SKILL.md body)"
+  let name = args["name"].getStr().strip()
+  let content = args["content"].getStr()
+  if content.strip().len == 0:
+    return "Error: 'content' must not be empty"
+  let hit = t.resolveSkillName(name)
+  if hit.isNone:
+    return "Error: skill '" & name & "' not found. Use `skill method=learn` to author a new one."
+  let s = hit.get
+  if s.source != "workstation":
+    return "Error: 'update' only works on workstation-tier skills (yours, private). Skill '" &
+           s.name & "' is " & s.source & "-tier — its SKILL.md is framework-/operator-controlled. " &
+           "To accumulate learnings on it, use `skill method=add_gotcha` instead — that writes to " &
+           "your per-agent overlay without touching the canonical file."
+  if not fileExists(s.path):
+    return "Error: SKILL.md missing at " & s.path
+  try:
+    writeFile(s.path, content)
+  except CatchableError as e:
+    return "Error: failed to write SKILL.md: " & e.msg
+  infoCF("tool", "Workstation skill updated",
+         {"name": s.name, "path": s.path, "bytes": $content.len}.toTable)
+  return "Updated workstation skill '" & s.name & "' at " & s.path & "\n" &
+         "  - " & $content.len & " bytes written\n" &
+         "  - Body refreshes in next session (or call `skill method=load name=" &
+         s.name & "` if it's lazy and you want it now)."
+
+proc doAddGotcha(t: SkillTool, args: Table[string, JsonNode]): string =
+  if not args.hasKey("name"):
+    return "Error: 'name' is required for add_gotcha"
+  if not args.hasKey("gotcha"):
+    return "Error: 'gotcha' is required for add_gotcha (one-paragraph failure mode + how to avoid it)"
+  let name = args["name"].getStr().strip()
+  let gotcha = args["gotcha"].getStr().strip()
+  if gotcha.len == 0:
+    return "Error: 'gotcha' must not be empty"
+  if t.officeDir.len == 0:
+    return "Error: tool not bound to an office workspace"
+  # Resolve skill so we use the canonical name (handles -/_ variants).
+  let hit = t.resolveSkillName(name)
+  let canonicalName = if hit.isSome: hit.get.name else: name
+  let overlayPath = t.skillOverlayPath(canonicalName)
+  let overlayDir = parentDir(overlayPath)
+  try:
+    if not dirExists(overlayDir): createDir(overlayDir)
+    let now = times.now().format("yyyy-MM-dd HH:mm")
+    let isNew = not fileExists(overlayPath)
+    let entry = (if isNew: "" else: "\n\n") &
+                "## " & now & "\n\n" & gotcha & "\n"
+    let f = open(overlayPath, fmAppend)
+    defer: f.close()
+    if isNew:
+      f.write("# Gotchas overlay for `" & canonicalName & "`\n\n")
+      f.write("Append-only. Each entry is one learned failure mode + " &
+              "how to avoid it. This file is per-agent — does NOT modify " &
+              "the canonical SKILL.md (which is framework- or " &
+              "operator-controlled for non-workstation skills).\n")
+    f.write(entry)
+  except CatchableError as e:
+    return "Error: failed to append gotcha: " & e.msg
+  infoCF("tool", "Skill gotcha appended",
+         {"skill": canonicalName, "overlay": overlayPath,
+          "bytes": $gotcha.len}.toTable)
+  return "Appended gotcha to overlay for '" & canonicalName & "' at " & overlayPath & "\n" &
+         "  - View via `skill method=show name=" & canonicalName & "` (overlay rendered below the body)\n" &
+         "  - Append-only; future sessions see it accumulated."
+
 method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("method"):
-    return "Error: 'method' is required (list | load | unload | install | learn)"
+    return "Error: 'method' is required (list | show | load | unload | install | learn | update | add_gotcha)"
   let action = getMethodArg(args)
   case action
-  of "list":    return doList(t, args)
-  of "load":    return doLoad(t, args)
-  of "unload":  return doUnload(t, args)
+  of "list":       return doList(t, args)
+  of "show":       return doShow(t, args)
+  of "load":       return doLoad(t, args)
+  of "unload":     return doUnload(t, args)
   of "install":
     if not args.hasKey("name"):
       return "Error: 'name' is required for install"
@@ -492,5 +621,8 @@ method execute*(t: SkillTool, args: Table[string, JsonNode]): Future[string] {.a
     if not args.hasKey("name"):
       return "Error: 'name' is required for learn"
     return doLearn(t, args)
+  of "update":     return doUpdate(t, args)
+  of "add_gotcha": return doAddGotcha(t, args)
   else:
-    return "Error: Unknown action '" & action & "'. Use: list | load | unload | install | learn"
+    return "Error: Unknown method '" & action &
+           "'. Use: list | show | load | unload | install | learn | update | add_gotcha"

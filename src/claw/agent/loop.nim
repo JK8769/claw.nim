@@ -3168,7 +3168,7 @@ proc newAgentLoop*(cfg: Config, msgBus: MessageBus, provider: LLMProvider, agent
   let larkTool = newLarkCliTool()
 
   # --- Discovery & meta ---
-  let findToolInstance = newFindTools(toolsRegistry)
+  let findToolInstance = newFindTools(toolsRegistry, officeDir)
   findToolInstance.setTags(@["utility", "core"])
   findToolInstance.setSearchHint("discover and activate hidden tools")
   # Register mcp as a sub-tool of `tools` (folded — Phase 3).
