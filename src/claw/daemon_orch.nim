@@ -209,24 +209,176 @@ proc stopGateway(o: Orchestrator, name, path: string, timeoutMs: int = StopGrace
     o.companies.del(name)
   (true, true, -9, false, "SIGKILL escalation")
 
-# ── HTTP handlers ────────────────────────────────────────────────
-
-proc jsonRespond(req: Request, code: int, body: JsonNode) =
-  var h: HttpHeaders
-  h["Content-Type"] = "application/json"
-  req.respond(code, h, $body)
+# ── Transport-agnostic dispatch ──────────────────────────────────
+#
+# Each `dispatch*` proc takes an Orchestrator + params, returns a
+# tuple[code, body]. The HTTP handlers and the stdio JSONL pump both
+# call these — keeping a single source of truth for the daemon's
+# semantics regardless of transport.
 
 proc lookupCompany(name: string): tuple[found: bool, path: string] =
   for (n, p) in scanCompanies():
     if n == name: return (true, p)
   (false, "")
 
+proc dispatchHealth*(o: Orchestrator): tuple[code: int, body: JsonNode] =
+  (200, %*{
+    "status": "ok",
+    "version": "0.1.0",
+    "uptime_seconds": epochTime() - o.startedAt,
+  })
+
+proc dispatchListCompanies*(o: Orchestrator): tuple[code: int, body: JsonNode] =
+  var arr = newJArray()
+  for (n, p) in scanCompanies():
+    arr.add(summariseCompany(o, n, p))
+  (200, %*{"companies": arr})
+
+proc dispatchStart*(o: Orchestrator, name: string): tuple[code: int, body: JsonNode] =
+  let (found, path) = lookupCompany(name)
+  if not found:
+    return (404, %*{"error": "company not found",
+                     "code": "NOT_FOUND", "detail": {"name": name}})
+  let alreadyAlive = processAlive(readPidFile(path))
+  let (ok, pid, err) = spawnGateway(o, name, path)
+  if not ok:
+    return (409, %*{"error": err, "code": "SPAWN_FAILED",
+                     "detail": {"name": name}})
+  (200, %*{
+    "name": name,
+    "status": statusFor(o, name, path),
+    "pid": pid,
+    "already_running": alreadyAlive,
+    "started_at": $now(),
+  })
+
+proc dispatchStop*(o: Orchestrator, name: string, timeoutMs: int): tuple[code: int, body: JsonNode] =
+  let (found, path) = lookupCompany(name)
+  if not found:
+    return (404, %*{"error": "company not found",
+                     "code": "NOT_FOUND", "detail": {"name": name}})
+  let (ok, was, code, graceful, err) = stopGateway(o, name, path, timeoutMs)
+  if not ok:
+    return (500, %*{"error": err, "code": "STOP_FAILED"})
+  (200, %*{
+    "name": name,
+    "status": statusFor(o, name, path),
+    "was_running": was,
+    "exit_code": code,
+    "graceful": graceful,
+  })
+
+# ── HTTP transport ───────────────────────────────────────────────
+
+proc jsonRespond(req: Request, code: int, body: JsonNode) =
+  var h: HttpHeaders
+  h["Content-Type"] = "application/json"
+  req.respond(code, h, $body)
+
 # ── Entry point ──────────────────────────────────────────────────
 
-proc runOrchestrator*(host = DefaultHost, port = DefaultPort) =
-  ## Blocks. Boots the HTTP server on host:port, scans companies, exposes
-  ## the admin API. SIGTERM gracefully stops all child gateways before
-  ## exiting.
+proc runStdioLoop(orch: Orchestrator) =
+  ## JSON-RPC 2.0 over stdio. One JSON object per line on stdin →
+  ## one envelope per line on stdout. Logger output goes to stderr
+  ## (set via logger.stdioMode = true before this proc runs) so the
+  ## stdout stream stays uncontaminated.
+  ##
+  ## Methods mirror the HTTP routes 1:1:
+  ##   • healthz                            → GET /healthz
+  ##   • list_companies                     → GET /companies
+  ##   • start  {"name": "..."}             → POST /companies/<n>/start
+  ##   • stop   {"name": "...", "timeout_ms"?: N}
+  ##                                          → POST /companies/<n>/stop
+  ##
+  ## Errors return a JSON-RPC error envelope:
+  ##   {"jsonrpc":"2.0","id":<id>,"error":{"code":N,"message":"...","data":{...}}}
+  ##
+  ## EOF on stdin (parent closes) → graceful shutdown: stop every owned
+  ## gateway, then exit cleanly.
+  proc sendEnvelope(id: JsonNode, code: int, body: JsonNode) =
+    let env =
+      if code >= 200 and code < 300:
+        %*{"jsonrpc": "2.0", "id": id, "result": body}
+      else:
+        %*{"jsonrpc": "2.0", "id": id,
+           "error": {"code": code, "message": body{"error"}.getStr("dispatch failed"),
+                     "data": body}}
+    echo $env
+    flushFile(stdout)
+
+  while true:
+    var line: string
+    try:
+      line = stdin.readLine()
+    except EOFError:
+      infoCF("daemon_orch", "stdin EOF — parent disconnected, shutting down",
+             initTable[string, string]())
+      acquire(orch.lock)
+      var owned: seq[tuple[name, path: string]] = @[]
+      for n, e in orch.companies.pairs:
+        if e.startedAt > 0: owned.add((n, e.path))
+      release(orch.lock)
+      for (n, p) in owned:
+        discard stopGateway(orch, n, p, 5000)
+      return
+    except CatchableError as e:
+      errorCF("daemon_orch", "stdin read failed",
+              {"error": e.msg}.toTable)
+      return
+    if line.strip.len == 0: continue
+
+    var req: JsonNode
+    try:
+      req = parseJson(line)
+    except CatchableError as e:
+      sendEnvelope(newJNull(), 400,
+                   %*{"error": "invalid JSON: " & e.msg})
+      continue
+
+    let id = if req.hasKey("id"): req["id"] else: newJNull()
+    let meth = req{"method"}.getStr("")
+    let params = if req.hasKey("params"): req["params"] else: newJObject()
+
+    case meth
+    of "":
+      sendEnvelope(id, 400, %*{"error": "missing `method`"})
+    of "healthz":
+      let (c, b) = dispatchHealth(orch)
+      sendEnvelope(id, c, b)
+    of "list_companies":
+      let (c, b) = dispatchListCompanies(orch)
+      sendEnvelope(id, c, b)
+    of "start":
+      let name = params{"name"}.getStr("")
+      if name.len == 0:
+        sendEnvelope(id, 400, %*{"error": "params.name required"})
+        continue
+      let (c, b) = dispatchStart(orch, name)
+      sendEnvelope(id, c, b)
+    of "stop":
+      let name = params{"name"}.getStr("")
+      if name.len == 0:
+        sendEnvelope(id, 400, %*{"error": "params.name required"})
+        continue
+      let timeoutMs = params{"timeout_ms"}.getInt(StopGraceMs)
+      let (c, b) = dispatchStop(orch, name, timeoutMs)
+      sendEnvelope(id, c, b)
+    else:
+      sendEnvelope(id, 404, %*{"error": "unknown method: " & meth})
+
+proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
+                      useStdio = false) =
+  ## Blocks. Two transport modes:
+  ##   - HTTP (default): mummy server on host:port, multi-client, serves
+  ##     third-party dashboards and the OpenAPI surface.
+  ##   - Stdio (useStdio=true): JSON-RPC 2.0 over stdin/stdout. The
+  ##     Zen-native integration path — Zen spawns `claw daemon --stdio`
+  ##     and reads JSONL events from the same battle-tested
+  ##     spawnApp+reader infrastructure it uses for `claw gateway --stdio`.
+  ##
+  ## Both transports share the same dispatch fns (dispatchHealth,
+  ## dispatchListCompanies, dispatchStart, dispatchStop) — one source
+  ## of truth for the daemon's semantics regardless of how clients reach it.
   var orch = Orchestrator(
     host: host, port: port,
     companies: initTable[string, CompanyEntry](),
@@ -234,54 +386,37 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort) =
   )
   initLock(orch.lock)
 
-  # Capture orch via closures so each handler can read shared state.
+  # Stdio mode: silence stdout-bound log calls so the JSONL stream
+  # stays clean. Then run the JSON-RPC loop and return when stdin EOFs.
+  if useStdio:
+    logger.stdioMode = true
+    infoCF("daemon_orch",
+           "Starting in stdio mode (JSON-RPC 2.0 on stdin/stdout)",
+           initTable[string, string]())
+    gOrch = orch
+    runStdioLoop(orch)
+    return
+
+  # HTTP handlers — thin wrappers around the transport-agnostic
+  # dispatch fns. Mummy requires gc-safe closures; orch is read-only
+  # in the handlers' scope so the gcsafe cast is sound.
   proc handleHealthz(req: Request) {.gcsafe.} =
     {.cast(gcsafe).}:
-      jsonRespond(req, 200, %*{
-        "status": "ok",
-        "version": "0.1.0",
-        "uptime_seconds": epochTime() - orch.startedAt,
-      })
+      let (code, body) = dispatchHealth(orch)
+      jsonRespond(req, code, body)
 
   proc handleListCompanies(req: Request) {.gcsafe.} =
     {.cast(gcsafe).}:
-      var arr = newJArray()
-      for (n, p) in scanCompanies():
-        arr.add(summariseCompany(orch, n, p))
-      jsonRespond(req, 200, %*{"companies": arr})
+      let (code, body) = dispatchListCompanies(orch)
+      jsonRespond(req, code, body)
 
   proc handleStart(req: Request) {.gcsafe.} =
     {.cast(gcsafe).}:
-      let name = req.pathParams["name"]
-      let (found, path) = lookupCompany(name)
-      if not found:
-        jsonRespond(req, 404, %*{"error": "company not found",
-                                  "code": "NOT_FOUND",
-                                  "detail": {"name": name}})
-        return
-      let alreadyAlive = processAlive(readPidFile(path))
-      let (ok, pid, err) = spawnGateway(orch, name, path)
-      if not ok:
-        jsonRespond(req, 409, %*{"error": err, "code": "SPAWN_FAILED",
-                                  "detail": {"name": name}})
-        return
-      jsonRespond(req, 200, %*{
-        "name": name,
-        "status": statusFor(orch, name, path),
-        "pid": pid,
-        "already_running": alreadyAlive,
-        "started_at": $now(),
-      })
+      let (code, body) = dispatchStart(orch, req.pathParams["name"])
+      jsonRespond(req, code, body)
 
   proc handleStop(req: Request) {.gcsafe.} =
     {.cast(gcsafe).}:
-      let name = req.pathParams["name"]
-      let (found, path) = lookupCompany(name)
-      if not found:
-        jsonRespond(req, 404, %*{"error": "company not found",
-                                  "code": "NOT_FOUND",
-                                  "detail": {"name": name}})
-        return
       var timeoutMs = StopGraceMs
       if req.body.len > 0:
         try:
@@ -289,17 +424,8 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort) =
           if b.hasKey("timeout_ms"):
             timeoutMs = b["timeout_ms"].getInt(StopGraceMs)
         except CatchableError: discard
-      let (ok, was, code, graceful, err) = stopGateway(orch, name, path, timeoutMs)
-      if not ok:
-        jsonRespond(req, 500, %*{"error": err, "code": "STOP_FAILED"})
-        return
-      jsonRespond(req, 200, %*{
-        "name": name,
-        "status": statusFor(orch, name, path),
-        "was_running": was,
-        "exit_code": code,
-        "graceful": graceful,
-      })
+      let (code, body) = dispatchStop(orch, req.pathParams["name"], timeoutMs)
+      jsonRespond(req, code, body)
 
   var router: Router
   router.get("/healthz", handleHealthz)

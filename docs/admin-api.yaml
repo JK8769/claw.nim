@@ -2,27 +2,74 @@ openapi: 3.1.0
 info:
   title: claw orchestrator admin API
   description: |
-    HTTP+WebSocket admin surface for `claw daemon` (the multi-company
-    orchestrator). The daemon discovers companies on disk + mounted volumes,
-    spawns one `claw gateway` per company on demand, aggregates health, and
-    exposes this contract for third-party dashboards.
+    Admin surface for `claw daemon` (the multi-company orchestrator).
+    The daemon discovers companies on disk + mounted volumes, spawns
+    one `claw gateway` per company on demand, aggregates health, and
+    exposes this contract via TWO transports that share the same
+    dispatch logic:
+
+      1. **stdio (JSON-RPC 2.0)** — invoked as `claw daemon --stdio`.
+         The Zen-native integration path: Zen spawns the daemon as a
+         child process and reads JSONL responses + events from stdout.
+         Logs go to stderr; stdin carries commands. Single-client by
+         construction (parent process). Works over SSH and inside
+         terminals — no browser needed.
+
+      2. **HTTP + (future) WebSocket** — invoked as `claw daemon`.
+         The third-party dashboard path: web UIs, mobile apps, curl,
+         remote management over loopback. Multi-client.
+
+    **Method ↔ HTTP route mapping** (stdio method name → REST equivalent):
+
+      | JSON-RPC method | HTTP route                          |
+      |-----------------|-------------------------------------|
+      | `healthz`       | GET  /healthz                       |
+      | `list_companies`| GET  /companies                     |
+      | `start`         | POST /companies/{name}/start        |
+      | `stop`          | POST /companies/{name}/stop         |
+
+    Each JSON-RPC `result` body is exactly the JSON returned by the
+    corresponding HTTP endpoint. JSON-RPC errors carry the HTTP status
+    code in `error.code` and the response body in `error.data` —
+    so a third-party SDK can route both transports through one
+    deserializer.
+
+    **stdio protocol (JSON-RPC 2.0):**
+
+      Request from client:
+        ```jsonl
+        {"jsonrpc":"2.0","id":1,"method":"list_companies"}
+        {"jsonrpc":"2.0","id":2,"method":"start","params":{"name":"MyCo"}}
+        {"jsonrpc":"2.0","id":3,"method":"stop","params":{"name":"MyCo","timeout_ms":10000}}
+        ```
+
+      Response from daemon:
+        ```jsonl
+        {"jsonrpc":"2.0","id":1,"result":{"companies":[...]}}
+        {"jsonrpc":"2.0","id":2,"result":{"name":"MyCo","status":"starting",...}}
+        {"jsonrpc":"2.0","id":3,"error":{"code":404,"message":"company not found","data":{...}}}
+        ```
+
+      One JSON object per line on either stream. The daemon flushes
+      stdout after every response, so line-buffered parents see
+      responses immediately. EOF on stdin → graceful shutdown
+      (every owned child gateway gets SIGTERM with grace).
 
     **Process model:** single binary, multiple roles.
-      - `claw daemon`   — host orchestrator. Implements this API.
-      - `claw gateway`  — per-company worker. One child process per running
-                          company, addressed by NIMCLAW_DIR.
-      - `claw <cmd>`    — one-shot CLI subcommands. Talk to the daemon
-                          over this API for multi-company operations.
+      - `claw daemon` / `claw daemon --stdio`   — host orchestrator
+      - `claw gateway`  — per-company worker. One child process per
+                          running company, addressed by NIMCLAW_DIR.
+      - `claw <cmd>`    — one-shot CLI subcommands. May route through
+                          the daemon for multi-company operations.
 
-    **Auth:** when bound to loopback (`127.0.0.1:13140`, the default), auth
-    is OFF — trust the local OS user. When bound to any non-loopback
-    address, a bearer token (auto-generated at first daemon start, stored
-    at `~/.nimclawd/admin-token`) is REQUIRED. Pass via
-    `Authorization: Bearer <token>`.
+    **Auth:** stdio transport has no auth — parent process trust is
+    inherited from the OS spawn. HTTP transport on loopback
+    (`127.0.0.1:13140`, the default) trusts the local user. HTTP
+    bound to non-loopback REQUIRES a bearer token
+    (`~/.nimclawd/admin-token`) via `Authorization: Bearer <token>`.
 
-    **Versioning:** this spec is `v1`. Breaking changes ship as `v2/` route
-    prefix. Additive changes (new fields, new endpoints) don't bump the
-    version.
+    **Versioning:** this spec is `v1`. Breaking changes ship as `v2/`
+    route prefix (and `method` prefix). Additive changes don't bump.
 
   version: 1.0.0
   contact:
