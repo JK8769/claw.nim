@@ -443,6 +443,13 @@ proc runStdioLoop(orch: Orchestrator) =
       let timeoutMs = params{"timeout_ms"}.getInt(StopGraceMs)
       let (c, b) = dispatchStop(orch, name, timeoutMs)
       sendEnvelope(id, c, b)
+    of "remove":
+      let name = params{"name"}.getStr("")
+      if name.len == 0:
+        sendEnvelope(id, 400, %*{"error": "params.name required"})
+        continue
+      let (c, b) = dispatchRemove(orch, name)
+      sendEnvelope(id, c, b)
     else:
       sendEnvelope(id, 404, %*{"error": "unknown method: " & meth})
 
@@ -883,11 +890,17 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
       let (code, body) = dispatchStop(orch, req.pathParams["name"], timeoutMs)
       jsonRespond(req, code, body)
 
+  proc handleRemove(req: Request) {.gcsafe.} =
+    {.cast(gcsafe).}:
+      let (code, body) = dispatchRemove(orch, req.pathParams["name"])
+      jsonRespond(req, code, body)
+
   var router: Router
   router.get("/healthz", handleHealthz)
   router.get("/companies", handleListCompanies)
   router.post("/companies/@name/start", handleStart)
   router.post("/companies/@name/stop", handleStop)
+  router.post("/companies/@name/remove", handleRemove)
 
   let server = newServer(router)
 
