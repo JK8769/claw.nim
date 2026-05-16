@@ -68,20 +68,40 @@ proc companyNameFromPath(p: string): string =
 
 proc scanCompanies(): seq[tuple[name, path: string]] =
   ## Walk ~/.nimclaw-* + /Volumes/*/.nimclaw-* (+ /media/*, /mnt/* on linux).
+  ## Each volume is wrapped in its own try/except: a wedged removable
+  ## drive that fails directory listing won't tank the whole scan,
+  ## though it can still HANG the calling thread — for that case the
+  ## user must `diskutil unmount force <vol>`. (A timeout-aware scan
+  ## would need a thread + watchdog; not worth it for now.)
   result = @[]
   let home = getHomeDir()
-  for kind, p in walkDir(home):
-    if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
-      result.add((companyNameFromPath(p), p))
+  try:
+    for kind, p in walkDir(home):
+      if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
+        result.add((companyNameFromPath(p), p))
+  except CatchableError as e:
+    warnCF("daemon_orch", "scanCompanies: home dir walk failed",
+           {"home": home, "error": e.msg}.toTable)
   let mountRoots = when defined(macosx): @["/Volumes"]
                    else: @["/media", "/mnt"]
   for root in mountRoots:
     if not dirExists(root): continue
-    for vKind, volPath in walkDir(root):
-      if vKind != pcDir: continue
-      for kind, p in walkDir(volPath):
-        if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
-          result.add((companyNameFromPath(p), p))
+    var vols: seq[string] = @[]
+    try:
+      for vKind, volPath in walkDir(root):
+        if vKind == pcDir: vols.add volPath
+    except CatchableError as e:
+      warnCF("daemon_orch", "scanCompanies: volume root listing failed",
+             {"root": root, "error": e.msg}.toTable)
+      continue
+    for volPath in vols:
+      try:
+        for kind, p in walkDir(volPath):
+          if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
+            result.add((companyNameFromPath(p), p))
+      except CatchableError as e:
+        warnCF("daemon_orch", "scanCompanies: per-volume walk failed; skipping",
+               {"volume": volPath, "error": e.msg}.toTable)
 
 proc pidFilePath(coPath: string): string =
   coPath / "logs" / "gateway.pid"
