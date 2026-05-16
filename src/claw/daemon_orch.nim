@@ -421,11 +421,15 @@ proc renderCompanyRow(name, status: string, pid: int): string =
   ## One row per company. The row's `id` attribute is the click target
   ## (e.g. `start-MyCompany` / `stop-MyCompany`); Zen's TtmlWidget
   ## hit-tests left-clicks against this id and forwards as
-  ## `{"method":"click","target":"#<id>"}`. Anything that toggles based
-  ## on state goes here.
+  ## `{"method":"click","target":"#<id>"}`.
+  ##
+  ## "starting" is treated like "running" for click purposes — the row
+  ## remains a [stop] target so a hung boot can be cancelled, and we
+  ## never show [start] on a row whose process is already in motion.
   let pidStr = if pid > 0: $pid else: "—"
-  let actionId = (if status == "running": "stop-" else: "start-") & name
-  let actionLabel = if status == "running": "[stop]" else: "[start]"
+  let inMotion = status == "running" or status == "starting" or status == "stopping"
+  let actionId = (if inMotion: "stop-" else: "start-") & name
+  let actionLabel = if inMotion: "[stop]" else: "[start]"
   let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
   "<Text id=\"" & xmlEscape(actionId) & "\" content=\"" &
     xmlEscape(line) & "\"/>"
