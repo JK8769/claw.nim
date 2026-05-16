@@ -315,6 +315,39 @@ proc dispatchStop*(o: Orchestrator, name: string, timeoutMs: int): tuple[code: i
     "graceful": graceful,
   })
 
+proc dispatchRemove*(o: Orchestrator, name: string): tuple[code: int, body: JsonNode] =
+  ## Archive a company directory under ~/.nimclawd/archived/<ts>-<name>/.
+  ## Refuses if the company is currently running (or in any in-motion
+  ## state) — operator must stop it first. Never hard-deletes: the
+  ## archived copy is intentionally easy to recover with `mv`.
+  let (found, path) = lookupCompany(name)
+  if not found:
+    return (404, %*{"error": "company not found",
+                     "code": "NOT_FOUND", "detail": {"name": name}})
+  let status = statusFor(o, name, path)
+  if status != "stopped" and status != "unavailable":
+    return (409, %*{"error": "company is not stopped",
+                     "code": "STILL_RUNNING",
+                     "detail": {"name": name, "status": status}})
+  let archiveRoot = daemonStateDir() / "archived"
+  try: createDir(archiveRoot)
+  except CatchableError as e:
+    return (500, %*{"error": "mkdir failed: " & e.msg, "code": "ARCHIVE_FAILED"})
+  let ts = epochTime().int
+  let dest = archiveRoot / ($ts & "-" & name)
+  try:
+    moveDir(path, dest)
+  except CatchableError as e:
+    return (500, %*{"error": "moveDir failed: " & e.msg,
+                     "code": "ARCHIVE_FAILED",
+                     "detail": {"from": path, "to": dest}})
+  # Drop any tracked entry — the dir no longer exists at the scanned path.
+  acquire(o.lock); defer: release(o.lock)
+  if o.companies.hasKey(name): o.companies.del(name)
+  infoCF("daemon_orch", "Archived company",
+         {"name": name, "from": path, "to": dest}.toTable)
+  (200, %*{"name": name, "archived_to": dest})
+
 # ── HTTP transport ───────────────────────────────────────────────
 
 proc jsonRespond(req: Request, code: int, body: JsonNode) =
@@ -437,21 +470,28 @@ proc emitZen(j: JsonNode) =
   flushFile(stdout)
 
 proc renderCompanyRow(name, status: string, pid: int): string =
-  ## One row per company. The row's `id` attribute is the click target
-  ## (e.g. `start-MyCompany` / `stop-MyCompany`); Zen's TtmlWidget
-  ## hit-tests left-clicks against this id and forwards as
-  ## `{"method":"click","target":"#<id>"}`.
+  ## One row per company. Each row renders as a primary action followed
+  ## by an optional [remove]:
   ##
-  ## "starting" is treated like "running" for click purposes — the row
-  ## remains a [stop] target so a hung boot can be cancelled, and we
-  ## never show [start] on a row whose process is already in motion.
+  ##   <Text id="start-NAME" clickable> NAME • stopped • pid — • [start] </Text>
+  ##   <Text id="remove-NAME" clickable> [remove] </Text>
+  ##
+  ## We split into two clickable `<Text>` nodes so the hit-test routes
+  ## start/stop independently from remove. [remove] only appears for
+  ## fully-stopped companies — running, starting, and stopping rows
+  ## intentionally don't get one (operator must stop first; less foot-gun).
   let pidStr = if pid > 0: $pid else: "—"
   let inMotion = status == "running" or status == "starting" or status == "stopping"
   let actionId = (if inMotion: "stop-" else: "start-") & name
   let actionLabel = if inMotion: "[stop]" else: "[start]"
   let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
-  "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
-    xmlEscape(line) & "\"/>"
+  result.add "<Box direction=\"row\">"
+  result.add "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
+             xmlEscape(line) & "  \"/>"
+  if status == "stopped":
+    result.add "<Text id=\"remove-" & xmlEscape(name) & "\" clickable=\"\" " &
+               "content=\"[remove]\"/>"
+  result.add "</Box>"
 
 proc renderCompaniesBody(o: Orchestrator): string =
   ## The contents of the #companies Box — rebuilt from the current
@@ -500,6 +540,7 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   ## Click target conventions:
   ##   #start-<name>   → dispatchStart
   ##   #stop-<name>    → dispatchStop
+  ##   #remove-<name>  → dispatchRemove (archive the company directory)
   ##   #quit-daemon    → signal shutdown (caller initiates exit)
   ## Anything else returns zcrUnknown.
   let id = if target.startsWith("#"): target[1..^1] else: target
@@ -512,6 +553,10 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   if id.startsWith("stop-"):
     let name = id["stop-".len .. ^1]
     discard dispatchStop(o, name, StopGraceMs)
+    return zcrOk
+  if id.startsWith("remove-"):
+    let name = id["remove-".len .. ^1]
+    discard dispatchRemove(o, name)
     return zcrOk
   zcrUnknown
 
