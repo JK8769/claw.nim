@@ -366,8 +366,145 @@ proc runStdioLoop(orch: Orchestrator) =
     else:
       sendEnvelope(id, 404, %*{"error": "unknown method: " & meth})
 
+# ── Zen-protocol adapter ──────────────────────────────────────────
+#
+# Zen's app_host expects UI-rendering events (mount/swap/replace) +
+# TTML markup, not JSON-RPC envelopes. This adapter:
+#   1. Emits a `mount` event with the layout (vertical list of companies)
+#      using only universally-available TTML primitives (Box, Text, Rule).
+#   2. Listens for {"method":"click","target":"#start-<name>"} (or stop-)
+#      on stdin, dispatches to dispatchStart/dispatchStop.
+#   3. After every state-changing action, emits a `swap` event that
+#      replaces the table body with refreshed content.
+#
+# Stays server-authoritative: Zen never holds state Zen-side. Every
+# pixel is derived from claw's current view of companies. This is the
+# SSoT model the user explicitly chose.
+
+proc xmlEscape(s: string): string =
+  result = s.multiReplace(("&", "&amp;"), ("<", "&lt;"),
+                          (">", "&gt;"), ("\"", "&quot;"))
+
+proc emitZen(j: JsonNode) =
+  echo $j
+  flushFile(stdout)
+
+proc renderCompanyRow(name, status: string, pid: int): string =
+  ## One row per company. Action hint (#start-<n> or #stop-<n>) is the
+  ## id Zen would click on. Without a Button primitive in the standard
+  ## ttml lib, we render textual cues; Zen-side wiring of click targets
+  ## happens via row ids when the TUI supports it.
+  let pidStr = if pid > 0: $pid else: "—"
+  let action = if status == "running": "[stop]   id=" & "stop-" & name
+               else: "[start]  id=" & "start-" & name
+  let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & action
+  "<Text content=\"" & xmlEscape(line) & "\"/>"
+
+proc renderCompaniesBody(o: Orchestrator): string =
+  ## The contents of the #companies Box — rebuilt from the current
+  ## scan every time something changes. No client-side state.
+  var rows: seq[string] = @[]
+  for (n, p) in scanCompanies():
+    let pidNum = readPidFile(p)
+    let status = statusFor(o, n, p)
+    let livePid = if processAlive(pidNum): pidNum else: 0
+    rows.add(renderCompanyRow(n, status, livePid))
+  if rows.len == 0:
+    return "<Text content=\"(no companies found)\"/>"
+  rows.join("\n")
+
+const ZenMountLayout = """
+<Box direction="column">
+  <Text content="claw daemon — multi-company orchestrator"/>
+  <Rule/>
+  <Box id="companies" direction="column"/>
+  <Rule/>
+  <Text content="Send a click event with target=#start-NAME or #stop-NAME to act on a row."/>
+</Box>
+"""
+
+proc renderAndSwapCompanies(o: Orchestrator) =
+  ## Push the current company list as a swap event. Called after every
+  ## state-changing action AND once at startup so the initial mount's
+  ## empty #companies Box gets populated.
+  emitZen(%*{
+    "event": "swap",
+    "target": "#companies",
+    "ttml": renderCompaniesBody(o),
+  })
+
+proc handleZenClick(o: Orchestrator, target: string) =
+  ## Click target conventions:
+  ##   #start-<name> → dispatchStart
+  ##   #stop-<name>  → dispatchStop
+  ## Anything else is logged + ignored. After dispatch we emit a swap
+  ## so Zen sees the updated state.
+  let id = if target.startsWith("#"): target[1..^1] else: target
+  if id.startsWith("start-"):
+    let name = id["start-".len .. ^1]
+    discard dispatchStart(o, name)
+  elif id.startsWith("stop-"):
+    let name = id["stop-".len .. ^1]
+    discard dispatchStop(o, name, StopGraceMs)
+  else:
+    emitZen(%*{"event": "log", "level": "warn",
+                "text": "Unknown click target: " & target})
+    return
+  renderAndSwapCompanies(o)
+
+proc runZenLoop(orch: Orchestrator, pane: string) =
+  ## Zen-protocol mode. Mount the dashboard, then loop on stdin for
+  ## click events. EOF → graceful shutdown.
+  emitZen(%*{
+    "event": "mount",
+    "pane": pane,
+    "title": "claw companies",
+    "ttml": ZenMountLayout,
+  })
+  renderAndSwapCompanies(orch)
+
+  while true:
+    var line: string
+    try:
+      line = stdin.readLine()
+    except EOFError:
+      infoCF("daemon_orch", "Zen disconnected (stdin EOF), shutting down",
+             initTable[string, string]())
+      acquire(orch.lock)
+      var owned: seq[tuple[name, path: string]] = @[]
+      for n, e in orch.companies.pairs:
+        if e.startedAt > 0: owned.add((n, e.path))
+      release(orch.lock)
+      for (n, p) in owned:
+        discard stopGateway(orch, n, p, 5000)
+      return
+    except CatchableError as e:
+      errorCF("daemon_orch", "Zen stdin read failed", {"error": e.msg}.toTable)
+      return
+    if line.strip.len == 0: continue
+
+    var msg: JsonNode
+    try:
+      msg = parseJson(line)
+    except CatchableError:
+      emitZen(%*{"event": "log", "level": "error",
+                  "text": "Invalid JSON from Zen: " & line})
+      continue
+
+    let meth = msg{"method"}.getStr("")
+    let target = msg{"target"}.getStr("")
+    case meth
+    of "click":
+      handleZenClick(orch, target)
+    of "refresh":
+      renderAndSwapCompanies(orch)
+    else:
+      emitZen(%*{"event": "log", "level": "warn",
+                  "text": "Unhandled method: " & meth})
+
 proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
-                      useStdio = false) =
+                      useStdio = false, useZen = false,
+                      pane = "left") =
   ## Blocks. Two transport modes:
   ##   - HTTP (default): mummy server on host:port, multi-client, serves
   ##     third-party dashboards and the OpenAPI surface.
@@ -386,8 +523,16 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
   )
   initLock(orch.lock)
 
-  # Stdio mode: silence stdout-bound log calls so the JSONL stream
-  # stays clean. Then run the JSON-RPC loop and return when stdin EOFs.
+  # Stdio modes: silence stdout-bound log calls (logger writes to
+  # stderr instead) so whichever event protocol stays uncontaminated.
+  if useZen:
+    logger.stdioMode = true
+    infoCF("daemon_orch",
+           "Starting in Zen mode (UI-event protocol on stdin/stdout)",
+           initTable[string, string]())
+    gOrch = orch
+    runZenLoop(orch, pane)
+    return
   if useStdio:
     logger.stdioMode = true
     infoCF("daemon_orch",

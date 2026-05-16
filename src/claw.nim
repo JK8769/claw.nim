@@ -20,7 +20,7 @@ const doc = """claw — AI agent framework.
 
 Usage:
   claw gateway [--stdio] [--pane=PANE] [--debug]
-  claw daemon [--stdio | --bind=<addr> --port=<p>]
+  claw daemon [--zen [--pane=PANE] | --stdio | --bind=<addr> --port=<p>]
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>] [--dir=<path>]
@@ -324,9 +324,12 @@ when isMainModule:
   # Orchestrator daemon — multi-company control plane (Phase 1)
   elif args["daemon"]:
     let useStdio = bool(args["--stdio"])
+    let useZen = bool(args["--zen"])
+    let pane = $args["--pane"]
     let bindAddr = $args["--bind"]
     let port = parseInt($args["--port"])
-    runOrchestrator(bindAddr, port, useStdio = useStdio)
+    runOrchestrator(bindAddr, port,
+                    useStdio = useStdio, useZen = useZen, pane = pane)
 
   # ── Company commands ─────────────────────────────────────────────
   # `claw company ...` or the short form `claw co ...`
