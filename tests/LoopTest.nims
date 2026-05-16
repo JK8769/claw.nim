@@ -7,13 +7,13 @@ person "Boss":
   permission "SuperAdmin"
 
 # Variables
-let baseModel = "deepseek-chat"
+let baseModel = "deepseek-v4-flash"
 
 # Provider with template defaults (apiBase auto-filled)
 provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
   defaultModel baseModel
-  models "deepseek-chat", "deepseek-reasoner"
+  models "deepseek-v4-flash", "deepseek-v4-pro"
 
 # Loop — bulk team creation
 let team = @[("Alice", "Analyst"), ("Bob", "Engineer"), ("Charlie", "Designer")]

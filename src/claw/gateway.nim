@@ -818,25 +818,35 @@ proc buildProviderChainForAgent(graph: WorldGraph,
                                  healthRegistry: ProviderHealthRegistry = nil): LLMProvider =
   ## Phase 2 of provider-config refactor: per-agent fallback chain.
   ##
-  ## Walks the agent's `models` preference list. For each model name,
-  ## finds the FIRST provider in `graph.providers` whose `models` list
-  ## contains it, builds an HTTPProvider for that pair, and adds an
-  ## entry to the chain in agent-preference order. Models without a
-  ## serving provider are warn-and-skipped.
+  ## Walks the agent's `models` preference list. For EACH model name,
+  ## enumerates EVERY provider in `graph.providers` whose `models` list
+  ## contains that model — registering each as an entry in the chain.
+  ## Within one model the providers are emitted in BASE.nims declaration
+  ## order. After exhausting one model's providers, moves to the next
+  ## model in `models[]`.
   ##
   ## Empty `models` → caller should fall back to the company default
   ## chain (`buildProviderChain`) instead. We don't do that here so the
   ## intent stays explicit at the call site.
   ##
-  ## Compared to the company-level chain: the order is the AGENT's
-  ## preference (model order), not the company's (provider order).
-  ## So an agent can declare `models "deepseek-v4-flash", "kimi-k2.5"`
-  ## and get cross-provider failover, while another agent declares
-  ## `models "deepseek-v4-pro", "deepseek-v4-flash"` and stays on
-  ## DeepSeek for both primary and fallback.
+  ## Why N providers per model: when one canonical model is proxied by
+  ## multiple providers (e.g. `deepseek-v4-flash` is served by both
+  ## `deepseek` direct and `OpenCode Go` proxy), a 402/auth failure on
+  ## the primary should drop to the SAME model on an alternate provider
+  ## before jumping to a different model entirely. Previous behavior
+  ## broke after the first match and skipped alternates — meaning a
+  ## DeepSeek-direct outage forced the agent onto whatever model it had
+  ## listed second, even if the same model was reachable via opencode-go.
+  ##
+  ## Duplicate (provider, model) pairs are deduplicated; same-model
+  ## entries repeated in `models[]` only contribute their first occurrence.
   var entries: seq[FallbackEntry] = @[]
+  var registered = initHashSet[string]()  ## "<provider>::<model>" keys, for dedup
+  var seenModels = initHashSet[string]()  ## models we've already enumerated
   for model in models:
-    var foundFor = ""
+    if model in seenModels: continue
+    seenModels.incl(model)
+    var foundFor = 0  ## count of providers serving THIS model
     if graph.providers != nil and graph.providers.kind == JObject:
       for pName, pNode in graph.providers.getFields():
         let pModels = pNode{"models"}
@@ -846,30 +856,31 @@ proc buildProviderChainForAgent(graph: WorldGraph,
           if m.getStr() == model:
             matches = true; break
         if not matches: continue
+        let key = pName & "::" & model
+        if key in registered: continue
         let tech = resolveProviderTech(model, pName, graph.providers,
                                         providerOverride = pName)
         if tech.apiBase.len == 0 or tech.apiKey.len == 0:
           warnCF("claw",
                  "Skipping per-agent model — provider has no apiBase/apiKey",
                  {"model": model, "provider": pName}.toTable)
-          break
+          continue   ## was `break` — now lets alternate providers register
         let prov = createProvider(tech.model, tech.apiKey, tech.apiBase)
-        # Look up the model's context window from the catalog so the
-        # chain can size-skip on per-call payload. 0 = unknown →
-        # fitsEntry treats it as "always fits" (back-compat).
         let ctxWin = resolveContextWindow(model, 0)
         entries.add(FallbackEntry(provider: prov, model: model,
                                   name: pName, contextWindow: ctxWin))
-        foundFor = pName
+        registered.incl(key)
+        inc foundFor
         let position =
           if entries.len == 1: "primary"
+          elif foundFor > 1: "alt-provider for model"
           else: "fallback #" & $(entries.len - 1)
         infoCF("claw",
                "Per-agent: registered " & position,
                {"model": model, "provider": pName,
                 "base": tech.apiBase}.toTable)
-        break
-    if foundFor.len == 0:
+        ## no break — keep enumerating providers for THIS model
+    if foundFor == 0:
       warnCF("claw",
              "Per-agent model has no serving provider — skipped",
              {"model": model}.toTable)

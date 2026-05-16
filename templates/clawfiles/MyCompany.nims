@@ -18,6 +18,14 @@ provider "deepseek":
   apiKey "${DEEPSEEK_API_KEY}"
   models "deepseek-v4-flash", "deepseek-v4-pro"
 
+# Optional: OpenCode Go proxies most major models. Uncomment + set
+# OPENCODE_GO_API_KEY in .env to enable same-model cross-provider
+# failover — when DeepSeek-direct hits billing/rate-limit/outage,
+# the per-agent chain transparently routes deepseek-v4-flash through
+# opencode-go's proxy before falling through to a different model.
+# provider "opencode-go":
+#   models "deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5", "mimo-v2.5-pro"
+
 provider "ollama":
   apiKey "ollama"
   models "gemma4:31b-cloud"

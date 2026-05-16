@@ -10,11 +10,11 @@ person "Jerry":
 provider "deepseek":
   apiBase "https://api.deepseek.com"
   apiKey "${DEEPSEEK_API_KEY}"
-  defaultModel "deepseek-chat"
-  models "deepseek-chat", "deepseek-reasoner"
+  defaultModel "deepseek-v4-flash"
+  models "deepseek-v4-flash", "deepseek-v4-pro"
 
 agent "Lexi":
-  model "deepseek-chat"
+  model "deepseek-v4-flash"
   provider "deepseek"
   role "Admin"
   identity "Staff"
