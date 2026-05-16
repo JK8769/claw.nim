@@ -21,6 +21,7 @@ const doc = """claw — AI agent framework.
 Usage:
   claw gateway [--stdio] [--pane=PANE] [--debug]
   claw daemon [--zen [--pane=PANE] | --stdio | --bind=<addr> --port=<p>]
+  claw daemon (start | stop | status)
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>] [--dir=<path>]
@@ -323,13 +324,27 @@ when isMainModule:
 
   # Orchestrator daemon — multi-company control plane (Phase 1)
   elif args["daemon"]:
-    let useStdio = bool(args["--stdio"])
-    let useZen = bool(args["--zen"])
-    let pane = $args["--pane"]
-    let bindAddr = $args["--bind"]
-    let port = parseInt($args["--port"])
-    runOrchestrator(bindAddr, port,
-                    useStdio = useStdio, useZen = useZen, pane = pane)
+    if bool(args["start"]):
+      let (ok, msg) = daemonStart()
+      echo msg
+      if not ok: quit(1)
+    elif bool(args["stop"]):
+      let (ok, msg) = daemonStop()
+      echo msg
+      if not ok: quit(1)
+    elif bool(args["status"]):
+      let (running, pid) = daemonStatus()
+      if running: echo "running (pid " & $pid & ")"
+      elif pid > 0: echo "stopped (stale PID file: " & $pid & ")"
+      else: echo "stopped"
+    else:
+      let useStdio = bool(args["--stdio"])
+      let useZen = bool(args["--zen"])
+      let pane = $args["--pane"]
+      let bindAddr = $args["--bind"]
+      let port = parseInt($args["--port"])
+      runOrchestrator(bindAddr, port,
+                      useStdio = useStdio, useZen = useZen, pane = pane)
 
   # ── Company commands ─────────────────────────────────────────────
   # `claw company ...` or the short form `claw co ...`

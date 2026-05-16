@@ -24,6 +24,13 @@ const
                                 ## without a pid file means likely crashed.
   StopGraceMs = 10_000           ## SIGTERM → SIGKILL escalation window.
 
+# Daemon-lifecycle paths. All under ~/.nimclawd/ for parity with the
+# existing per-company `~/.nimclawd/<service>/` convention.
+proc daemonStateDir(): string = getHomeDir() / ".nimclawd"
+proc daemonPidFile(): string = daemonStateDir() / "admin.pid"
+proc daemonLogFile(): string = daemonStateDir() / "admin.log"
+proc daemonSockFile*(): string = daemonStateDir() / "admin.sock"
+
 type
   CompanyEntry = object
     name: string
@@ -607,3 +614,105 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
   echo "  POST   /companies/<name>/stop"
   echo "Press Ctrl-C to stop the daemon (children will be stopped first)."
   server.serve(Port(port), host)
+
+# ── Lifecycle: daemon start / stop / status ──────────────────────
+#
+# The daemon is meant to outlive any individual UI client (Zen tab,
+# browser tab, CLI shell). These procs implement the service pattern:
+# `start` daemonizes + writes a PID file; `stop` SIGTERMs the running
+# process; `status` reports state. PID file is the source of truth.
+
+proc readDaemonPid(): int =
+  let p = daemonPidFile()
+  if not fileExists(p): return 0
+  try:
+    return parseInt(readFile(p).strip())
+  except CatchableError: return 0
+
+proc daemonStatus*(): tuple[running: bool, pid: int] =
+  let pid = readDaemonPid()
+  if pid <= 0: return (false, 0)
+  if kill(Pid(pid), 0.cint) == 0: (true, pid)
+  else: (false, pid)  ## stale PID file
+
+proc daemonStop*(timeoutMs: int = 5_000): tuple[ok: bool, msg: string] =
+  let (running, pid) = daemonStatus()
+  if not running:
+    if pid > 0:
+      try: removeFile(daemonPidFile())
+      except CatchableError: discard
+    return (true, "daemon not running" & (if pid > 0: " (stale PID " & $pid & " cleared)" else: ""))
+  discard kill(Pid(pid), SIGTERM.cint)
+  let deadline = epochTime() + timeoutMs.float / 1000
+  while epochTime() < deadline:
+    if kill(Pid(pid), 0.cint) != 0:
+      try: removeFile(daemonPidFile())
+      except CatchableError: discard
+      return (true, "stopped (pid " & $pid & ")")
+    sleep(50)
+  discard kill(Pid(pid), SIGKILL.cint)
+  sleep(200)
+  try: removeFile(daemonPidFile())
+  except CatchableError: discard
+  (true, "stopped via SIGKILL (pid " & $pid & " — SIGTERM grace expired)")
+
+proc daemonizeProcess(logPath: string) =
+  ## Standard POSIX double-fork to detach from the controlling terminal.
+  ## Redirects stdin to /dev/null and stdout/stderr to logPath.
+  ## After return, this process is a session-leaderless background process
+  ## with no terminal — safe to outlive any parent shell or UI client.
+  let pid1 = fork()
+  if pid1 < 0: raise newException(IOError, "daemonize: first fork failed")
+  if pid1 > 0: quit(0)
+  if setsid() < 0:
+    raise newException(IOError, "daemonize: setsid failed")
+  let pid2 = fork()
+  if pid2 < 0: raise newException(IOError, "daemonize: second fork failed")
+  if pid2 > 0: quit(0)
+  discard chdir("/")
+  discard umask(0)
+  # /dev/null for stdin
+  let devNull = posix.open("/dev/null", O_RDONLY)
+  if devNull >= 0:
+    discard dup2(devNull, 0)
+    if devNull > 0: discard close(devNull)
+  # Append to logPath for stdout + stderr
+  let logFd = posix.open(logPath.cstring, O_WRONLY or O_CREAT or O_APPEND, 0o644)
+  if logFd >= 0:
+    discard dup2(logFd, 1)
+    discard dup2(logFd, 2)
+    if logFd > 2: discard close(logFd)
+
+proc daemonStart*(host = DefaultHost, port = DefaultPort): tuple[ok: bool, msg: string] =
+  ## Daemonize + bind transports + write PID file. Returns once the
+  ## fork is complete and the new daemon is on its way; doesn't block.
+  let (already, pid) = daemonStatus()
+  if already:
+    return (false, "daemon already running (pid " & $pid & ")")
+  let stateDir = daemonStateDir()
+  try: createDir(stateDir)
+  except CatchableError as e:
+    return (false, "mkdir " & stateDir & " failed: " & e.msg)
+  # In the GRANDCHILD, we'll write our own PID and run the orchestrator.
+  # The parent (calling shell) returns to the user immediately.
+  let logPath = daemonLogFile()
+  let parentPid = getCurrentProcessId()
+  daemonizeProcess(logPath)
+  # We're now in the grandchild. Write our own PID.
+  try:
+    writeFile(daemonPidFile(), $getCurrentProcessId() & "\n")
+  except CatchableError as e:
+    # logFd is stderr; let it through
+    stderr.writeLine "daemonize: writePidFile failed: " & e.msg
+    quit(1)
+  # Cleanup PID file on graceful exit.
+  proc removePidOnExit() {.noconv.} =
+    try: removeFile(daemonPidFile())
+    except CatchableError: discard
+  addQuitProc(removePidOnExit)
+  # Run the HTTP orchestrator. Future: also bind the Unix socket here
+  # for Zen attach (Phase B).
+  runOrchestrator(host, port)
+  # runOrchestrator blocks; if it returns we've shut down.
+  discard parentPid  # unused — silences hints
+  (true, "daemon started (pid " & $getCurrentProcessId() & ")")
