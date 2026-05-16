@@ -41,6 +41,9 @@ type
                               ## is OUR child; track it for SIGTERM-on-exit.
     process: Process          ## nil unless we spawned it ourselves
     startedAt: float          ## epochTime of spawn, 0 if not running
+    stopping: bool            ## dispatchStop is in progress; suppresses
+                              ## the broadcastLoop reporting "crashed"
+                              ## during the SIGTERM-grace window.
 
   Orchestrator* = ref object
     host: string
@@ -49,6 +52,8 @@ type
     lock: Lock
     startedAt: float
     shutdownRequested: bool
+    clients: seq[Socket]      ## connected session sockets — for broadcast
+    clientsLock: Lock         ## guards `clients`
 
 var gOrch: Orchestrator   ## process-wide singleton; set in runOrchestrator
 
@@ -125,11 +130,16 @@ proc statusFor(o: Orchestrator, name: string, path: string): string =
   ## stopped | starting | running | stopping | crashed | unavailable
   if not dirExists(path): return "unavailable"
   let diskPid = readPidFile(path)
-  if processAlive(diskPid): return "running"
+  if processAlive(diskPid):
+    acquire(o.lock); defer: release(o.lock)
+    if o.companies.hasKey(name) and o.companies[name].stopping:
+      return "stopping"
+    return "running"
   acquire(o.lock)
   defer: release(o.lock)
   if o.companies.hasKey(name):
     let e = o.companies[name]
+    if e.stopping: return "stopping"
     if e.startedAt > 0 and (epochTime() - e.startedAt) * 1000 < GatewayBootGraceMs.float:
       return "starting"
     if e.startedAt > 0:
@@ -209,6 +219,15 @@ proc stopGateway(o: Orchestrator, name, path: string, timeoutMs: int = StopGrace
     acquire(o.lock); defer: release(o.lock)
     if o.companies.hasKey(name): o.companies.del(name)
     return (true, false, -1, true, "")
+  # Mark stopping BEFORE the SIGTERM so a concurrently-firing
+  # broadcastLoop poll sees the right transient state ("stopping"),
+  # not "crashed" — the gateway has been told to exit, it isn't crashing.
+  block:
+    acquire(o.lock); defer: release(o.lock)
+    if o.companies.hasKey(name):
+      var e = o.companies[name]
+      e.stopping = true
+      o.companies[name] = e
   # SIGTERM
   discard kill(Pid(diskPid), SIGTERM.cint)
   let deadline = epochTime() + timeoutMs.float / 1000
@@ -431,7 +450,7 @@ proc renderCompanyRow(name, status: string, pid: int): string =
   let actionId = (if inMotion: "stop-" else: "start-") & name
   let actionLabel = if inMotion: "[stop]" else: "[start]"
   let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
-  "<Text id=\"" & xmlEscape(actionId) & "\" content=\"" &
+  "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
     xmlEscape(line) & "\"/>"
 
 proc renderCompaniesBody(o: Orchestrator): string =
@@ -459,7 +478,7 @@ const ZenMountLayout = """
   <Rule/>
   <Box id="companies" direction="column"/>
   <Rule/>
-  <Text id="quit-daemon" content="[quit daemon]"/>
+  <Text id="quit-daemon" clickable="" content="[quit daemon]"/>
 </Box>
 """
 
@@ -556,9 +575,35 @@ proc runZenLoop(orch: Orchestrator, pane: string) =
 # The daemon outlives any single connection — closing a Zen tab just
 # disconnects; the daemon keeps running.
 #
-# Single-client at a time in v0 (simpler reasoning, sufficient for the
-# initial Zen-attach use case). Multi-client fanout (broadcast state
-# changes to all connected sockets) is a future enhancement.
+# Sessions register with the Orchestrator on connect so a poller thread
+# can broadcast state changes to all of them (e.g. when a gateway
+# transitions starting → running without anyone clicking refresh).
+
+proc registerClient(orch: Orchestrator, client: Socket) =
+  acquire(orch.clientsLock)
+  orch.clients.add client
+  release(orch.clientsLock)
+
+proc deregisterClient(orch: Orchestrator, client: Socket) =
+  acquire(orch.clientsLock)
+  var kept: seq[Socket]
+  for c in orch.clients:
+    if c != client: kept.add c
+  orch.clients = kept
+  release(orch.clientsLock)
+
+proc broadcast*(orch: Orchestrator, j: JsonNode) =
+  ## Send an event to every connected client. Dead clients are removed.
+  acquire(orch.clientsLock)
+  var alive: seq[Socket]
+  for c in orch.clients:
+    try:
+      c.send($j & "\n")
+      alive.add c
+    except CatchableError:
+      discard  # client gone; drop
+  orch.clients = alive
+  release(orch.clientsLock)
 
 proc handleSocketSession(orch: Orchestrator, client: Socket) =
   ## One Zen session per connection. Optional hello (selects pane),
@@ -593,6 +638,10 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
            {"error": e.msg}.toTable)
     return
 
+  # Register for broadcast. Deregister on any exit path.
+  orch.registerClient(client)
+  defer: orch.deregisterClient(client)
+
   while true:
     var line = ""
     try:
@@ -622,7 +671,9 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
       let res = handleZenClick(orch, target)
       case res
       of zcrOk:
-        emitTo(zenCompaniesSwap(orch))
+        # Broadcast to every attached client so multi-tab Zen stays in
+        # sync — not just the one who clicked.
+        orch.broadcast(zenCompaniesSwap(orch))
       of zcrQuit:
         emitTo(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
         # Daemon-wide exit. Other connected clients (if any) will see
@@ -732,9 +783,11 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
   var orch = Orchestrator(
     host: host, port: port,
     companies: initTable[string, CompanyEntry](),
-    startedAt: epochTime()
+    startedAt: epochTime(),
+    clients: @[]
   )
   initLock(orch.lock)
+  initLock(orch.clientsLock)
 
   # Stdio modes: silence stdout-bound log calls (logger writes to
   # stderr instead) so whichever event protocol stays uncontaminated.
@@ -1073,9 +1126,11 @@ proc daemonStart*(host = DefaultHost, port = DefaultPort): tuple[ok: bool, msg: 
   var orch = Orchestrator(
     host: host, port: port,
     companies: initTable[string, CompanyEntry](),
-    startedAt: epochTime()
+    startedAt: epochTime(),
+    clients: @[]
   )
   initLock(orch.lock)
+  initLock(orch.clientsLock)
   gOrch = orch
   # Bind the Unix socket in a thread (parallel to HTTP). Each socket
   # connection is one Zen-protocol client.
