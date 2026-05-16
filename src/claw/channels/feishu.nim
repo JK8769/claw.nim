@@ -866,7 +866,72 @@ proc dispatchFeishuLine(line: string, c: FeishuChannel, app: FeishuAppInstance) 
     elif messageType == "audio":
       finalContent = "[audio: " & messageID & "]"
     elif messageType == "file":
-      finalContent = "[file: " & messageID & "]"
+      # Mirror the image branch: pull file_key + file_name from the event
+      # JSON, shell out to lark-cli to download into the channel's media
+      # cache, then surface `[file: <path>]` so the agent can read the
+      # file with shell tools (e.g. `pdftotext`). file_name is used to
+      # preserve the original extension — pdftotext/exif/etc. dispatch on
+      # extension. If the name is missing or unsafe, we fall back to
+      # using the file_key alone with no extension.
+      var fileKey = ""
+      var rawFileName = ""
+      try:
+        let contentJson = parseJson(content)
+        fileKey = contentJson{"file_key"}.getStr("")
+        rawFileName = contentJson{"file_name"}.getStr("")
+      except: discard
+
+      # Strip any path components — agent-side files only see the
+      # basename — and reject empty or hidden names.
+      let baseName = rawFileName.extractFilename.strip()
+      let safeName =
+        if baseName.len == 0 or baseName == "." or baseName == "..": ""
+        else: baseName
+      let ext =
+        if safeName.len > 0:
+          let e = safeName.splitFile.ext
+          if e.len > 0 and e.len <= 8: e else: ""
+        else: ""
+
+      if fileKey.len > 0 and messageID.len > 0:
+        let mediaDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID / "cache" / "media"
+        try:
+          createDir(mediaDir)
+          let outputPath = mediaDir / (fileKey & ext)
+          let configDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID
+          let env = buildLarkEnv(configDir)
+          let dlProc = startProcess(c.larkCliBin,
+            args = ["im", "+messages-resources-download",
+                    "--message-id", messageID,
+                    "--file-key", fileKey,
+                    "--type", "file",
+                    "--output", outputPath],
+            env = env, options = {poUsePath})
+          let code = dlProc.waitForExit(60000)  ## 60s — files larger than images
+          dlProc.close()
+          if code == 0 and fileExists(outputPath):
+            mediaPaths.add(outputPath)
+            # Include the original filename when known so the agent has
+            # the semantic name in addition to the on-disk path.
+            finalContent =
+              if safeName.len > 0:
+                "[file: " & outputPath & " (name=" & safeName & ")]"
+              else: "[file: " & outputPath & "]"
+            infoCF("feishu", "Downloaded file",
+                   {"file_key": fileKey, "name": safeName,
+                    "path": outputPath}.toTable)
+          else:
+            finalContent =
+              "[file: download failed for " & fileKey &
+              (if safeName.len > 0: " (name=" & safeName & ")" else: "") & "]"
+            warnCF("feishu", "File download failed",
+                   {"file_key": fileKey, "exit_code": $code}.toTable)
+        except Exception as e:
+          finalContent = "[file: download error: " & e.msg & "]"
+          errorCF("feishu", "File download error",
+                  {"file_key": fileKey, "error": e.msg}.toTable)
+      else:
+        finalContent = "[file: missing file_key or message_id]"
     elif messageType == "post":
       # `flattenFeishuEvent` already extracted the post's text from its
       # structured rows into `content` — keep that as the message body
