@@ -674,6 +674,7 @@ proc flattenFeishuEvent*(e: JsonNode): JsonNode =
 
     var resolvedText = ""
     let nestedContent = message.getOrDefault("content").getStr("")
+    let msgType = result.getOrDefault("message_type").getStr("text")
     if nestedContent.len > 0:
       try:
         let parsed = parseJson(nestedContent)
@@ -692,7 +693,15 @@ proc flattenFeishuEvent*(e: JsonNode): JsonNode =
         let name = m.getOrDefault("name").getStr("")
         if key.len > 0 and name.len > 0 and key in resolvedText:
           resolvedText = resolvedText.replace(key, "@" & name)
-    result["content"] = %resolvedText
+    # Preserve the ORIGINAL nested JSON for message types whose content
+    # is a structured payload (image / file / audio / media / sticker etc.) —
+    # the dispatch layer downstream needs `image_key`, `file_key`, `duration`,
+    # etc. and would otherwise be handed an empty string after our text
+    # extraction. For text and post we substitute the resolved plain text.
+    if msgType == "text" or msgType == "post":
+      result["content"] = %resolvedText
+    else:
+      result["content"] = %nestedContent
     # Card events nest differently — surface useful fields if any.
     if ev.hasKey("action"):   result["action"] = ev["action"]
     if ev.hasKey("context"):  result["context"] = ev["context"]
@@ -840,13 +849,20 @@ proc dispatchFeishuLine(line: string, c: FeishuChannel, app: FeishuAppInstance) 
           createDir(mediaDir)
           let outputPath = mediaDir / imageKey & ".jpg"
           let configDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID
+          # lark-cli rejects absolute --output paths (defense against ../
+          # traversal). Pass relative + set workingDir so the relative
+          # resolves against the channel's config dir, not the gateway's
+          # CWD. Absolute outputPath is kept for the downstream
+          # agent-facing string.
+          let relOut = "cache/media/" & imageKey & ".jpg"
           let env = buildLarkEnv(configDir)
           let dlProc = startProcess(c.larkCliBin,
             args = ["im", "+messages-resources-download",
                     "--message-id", messageID,
                     "--file-key", imageKey,
                     "--type", "image",
-                    "--output", outputPath],
+                    "--output", relOut],
+            workingDir = configDir,
             env = env, options = {poUsePath})
           let code = dlProc.waitForExit(30000)
           dlProc.close()
@@ -899,13 +915,19 @@ proc dispatchFeishuLine(line: string, c: FeishuChannel, app: FeishuAppInstance) 
           createDir(mediaDir)
           let outputPath = mediaDir / (fileKey & ext)
           let configDir = getNimClawDir() / "channels" / "feishu" / "lark-cli-" & appID
+          # lark-cli rejects absolute --output paths. Pass relative + set
+          # workingDir so the relative resolves against the channel's
+          # config dir, not the gateway's CWD. Absolute outputPath is
+          # kept for the agent-facing string.
+          let relOut = "cache/media/" & fileKey & ext
           let env = buildLarkEnv(configDir)
           let dlProc = startProcess(c.larkCliBin,
             args = ["im", "+messages-resources-download",
                     "--message-id", messageID,
                     "--file-key", fileKey,
                     "--type", "file",
-                    "--output", outputPath],
+                    "--output", relOut],
+            workingDir = configDir,
             env = env, options = {poUsePath})
           let code = dlProc.waitForExit(60000)  ## 60s — files larger than images
           dlProc.close()
