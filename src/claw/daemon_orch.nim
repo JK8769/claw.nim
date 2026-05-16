@@ -589,6 +589,24 @@ type SocketThreadArgs = object
   orch: Orchestrator
   sockPath: string
 
+type SessionArgs = object
+  thread: Thread[ptr SessionArgs]
+  orch: Orchestrator
+  client: Socket
+
+proc sessionWorker(argsPtr: ptr SessionArgs) {.thread, gcsafe.} =
+  ## One OS thread per accepted connection. The accept loop allocates
+  ## `argsPtr` on shared memory (which includes the Thread itself, so
+  ## one allocation per session, not two). The worker copies the refs
+  ## to locals, frees the shared block, then runs the session.
+  {.cast(gcsafe).}:
+    let orch = argsPtr.orch
+    let client = argsPtr.client
+    deallocShared(argsPtr)
+    handleSocketSession(orch, client)
+    try: client.close()
+    except CatchableError: discard
+
 proc socketAcceptLoop(args: SocketThreadArgs) {.thread, gcsafe.} =
   {.cast(gcsafe).}:
     let sockPath = args.sockPath
@@ -624,9 +642,20 @@ proc socketAcceptLoop(args: SocketThreadArgs) {.thread, gcsafe.} =
         warnCF("daemon_orch", "Accept failed",
                {"error": e.msg}.toTable)
         continue
-      handleSocketSession(args.orch, client)
-      try: client.close()
-      except CatchableError: discard
+      # Hand off to a dedicated thread so the accept loop never blocks
+      # on a slow or stuck client. The Thread lives inside SessionArgs,
+      # which the worker deallocs after copying refs to locals.
+      let sa = cast[ptr SessionArgs](allocShared0(sizeof(SessionArgs)))
+      sa.orch = args.orch
+      sa.client = client
+      try:
+        createThread(sa.thread, sessionWorker, sa)
+      except ResourceExhaustedError as e:
+        warnCF("daemon_orch", "Session thread spawn failed; dropping connection",
+               {"error": e.msg}.toTable)
+        deallocShared(sa)
+        try: client.close()
+        except CatchableError: discard
 
 var gSocketThread: Thread[SocketThreadArgs]
 
@@ -782,6 +811,92 @@ proc daemonStop*(timeoutMs: int = 5_000): tuple[ok: bool, msg: string] =
   try: removeFile(daemonPidFile())
   except CatchableError: discard
   (true, "stopped via SIGKILL (pid " & $pid & " — SIGTERM grace expired)")
+
+const
+  AttachPollIntervalMs = 100
+  AttachPollMaxAttempts = 50  # 5s total budget for daemon to come up
+
+proc daemonAttach*(): int =
+  ## Subprocess-mode entry point for Zen-style parents: connect to the
+  ## running daemon's Unix socket and bridge stdin/stdout to it.
+  ##
+  ## If the daemon isn't running, spawn `claw daemon start` as a child
+  ## (we can't call daemonStart() inline — daemonizeProcess quit(0)s in
+  ## the calling process after the first fork, which would kill us).
+  ##
+  ## Returns 0 on clean disconnect, non-zero on attach failure.
+  let sockPath = daemonSockFile()
+
+  proc tryConnect(): Socket =
+    # `buffered = false`: with a buffered Socket, low-level recv(ptr,size)
+    # returns 0 when the internal buffer is empty (only recvLine fills
+    # it), which our bridge would misread as "peer closed". Unbuffered
+    # passes bytes through as they arrive from the kernel.
+    result = newSocket(Domain.AF_UNIX, SockType.SOCK_STREAM,
+                       Protocol.IPPROTO_IP, buffered = false)
+    try:
+      result.connectUnix(sockPath)
+    except CatchableError:
+      try: result.close()
+      except CatchableError: discard
+      result = nil
+
+  var sock = tryConnect()
+  if sock == nil:
+    let exe = getAppFilename()
+    try:
+      let p = startProcess(exe, args = ["daemon", "start"],
+                           options = {poStdErrToStdOut, poUsePath})
+      discard p.waitForExit()
+      p.close()
+    except CatchableError as e:
+      stderr.writeLine "claw daemon attach: spawn failed: " & e.msg
+      return 1
+    # waitForExit returned when the daemonize fork chain's parent exited,
+    # but the grandchild may still be racing to listen(). Try once
+    # immediately, then poll.
+    sock = tryConnect()
+    var waited = 0
+    while waited < AttachPollMaxAttempts and sock == nil:
+      sleep(AttachPollIntervalMs)
+      inc waited
+      sock = tryConnect()
+    if sock == nil:
+      stderr.writeLine "claw daemon attach: socket never came up at " & sockPath
+      return 1
+
+  # Bridge. Main thread reads socket → stdout (session-defining side —
+  # exit when the daemon disconnects). Worker thread reads stdin →
+  # socket. The worker does NOT close the socket on stdin EOF: stdin
+  # is one-way input from the parent (Zen). Closing it doesn't mean we
+  # want to stop receiving events. The pump thread is intentionally
+  # not joined — quit() reaps it on process exit.
+  proc stdinPump(sock: Socket) {.thread, gcsafe.} =
+    {.cast(gcsafe).}:
+      while true:
+        var line = ""
+        try: line = stdin.readLine()
+        except EOFError: break
+        try: sock.send(line & "\n")
+        except CatchableError: break
+
+  var pump: Thread[Socket]
+  createThread(pump, stdinPump, sock)
+
+  var buf = newString(4096)
+  while true:
+    var n = 0
+    try: n = sock.recv(buf, 4096)
+    except CatchableError: break
+    if n <= 0: break
+    try:
+      discard stdout.writeBuffer(addr buf[0], n)
+      flushFile(stdout)
+    except CatchableError: break
+
+  try: sock.close()
+  except CatchableError: discard
+  return 0
 
 proc daemonizeProcess(logPath: string) =
   ## Standard POSIX double-fork to detach from the controlling terminal.
