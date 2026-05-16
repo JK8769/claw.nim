@@ -11,6 +11,7 @@ import claw/cli_providers
 import claw/cli_tools
 import claw/cli_upgrade
 import claw/gateway
+import claw/daemon_orch
 import claw/skills/skill_id
 import claw/providers/[registry as prov_registry, auth as prov_auth, models_catalog]
 import std/terminal
@@ -19,6 +20,7 @@ const doc = """claw — AI agent framework.
 
 Usage:
   claw gateway [--stdio] [--pane=PANE] [--debug]
+  claw daemon [--bind=<addr>] [--port=<p>]
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>] [--dir=<path>]
@@ -84,6 +86,8 @@ Options:
   --stdio              Zen mode: JSONL on stdin/stdout
   --pane=PANE          Zen pane [default: left]
   --debug              Debug logging
+  --bind=<addr>        `claw daemon`: bind address [default: 127.0.0.1]
+  --port=<p>           `claw daemon`: bind port [default: 13140]
   --dry-run            Show what would be installed, don't run
   --no-color           Disable colors
   --as=<alias>         Rename skill on install
@@ -316,6 +320,12 @@ when isMainModule:
     let debug = bool(args["--debug"])
     let pane = $args["--pane"]
     runGateway("127.0.0.1", 3000, debug, true, useStdio, pane)
+
+  # Orchestrator daemon — multi-company control plane (Phase 1)
+  elif args["daemon"]:
+    let bindAddr = $args["--bind"]
+    let port = parseInt($args["--port"])
+    runOrchestrator(bindAddr, port)
 
   # ── Company commands ─────────────────────────────────────────────
   # `claw company ...` or the short form `claw co ...`

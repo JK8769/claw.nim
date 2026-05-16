@@ -16,6 +16,7 @@ requires "nimsync >= 1.0.0"
 requires "QRgen"
 requires "curly"
 requires "webby"
+requires "mummy"
 requires "nimcrypto"
 requires "unicodedb"
 
