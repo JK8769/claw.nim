@@ -21,7 +21,8 @@ const doc = """claw — AI agent framework.
 Usage:
   claw gateway [--stdio] [--pane=PANE] [--debug]
   claw daemon [--zen [--pane=PANE] | --stdio | --bind=<addr> --port=<p>]
-  claw daemon (start | stop | status | attach)
+  claw daemon (start | stop | status)
+  claw daemon attach [--pane=PANE]
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>] [--dir=<path>]
@@ -338,7 +339,9 @@ when isMainModule:
       elif pid > 0: echo "stopped (stale PID file: " & $pid & ")"
       else: echo "stopped"
     elif bool(args["attach"]):
-      quit(daemonAttach())
+      let paneArg = $args["--pane"]
+      let pane = if paneArg == "nil": "left" else: paneArg
+      quit(daemonAttach(pane))
     else:
       let useStdio = bool(args["--stdio"])
       let useZen = bool(args["--zen"])

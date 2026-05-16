@@ -529,14 +529,32 @@ proc runZenLoop(orch: Orchestrator, pane: string) =
 # changes to all connected sockets) is a future enhancement.
 
 proc handleSocketSession(orch: Orchestrator, client: Socket) =
-  ## One Zen session per connection. Mount + initial swap, then loop
-  ## on recv. Exits on disconnect, #quit-daemon, or read error.
+  ## One Zen session per connection. Optional hello (selects pane),
+  ## then mount + initial swap, then loop on recv. Exits on disconnect,
+  ## #quit-daemon, or read error.
   proc emitTo(j: JsonNode) =
     try: client.send($j & "\n")
     except CatchableError: discard
 
+  # Optional hello message lets the client (e.g. `claw daemon attach
+  # --pane=right`) pick which Zen pane to mount into. We give it 200ms
+  # before falling back to "left" — that keeps legacy/direct-socket
+  # clients (like the test harness) working without a hello.
+  var pane = "left"
   try:
-    emitTo(zenMountEvent("left"))
+    let hello = client.recvLine(timeout = 200)
+    if hello.len > 0:
+      try:
+        let j = parseJson(hello)
+        if j{"method"}.getStr("") == "hello":
+          let p = j{"pane"}.getStr("")
+          if p == "left" or p == "right": pane = p
+      except CatchableError: discard
+  except TimeoutError: discard
+  except CatchableError: discard
+
+  try:
+    emitTo(zenMountEvent(pane))
     emitTo(zenCompaniesSwap(orch))
   except CatchableError as e:
     warnCF("daemon_orch", "Initial Zen events failed",
@@ -816,9 +834,14 @@ const
   AttachPollIntervalMs = 100
   AttachPollMaxAttempts = 50  # 5s total budget for daemon to come up
 
-proc daemonAttach*(): int =
+proc daemonAttach*(pane = "left"): int =
   ## Subprocess-mode entry point for Zen-style parents: connect to the
   ## running daemon's Unix socket and bridge stdin/stdout to it.
+  ##
+  ## `pane` selects which Zen pane the daemon should target in its
+  ## mount event. Sent as the first line on connect (`{"method":"hello"
+  ## ,"pane":"left|right"}`), so the daemon's per-session mount event
+  ## carries the right pane field.
   ##
   ## If the daemon isn't running, spawn `claw daemon start` as a child
   ## (we can't call daemonStart() inline — daemonizeProcess quit(0)s in
@@ -864,6 +887,16 @@ proc daemonAttach*(): int =
     if sock == nil:
       stderr.writeLine "claw daemon attach: socket never came up at " & sockPath
       return 1
+
+  # Send the hello first so the daemon's mount event carries our pane.
+  let helloPane = if pane == "right": "right" else: "left"
+  try:
+    sock.send($(%*{"method": "hello", "pane": helloPane}) & "\n")
+  except CatchableError as e:
+    stderr.writeLine "claw daemon attach: hello send failed: " & e.msg
+    try: sock.close()
+    except CatchableError: discard
+    return 1
 
   # Bridge. Main thread reads socket → stdout (session-defining side —
   # exit when the daemon disconnects). Worker thread reads stdin →
