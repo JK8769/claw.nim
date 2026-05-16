@@ -33,12 +33,13 @@
 ## calls a single `chat reply text=… progress=[…]` regardless of
 ## destination channel — the unified adaptor handles the rest.
 
-import std/[json, asyncdispatch, tables, options, strutils]
+import std/[json, asyncdispatch, tables, options, strutils, os]
 import ../types
 import ../spec
 import ../../agent/cortex
 import ../../channels/base as channel_base
 import ../../channels/access
+import ../path_security
 
 const ToolSpec* = spec(
   name = "chat",
@@ -134,7 +135,22 @@ method parameters*(t: ChatTool): Table[string, JsonNode] =
         "type": "string",
         "enum": ["text", "card", "file"],
         "description": "send/forward — explicit format override. By default " &
-                       "chat picks text or card based on capabilities + content."
+                       "chat picks text or card based on capabilities + content. " &
+                       "NOTE: as='file' alone WITHOUT a `file` arg only changes " &
+                       "the format hint — it does NOT attach anything. Pair with " &
+                       "the `file` arg below to actually upload a binary."
+      },
+      "file": {
+        "type": "string",
+        "description": "send/reply/forward — absolute path to a LOCAL file to " &
+                       "upload as the message body (e.g. a PDF generated for " &
+                       "the partner). Routes via the channel's file primitive " &
+                       "when supported (Feishu, etc.); silently degrades to a " &
+                       "text reply that quotes the path when the channel can't " &
+                       "carry binaries. The `text` field becomes a caption when " &
+                       "the channel supports both. Path must be readable, must " &
+                       "not point under system dirs, and is delivered via the " &
+                       "vendor's own upload API (lark-cli --file for Feishu)."
       },
       "progress": {
         "type": "array",
@@ -297,6 +313,24 @@ proc renderProgressText(items: seq[TaskItem]): string =
 
 # ── action handlers ─────────────────────────────────────────────────
 
+proc validateFilePath(path: string): string =
+  ## Lightweight sanity check for paths bound for outbound upload.
+  ## Returns "" if OK, otherwise an error message. Reuses path_security's
+  ## system-blocked-prefixes list so an agent can't upload /etc/passwd or
+  ## similar. Doesn't check workspace containment because the file might
+  ## legitimately live anywhere the agent has read access to (e.g. an
+  ## artifact under partners/<nc_id>/ that resolves to an absolute path).
+  if path.len == 0: return "file path empty"
+  if not isAbsolute(path):
+    return "file path must be absolute (got '" & path & "')"
+  if path.contains("\x00"): return "file path contains null byte"
+  for prefix in SYSTEM_BLOCKED_PREFIXES:
+    if pathStartsWith(path, prefix):
+      return "file path under system-blocked prefix '" & prefix & "'"
+  if not fileExists(path):
+    return "file not found: " & path
+  ""
+
 proc doReply(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   ## Use the inbound message's channel + chat_id from tool context.
   ## No recipient lookup. Format selection still consults capabilities.
@@ -307,13 +341,25 @@ proc doReply(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async
     return "Error: chat tool has no send callback bound (gateway wiring)."
   if t.channel.len == 0 or t.chatID.len == 0:
     return "Error: chat reply requires inbound context (channel + chat_id)."
-  let text = args["text"].getStr()
-  if text.len == 0:
-    return "Error: 'text' must be non-empty."
+  let filePath = if args.hasKey("file"): args["file"].getStr().strip() else: ""
+  let text = if args.hasKey("text"): args["text"].getStr() else: ""
+  # Caption-only sends are fine when file is present; require text only
+  # for pure-text replies.
+  if text.len == 0 and filePath.len == 0:
+    return "Error: 'text' must be non-empty (or pass a `file` arg to attach a binary)."
   let asOverride = if args.hasKey("as"): args["as"].getStr() else: ""
   let interim = args.hasKey("interim") and args["interim"].getBool(false)
 
   var metadata = initTable[string, string]()
+
+  # File attachment: validate, route via channel's binary primitive.
+  # The feishu adapter already reads metadata["file"] and shells out to
+  # lark-cli --file; other channels degrade to a text-with-path reply.
+  if filePath.len > 0:
+    let err = validateFilePath(filePath)
+    if err.len > 0:
+      return "Error: " & err
+    metadata["file"] = filePath
 
   # Progress checklist (universal — render once, prepend to text)
   var bodyText = text
@@ -344,7 +390,9 @@ proc doReply(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async
     await t.sendCallback(t.channel, t.chatID, bodyText, t.agentName,
                          t.replyToMessageID, t.appID, metadata)
     let kind = if interim: "interim" else: "final"
-    return "Replied via " & t.channel & " (" & kind & ", format=" & format & ")"
+    let what = if filePath.len > 0: "file=" & lastPathPart(filePath)
+               else: "format=" & format
+    return "Replied via " & t.channel & " (" & kind & ", " & what & ")"
   except CatchableError as e:
     return "Error sending reply: " & e.msg
 
@@ -356,15 +404,21 @@ proc doSend(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.
     return "Error: 'to' is required (e.g. 'nc:7'). Use chat reply for inbound replies."
   let toAlias = args["to"].getStr().strip()
   let vendorOverride = if args.hasKey("vendor"): args["vendor"].getStr() else: ""
-  let text = args["text"].getStr()
-  if text.len == 0:
-    return "Error: 'text' must be non-empty."
+  let filePath = if args.hasKey("file"): args["file"].getStr().strip() else: ""
+  let text = if args.hasKey("text"): args["text"].getStr() else: ""
+  if text.len == 0 and filePath.len == 0:
+    return "Error: 'text' must be non-empty (or pass a `file` arg to attach a binary)."
   let asOverride = if args.hasKey("as"): args["as"].getStr() else: ""
 
   let (vendor, address, err) = resolveRecipient(t, toAlias, vendorOverride)
   if err.len > 0: return "Error: " & err
 
   var metadata = initTable[string, string]()
+  if filePath.len > 0:
+    let perr = validateFilePath(filePath)
+    if perr.len > 0:
+      return "Error: " & perr
+    metadata["file"] = filePath
   let capsOpt = getChannelCaps(vendor)
   let format = if capsOpt.isSome:
                  selectFormat(text, capsOpt.get, asOverride)
@@ -374,7 +428,8 @@ proc doSend(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.
   try:
     await t.sendCallback(vendor, address, text, t.agentName,
                          "", "", metadata)
-    return "Sent to " & toAlias & " via " & vendor & " (format=" & format & ")"
+    let what = if filePath.len > 0: "file=" & lastPathPart(filePath) else: "format=" & format
+    return "Sent to " & toAlias & " via " & vendor & " (" & what & ")"
   except CatchableError as e:
     return "Error sending: " & e.msg
 
@@ -394,8 +449,11 @@ proc doForward(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.asy
 method execute*(t: ChatTool, args: Table[string, JsonNode]): Future[string] {.async.} =
   if not args.hasKey("method"):
     return "Error: 'method' is required (send | reply | forward)."
-  if not args.hasKey("text"):
-    return "Error: 'text' is required."
+  # text is required UNLESS file is provided (file-only delivery is valid
+  # for the chat-with-attachment case — channels handle the file as the
+  # body and treat text as an optional caption).
+  if not args.hasKey("text") and not args.hasKey("file"):
+    return "Error: 'text' is required (or pass a `file` arg to attach a binary)."
   let action = getMethodArg(args)
   case action
   of "send":    return await doSend(t, args)
