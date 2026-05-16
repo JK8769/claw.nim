@@ -537,7 +537,8 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
                  agentName: string = "",
                  channel: string = "",
                  maxIterations: int = 0,
-                 hardCapIterations: int = 0): string =
+                 hardCapIterations: int = 0,
+                 partnerNcId: string = ""): string =
   let now = now().format("yyyy-MM-dd HH:mm (dddd) zzz")
   let workspacePath = absolutePath(cb.workspace)
   let runtime = hostOS & " " & hostCPU & ", Nim " & NimVersion
@@ -609,6 +610,22 @@ proc getIdentity(cb: ContextBuilder, useXmlTools: bool = false,
     else:
       if allowedTools.len > 0: cb.buildToolsSection(allowedTools) else: cb.buildToolsSection()
 
+  # Partner-scoped working directory. Auto-created (idempotent) on every
+  # turn so the agent can rely on it existing without an explicit check.
+  # Path-safety already accepts anything under officeDir, so no allowlist
+  # change is needed. Resolved on `partnerNcId` ("nc:N" → "nc_N" — the
+  # underscore form matches the existing sessions/nc_N.jsonl convention).
+  var partnerDirLine = ""
+  if partnerNcId.len > 0:
+    let safeNcId = partnerNcId.replace(":", "_")
+    let partnerDir = absolutePath(cb.workspace) / "partners" / safeNcId
+    try:
+      if not dirExists(partnerDir): createDir(partnerDir)
+    except CatchableError: discard
+    partnerDirLine = ": `" & partnerDir & "`"
+  else:
+    partnerDirLine = " (no partner resolved this turn — skip)"
+
   # Framework-level context only. WHO this agent is comes from the
   # graph-sourced IDENTITY section further down; the banner must stay
   # name-free so "nimclaw" (the framework) never leaks into an agent's
@@ -630,8 +647,15 @@ $2$5$6$7
 Your office is at: $3
 - Memory (past, searchable JSONL): use the `memory` tool — do NOT write to files directly
 - Sessions (present): $3/sessions
-- Notes (future): $3/notes
+- Notes (future, agent-private): $3/notes
 - Skills: $3/skills/{skill-name}/SKILL.md
+- **Partner-scoped files**$8
+
+  Files you generate FOR or ABOUT the current partner (CVs, reports,
+  drafts, downloads) go HERE, not under notes/ and not at the office
+  root. This keeps each partner's working materials isolated, audit-
+  ready, and cleanable in one step. Use `file write` / `shell` with
+  absolute paths under this dir.
 
 $4
 
@@ -645,7 +669,7 @@ $4
 
 4. **Memory** - Record facts and preferences via the `memory` tool (scope=sender for things about the current partner; scope=self for your own knowledge). Do not write Markdown memory files by hand.
 
-5. **Long tasks — checkpoint via `chat reply ... interim=true`, never go silent** - For any task taking >3 tool calls or >30 seconds, you MUST: (a) BEFORE the first tool, send a `chat reply text="..." interim=true progress=[…]` with a 1-3 sentence plan + numbered steps as the progress items; (b) AFTER each major tool cluster (every 1-3 related calls that produce a finding), send another `chat reply text="..." interim=true` with the concrete number/result and what's next; (c) END with a single terminal `chat reply text="..."` (no `interim`, no `progress`) that uses markdown structure, includes any generated file paths in backticks (full absolute paths, not basenames), and gives THREE explicit numbered next-step options (not a yes/no question). The user CANNOT see your tool results — only your messages. Never go more than 2 consecutive tool calls without a `chat reply ... interim=true` checkpoint. Capability-driven: progress renders as a plain checklist on every channel and as a richer card on card-capable channels — you don't need to choose. This rule applies regardless of the language you're speaking in.""".format(now, runtime, workspacePath, toolsSection, modelLine, channelLine, iterationBudgetLine)
+5. **Long tasks — checkpoint via `chat reply ... interim=true`, never go silent** - For any task taking >3 tool calls or >30 seconds, you MUST: (a) BEFORE the first tool, send a `chat reply text="..." interim=true progress=[…]` with a 1-3 sentence plan + numbered steps as the progress items; (b) AFTER each major tool cluster (every 1-3 related calls that produce a finding), send another `chat reply text="..." interim=true` with the concrete number/result and what's next; (c) END with a single terminal `chat reply text="..."` (no `interim`, no `progress`) that uses markdown structure, includes any generated file paths in backticks (full absolute paths, not basenames), and gives THREE explicit numbered next-step options (not a yes/no question). The user CANNOT see your tool results — only your messages. Never go more than 2 consecutive tool calls without a `chat reply ... interim=true` checkpoint. Capability-driven: progress renders as a plain checklist on every channel and as a richer card on card-capable channels — you don't need to choose. This rule applies regardless of the language you're speaking in.""".format(now, runtime, workspacePath, toolsSection, modelLine, channelLine, iterationBudgetLine, partnerDirLine)
 
 proc buildSocialSection*(cb: ContextBuilder, userID: string, recipientID: string = "", channel: string = "social"): string =
   var sb = "# Social Context\n\n"
@@ -854,31 +878,36 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   # Add Social layer early so we can resolve the target's identity type
   let socialSection = cb.buildSocialSection(userID, recipientID, channel)
 
-  # Resolve target identity type
+  # Resolve target identity type + partner nc_id (used to scope
+  # generated files under <office>/partners/nc_N/ — see getIdentity).
   var targetIdentity = "Guest" # Default if unknown
+  var partnerNcId = ""
+  var resolvedTargetID = WorldEntityID(0)
   if cb.graph != nil:
-    var targetID = WorldEntityID(0)
     if userID.startsWith("nc:"):
-      # Use idAliasIndex logic
       if cb.graph.idAliasIndex.hasKey(userID):
-        targetID = cb.graph.idAliasIndex[userID]
+        resolvedTargetID = cb.graph.idAliasIndex[userID]
     elif cb.graph.nameIndex.hasKey(userID):
-      targetID = cb.graph.nameIndex[userID]
-      
-    if uint32(targetID) > 0:
-      let targetEnt = cb.graph.entities[targetID]
+      resolvedTargetID = cb.graph.nameIndex[userID]
+
+    if uint32(resolvedTargetID) > 0:
+      let targetEnt = cb.graph.entities[resolvedTargetID]
       if targetEnt.role != "":
         targetIdentity = targetEnt.role
-      
+
       # Optional identity override in custom fields
       if targetEnt.custom != nil and targetEnt.custom.hasKey("identity"):
         let identStr = targetEnt.custom["identity"].getStr()
         if identStr != "":
           targetIdentity = identStr
+      partnerNcId = "nc:" & $uint32(resolvedTargetID)
     elif cb.guests.hasKey(userID):
       # External relations simplify to Guest/Customer
       let r = cb.guests[userID]
       targetIdentity = r.identity
+  # Even without a graph hit, accept an explicit nc:N userID
+  if partnerNcId.len == 0 and userID.startsWith("nc:"):
+    partnerNcId = userID
 
   # Tool access gate. If the company declared a `trust:` block, use the
   # target's role `grant` list; "*" means unrestricted. Fall back to the
@@ -895,7 +924,7 @@ proc buildSystemPrompt*(cb: ContextBuilder, userID: string = "user", useXmlTools
   elif identLow in ["guest", "customer"]:
     allowedTools = @["reply", "forward", "redeem_invite", "update_contact"]
 
-  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID, channel = channel, maxIterations = maxIterations, hardCapIterations = hardCapIterations))
+  parts.add(cb.getIdentity(useXmlTools, allowedTools, agentName = recipientID, channel = channel, maxIterations = maxIterations, hardCapIterations = hardCapIterations, partnerNcId = partnerNcId))
   parts.add(socialSection)
 
   # Graph-sourced self-identity. IDENTITY declares WHO (name, role,
