@@ -411,15 +411,21 @@ proc renderCompanyRow(name, status: string, pid: int): string =
 proc renderCompaniesBody(o: Orchestrator): string =
   ## The contents of the #companies Box — rebuilt from the current
   ## scan every time something changes. No client-side state.
+  ##
+  ## Wrap rows in a single <Box> root: Zen's applyUpdate calls
+  ## parseDoc() which requires exactly one top-level element. Without
+  ## the wrapper, multiple sibling <Text> rows silently fail to parse
+  ## and the swap is a no-op.
   var rows: seq[string] = @[]
   for (n, p) in scanCompanies():
     let pidNum = readPidFile(p)
     let status = statusFor(o, n, p)
     let livePid = if processAlive(pidNum): pidNum else: 0
     rows.add(renderCompanyRow(n, status, livePid))
-  if rows.len == 0:
-    return "<Text content=\"(no companies found)\"/>"
-  rows.join("\n")
+  let inner =
+    if rows.len == 0: "<Text content=\"(no companies found)\"/>"
+    else: rows.join("\n")
+  "<Box direction=\"column\">\n" & inner & "\n</Box>"
 
 const ZenMountLayout = """
 <Box direction="column">
@@ -833,6 +839,48 @@ proc daemonStop*(timeoutMs: int = 5_000): tuple[ok: bool, msg: string] =
 const
   AttachPollIntervalMs = 100
   AttachPollMaxAttempts = 50  # 5s total budget for daemon to come up
+
+proc daemonClick*(target: string): int =
+  ## Send a single click event to the daemon's socket and exit. Lets
+  ## operators drive the dashboard from a separate terminal until Zen
+  ## wires click handling into its TTML widget tree.
+  ##
+  ## Usage: claw daemon click '#stop-MyCompany'
+  let sockPath = daemonSockFile()
+  if target.len == 0:
+    stderr.writeLine "claw daemon click: target is empty (e.g. '#stop-MyCompany')"
+    return 1
+  var sock = newSocket(Domain.AF_UNIX, SockType.SOCK_STREAM,
+                       Protocol.IPPROTO_IP, buffered = false)
+  try:
+    sock.connectUnix(sockPath)
+  except CatchableError:
+    stderr.writeLine "claw daemon click: cannot connect to " & sockPath &
+                     " (is the daemon running? `claw daemon status`)"
+    try: sock.close()
+    except CatchableError: discard
+    return 1
+  let tgt = if target.startsWith("#"): target else: "#" & target
+  try:
+    sock.send($(%*{"method": "click", "target": tgt}) & "\n")
+  except CatchableError as e:
+    stderr.writeLine "claw daemon click: send failed: " & e.msg
+    try: sock.close()
+    except CatchableError: discard
+    return 1
+  # Drain the server's response for ~300ms so the user sees feedback.
+  var buf = newString(4096)
+  let deadline = epochTime() + 0.3
+  while epochTime() < deadline:
+    var n = 0
+    try: n = sock.recv(buf, 4096)
+    except CatchableError: break
+    if n <= 0: break
+    discard stdout.writeBuffer(addr buf[0], n)
+    flushFile(stdout)
+  try: sock.close()
+  except CatchableError: discard
+  0
 
 proc daemonAttach*(pane = "left"): int =
   ## Subprocess-mode entry point for Zen-style parents: connect to the

@@ -23,6 +23,7 @@ Usage:
   claw daemon [--zen [--pane=PANE] | --stdio | --bind=<addr> --port=<p>]
   claw daemon (start | stop | status)
   claw daemon attach [--pane=PANE]
+  claw daemon click <target>
   claw (company|co) list [--sort=<key>] [--reverse] [--status=<state>] [--format=<fmt>]
   claw (company|co) use [<name>]
   claw (company|co) create [<file>] [--as=<name>] [--template=<name>] [--vendor=<v>] [--dir=<path>]
@@ -342,6 +343,8 @@ when isMainModule:
       let paneArg = $args["--pane"]
       let pane = if paneArg == "nil": "left" else: paneArg
       quit(daemonAttach(pane))
+    elif bool(args["click"]):
+      quit(daemonClick($args["<target>"]))
     else:
       let useStdio = bool(args["--stdio"])
       let useZen = bool(args["--zen"])
