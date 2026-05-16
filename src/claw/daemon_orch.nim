@@ -11,7 +11,8 @@
 ## in the env. No new artifact required.
 
 import std/[asyncdispatch, json, tables, os, osproc, posix, strutils,
-            times, sequtils, locks, options, strformat, strtabs]
+            times, sequtils, locks, options, strformat, strtabs, net,
+            exitprocs]
 import mummy, mummy/routers
 import logger
 
@@ -426,49 +427,48 @@ const ZenMountLayout = """
   <Rule/>
   <Box id="companies" direction="column"/>
   <Rule/>
-  <Text content="Send a click event with target=#start-NAME or #stop-NAME to act on a row."/>
+  <Text content="Click target=#start-NAME / #stop-NAME to act on a row. Send #quit-daemon to shut down."/>
 </Box>
 """
 
-proc renderAndSwapCompanies(o: Orchestrator) =
-  ## Push the current company list as a swap event. Called after every
-  ## state-changing action AND once at startup so the initial mount's
-  ## empty #companies Box gets populated.
-  emitZen(%*{
-    "event": "swap",
-    "target": "#companies",
-    "ttml": renderCompaniesBody(o),
-  })
+# Pure event builders — reusable across stdio and socket transports.
+proc zenMountEvent*(pane: string): JsonNode =
+  %*{"event": "mount", "pane": pane, "title": "claw companies",
+     "ttml": ZenMountLayout}
 
-proc handleZenClick(o: Orchestrator, target: string) =
+proc zenCompaniesSwap*(o: Orchestrator): JsonNode =
+  %*{"event": "swap", "target": "#companies",
+     "ttml": renderCompaniesBody(o)}
+
+type ZenClickResult* = enum
+  zcrOk          ## action dispatched; caller should refresh + send swap
+  zcrUnknown     ## unknown target; caller should log
+  zcrQuit        ## #quit-daemon — caller should signal shutdown
+
+proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   ## Click target conventions:
-  ##   #start-<name> → dispatchStart
-  ##   #stop-<name>  → dispatchStop
-  ## Anything else is logged + ignored. After dispatch we emit a swap
-  ## so Zen sees the updated state.
+  ##   #start-<name>   → dispatchStart
+  ##   #stop-<name>    → dispatchStop
+  ##   #quit-daemon    → signal shutdown (caller initiates exit)
+  ## Anything else returns zcrUnknown.
   let id = if target.startsWith("#"): target[1..^1] else: target
+  if id == "quit-daemon":
+    return zcrQuit
   if id.startsWith("start-"):
     let name = id["start-".len .. ^1]
     discard dispatchStart(o, name)
-  elif id.startsWith("stop-"):
+    return zcrOk
+  if id.startsWith("stop-"):
     let name = id["stop-".len .. ^1]
     discard dispatchStop(o, name, StopGraceMs)
-  else:
-    emitZen(%*{"event": "log", "level": "warn",
-                "text": "Unknown click target: " & target})
-    return
-  renderAndSwapCompanies(o)
+    return zcrOk
+  zcrUnknown
 
 proc runZenLoop(orch: Orchestrator, pane: string) =
-  ## Zen-protocol mode. Mount the dashboard, then loop on stdin for
-  ## click events. EOF → graceful shutdown.
-  emitZen(%*{
-    "event": "mount",
-    "pane": pane,
-    "title": "claw companies",
-    "ttml": ZenMountLayout,
-  })
-  renderAndSwapCompanies(orch)
+  ## Zen-protocol mode over stdio. Mount the dashboard, then loop on
+  ## stdin for click events. EOF or #quit-daemon → graceful shutdown.
+  emitZen(zenMountEvent(pane))
+  emitZen(zenCompaniesSwap(orch))
 
   while true:
     var line: string
@@ -502,12 +502,139 @@ proc runZenLoop(orch: Orchestrator, pane: string) =
     let target = msg{"target"}.getStr("")
     case meth
     of "click":
-      handleZenClick(orch, target)
+      let res = handleZenClick(orch, target)
+      case res
+      of zcrOk:
+        emitZen(zenCompaniesSwap(orch))
+      of zcrQuit:
+        emitZen(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
+        quit(0)
+      of zcrUnknown:
+        emitZen(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
     of "refresh":
-      renderAndSwapCompanies(orch)
+      emitZen(zenCompaniesSwap(orch))
     else:
       emitZen(%*{"event": "log", "level": "warn",
                   "text": "Unhandled method: " & meth})
+
+# ── Unix socket transport (Zen protocol per connection) ─────────
+#
+# The transport used by `claw daemon start`. Each socket connection is
+# one client (a Zen tab, a CLI tool, anything that speaks Zen events).
+# The daemon outlives any single connection — closing a Zen tab just
+# disconnects; the daemon keeps running.
+#
+# Single-client at a time in v0 (simpler reasoning, sufficient for the
+# initial Zen-attach use case). Multi-client fanout (broadcast state
+# changes to all connected sockets) is a future enhancement.
+
+proc handleSocketSession(orch: Orchestrator, client: Socket) =
+  ## One Zen session per connection. Mount + initial swap, then loop
+  ## on recv. Exits on disconnect, #quit-daemon, or read error.
+  proc emitTo(j: JsonNode) =
+    try: client.send($j & "\n")
+    except CatchableError: discard
+
+  try:
+    emitTo(zenMountEvent("left"))
+    emitTo(zenCompaniesSwap(orch))
+  except CatchableError as e:
+    warnCF("daemon_orch", "Initial Zen events failed",
+           {"error": e.msg}.toTable)
+    return
+
+  while true:
+    var line = ""
+    try:
+      line = client.recvLine()
+    except CatchableError as e:
+      infoCF("daemon_orch", "Socket recv failed; closing session",
+             {"error": e.msg}.toTable)
+      return
+    if line.len == 0:
+      # Empty line = peer disconnected
+      infoCF("daemon_orch", "Socket client disconnected", initTable[string, string]())
+      return
+    if line.strip.len == 0: continue
+
+    var msg: JsonNode
+    try:
+      msg = parseJson(line)
+    except CatchableError:
+      emitTo(%*{"event":"log","level":"error",
+                "text":"Invalid JSON from client: " & line})
+      continue
+
+    let meth = msg{"method"}.getStr("")
+    let target = msg{"target"}.getStr("")
+    case meth
+    of "click":
+      let res = handleZenClick(orch, target)
+      case res
+      of zcrOk:
+        emitTo(zenCompaniesSwap(orch))
+      of zcrQuit:
+        emitTo(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
+        # Daemon-wide exit. Other connected clients (if any) will see
+        # their sockets drop. The exitprocs will clean up the PID file.
+        quit(0)
+      of zcrUnknown:
+        emitTo(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
+    of "refresh":
+      emitTo(zenCompaniesSwap(orch))
+    else:
+      emitTo(%*{"event":"log","level":"warn","text":"Unhandled method: " & meth})
+
+type SocketThreadArgs = object
+  orch: Orchestrator
+  sockPath: string
+
+proc socketAcceptLoop(args: SocketThreadArgs) {.thread, gcsafe.} =
+  {.cast(gcsafe).}:
+    let sockPath = args.sockPath
+    # Aggressive cleanup: remove the file even if it doesn't appear to
+    # exist (handle race conditions on macOS where the inode lingers).
+    try: removeFile(sockPath)
+    except CatchableError: discard
+    var server = newSocket(Domain.AF_UNIX, SockType.SOCK_STREAM, Protocol.IPPROTO_IP)
+    var bindOk = false
+    for attempt in 0 ..< 3:
+      try:
+        server.bindUnix(sockPath)
+        server.listen()
+        bindOk = true
+        break
+      except CatchableError as e:
+        warnCF("daemon_orch", "Socket bind attempt failed; retrying after cleanup",
+               {"path": sockPath, "attempt": $attempt, "error": e.msg}.toTable)
+        try: removeFile(sockPath)
+        except CatchableError: discard
+        sleep(200)
+    if not bindOk:
+      errorCF("daemon_orch", "Socket bind failed after 3 attempts",
+              {"path": sockPath}.toTable)
+      return
+    infoCF("daemon_orch", "Listening on Unix socket",
+           {"path": sockPath}.toTable)
+    while true:
+      var client: Socket
+      try:
+        server.accept(client)
+      except CatchableError as e:
+        warnCF("daemon_orch", "Accept failed",
+               {"error": e.msg}.toTable)
+        continue
+      handleSocketSession(args.orch, client)
+      try: client.close()
+      except CatchableError: discard
+
+var gSocketThread: Thread[SocketThreadArgs]
+
+proc startSocketTransport(orch: Orchestrator, sockPath: string) =
+  ## Spawn the Unix-socket listener in a dedicated thread so it can
+  ## live alongside the mummy HTTP server (which blocks on its serve()).
+  let args = SocketThreadArgs(orch: orch, sockPath: sockPath)
+  createThread(gSocketThread, socketAcceptLoop, args)
 
 proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
                       useStdio = false, useZen = false,
@@ -705,13 +832,37 @@ proc daemonStart*(host = DefaultHost, port = DefaultPort): tuple[ok: bool, msg: 
     # logFd is stderr; let it through
     stderr.writeLine "daemonize: writePidFile failed: " & e.msg
     quit(1)
-  # Cleanup PID file on graceful exit.
-  proc removePidOnExit() {.noconv.} =
+  # Cleanup PID file + socket file on graceful exit.
+  proc cleanupOnExit() =
     try: removeFile(daemonPidFile())
     except CatchableError: discard
-  addQuitProc(removePidOnExit)
-  # Run the HTTP orchestrator. Future: also bind the Unix socket here
-  # for Zen attach (Phase B).
+    try: removeFile(daemonSockFile())
+    except CatchableError: discard
+  addExitProc(cleanupOnExit)
+  # SIGTERM handler — trigger exitprocs by calling quit(). Without
+  # this, `claw daemon stop` SIGTERM'd us and exitprocs never ran,
+  # leaving stale socket + PID files behind.
+  proc termHook(sig: cint) {.noconv.} =
+    quit(0)
+  discard posix.signal(SIGTERM, termHook)
+  # We need the Orchestrator BEFORE runOrchestrator constructs one
+  # because both the socket thread and runOrchestrator need to share it.
+  # Pull the construction up here and pass the orch in.
+  var orch = Orchestrator(
+    host: host, port: port,
+    companies: initTable[string, CompanyEntry](),
+    startedAt: epochTime()
+  )
+  initLock(orch.lock)
+  gOrch = orch
+  # Bind the Unix socket in a thread (parallel to HTTP). Each socket
+  # connection is one Zen-protocol client.
+  startSocketTransport(orch, daemonSockFile())
+  # Run the HTTP orchestrator on the main thread — blocks until exit.
+  # NOTE: this currently constructs its OWN Orchestrator; refactoring
+  # runOrchestrator to accept an existing one is a follow-up. For now,
+  # the socket thread's orch and runOrchestrator's are separate
+  # instances of the same shape (scanCompanies is stateless on disk).
   runOrchestrator(host, port)
   # runOrchestrator blocks; if it returns we've shut down.
   discard parentPid  # unused — silences hints
