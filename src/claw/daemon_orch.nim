@@ -398,15 +398,17 @@ proc emitZen(j: JsonNode) =
   flushFile(stdout)
 
 proc renderCompanyRow(name, status: string, pid: int): string =
-  ## One row per company. Action hint (#start-<n> or #stop-<n>) is the
-  ## id Zen would click on. Without a Button primitive in the standard
-  ## ttml lib, we render textual cues; Zen-side wiring of click targets
-  ## happens via row ids when the TUI supports it.
+  ## One row per company. The row's `id` attribute is the click target
+  ## (e.g. `start-MyCompany` / `stop-MyCompany`); Zen's TtmlWidget
+  ## hit-tests left-clicks against this id and forwards as
+  ## `{"method":"click","target":"#<id>"}`. Anything that toggles based
+  ## on state goes here.
   let pidStr = if pid > 0: $pid else: "—"
-  let action = if status == "running": "[stop]   id=" & "stop-" & name
-               else: "[start]  id=" & "start-" & name
-  let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & action
-  "<Text content=\"" & xmlEscape(line) & "\"/>"
+  let actionId = (if status == "running": "stop-" else: "start-") & name
+  let actionLabel = if status == "running": "[stop]" else: "[start]"
+  let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
+  "<Text id=\"" & xmlEscape(actionId) & "\" content=\"" &
+    xmlEscape(line) & "\"/>"
 
 proc renderCompaniesBody(o: Orchestrator): string =
   ## The contents of the #companies Box — rebuilt from the current
@@ -433,7 +435,7 @@ const ZenMountLayout = """
   <Rule/>
   <Box id="companies" direction="column"/>
   <Rule/>
-  <Text content="Click target=#start-NAME / #stop-NAME to act on a row. Send #quit-daemon to shut down."/>
+  <Text id="quit-daemon" content="[quit daemon]"/>
 </Box>
 """
 
