@@ -57,6 +57,10 @@ type
     shutdownRequested: bool
     clients: seq[Socket]      ## connected session sockets — for broadcast
     clientsLock: Lock         ## guards `clients`
+    expandedLogs: HashSet[string]  ## compound keys whose rows are
+                              ## currently rendering expanded gateway-log
+                              ## tail in the dashboard. Toggled by clicks
+                              ## on the [logs] click target.
 
 var gOrch: Orchestrator   ## process-wide singleton; set in runOrchestrator
 
@@ -556,43 +560,76 @@ proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
 
-proc renderCompanyRow(name, source, status: string, pid: int,
-                      showSource: bool): string =
-  ## One row per company. The action slot at the right end either
-  ## shows the click target (`[start]` / `[stop]`) when settled, or
-  ## a `<Spinner/>` when the gateway is mid-transition — the spinner
-  ## literally *replaces* the button so operators see the action they
-  ## just clicked is in flight, and can't double-click during the
-  ## window. For `stopped` rows, a separate `[remove]` slot follows.
+proc tailLines(filePath: string, n: int): seq[string] =
+  ## Read up to the last `n` non-empty lines from a file. Cheap enough
+  ## for short stderr previews; not optimised for huge logs.
+  if not fileExists(filePath): return @[]
+  try:
+    let raw = readFile(filePath)
+    var lines: seq[string] = @[]
+    for line in raw.splitLines():
+      let s = line.strip()
+      if s.len > 0: lines.add s
+    if lines.len <= n: return lines
+    return lines[lines.len - n .. ^1]
+  except CatchableError: return @[]
+
+proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
+                      pid: int, showSource: bool): string =
+  ## One row per company. Layout (left to right):
+  ##   NAME (source) • status • pid N    [start|stop|⠋]   [logs?]  [remove?]
   ##
-  ## Layout (left to right):
-  ##   NAME (source) • status • pid N    [start|stop|⠋]   [remove?]
-  ##                                     |__action slot   |__remove slot
+  ## Click targets:
+  ##   start-NAME@source   — when stopped/crashed/unavailable
+  ##   stop-NAME@source    — when running
+  ##   logs-NAME@source    — when not running; toggles inline stderr tail
+  ##   remove-NAME@source  — when stopped or crashed (intentional or not,
+  ##                          the company is safely archive-able)
+  ##
+  ## If the row is "crashed" we also append the LAST line of its stderr
+  ## inline below the main row — that's usually the immediate failure
+  ## cause (port already in use, missing API key, etc.) without needing
+  ## a click. The `[logs]` click expands to the last 20 lines.
   let pidStr = if pid > 0: $pid else: "—"
   let isTransient = status == "starting" or status == "stopping"
   let isRunning = status == "running"
+  let canRemove = status == "stopped" or status == "crashed"
   let compound = name & "@" & source
   let srcLabel = if source == "home": "~" else: source
   let displayName = if showSource: name & " (" & srcLabel & ")" else: name
   let info = displayName & "  •  " & status & "  •  pid " & pidStr & "  "
   result.add "<Box class=\"flex-row\">"
-  # Non-clickable info text — the visible identity + status of the row.
   result.add "<Text content=\"" & xmlEscape(info) & "\"/>"
-  # Action slot: spinner while transient, otherwise the clickable
-  # start/stop label.
+  # Primary action slot.
   if isTransient:
     result.add "<Spinner/>"
   elif isRunning:
     result.add "<Text id=\"stop-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"[stop]\"/>"
-  else:  # stopped / crashed / unavailable
+  else:
     result.add "<Text id=\"start-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"[start]\"/>"
-  # Remove slot: only when fully stopped.
-  if status == "stopped":
+  # [logs] — available for any non-running row (transient or settled).
+  # Toggle: clicking opens an inline tail; clicking again collapses.
+  if not isRunning and not isTransient:
+    let label = if compound in o.expandedLogs: "  [logs ▾]" else: "  [logs]"
+    result.add "<Text id=\"logs-" & xmlEscape(compound) &
+               "\" clickable=\"\" content=\"" & xmlEscape(label) & "\"/>"
+  # [remove] — stopped OR crashed.
+  if canRemove:
     result.add "<Text id=\"remove-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"  [remove]\"/>"
   result.add "</Box>"
+  # Inline diagnostic line(s) under the main row.
+  if status == "crashed" or compound in o.expandedLogs:
+    let logPath = path / "logs" / "gateway.stderr.log"
+    let nLines = if compound in o.expandedLogs: 20 else: 1
+    let lines = tailLines(logPath, nLines)
+    if lines.len == 0:
+      result.add "<Text content=\"  └─ (no gateway.stderr.log yet — gateway may have died before writing)\"/>"
+    else:
+      for line in lines:
+        result.add "<Text content=\"  └─ " & xmlEscape(line) & "\"/>"
 
 proc renderCompaniesBody(o: Orchestrator): string =
   ## The contents of the #companies Box — rebuilt from the current
@@ -612,7 +649,8 @@ proc renderCompaniesBody(o: Orchestrator): string =
     let status = statusFor(o, n, p)
     let livePid = if processAlive(pidNum): pidNum else: 0
     let source = companySource(p)
-    rows.add(renderCompanyRow(n, source, status, livePid, showSource = true))
+    rows.add(renderCompanyRow(o, n, source, status, p, livePid,
+                              showSource = true))
   let inner =
     if rows.len == 0: "<Text content=\"(no companies found)\"/>"
     else: rows.join("\n")
@@ -647,6 +685,7 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   ##   #start-<name>   → dispatchStart
   ##   #stop-<name>    → dispatchStop
   ##   #remove-<name>  → dispatchRemove (archive the company directory)
+  ##   #logs-<name>    → toggle inline stderr expansion (no daemon side-effect)
   ##   #quit-daemon    → signal shutdown (caller initiates exit)
   ## Anything else returns zcrUnknown.
   let id = if target.startsWith("#"): target[1..^1] else: target
@@ -663,6 +702,12 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   if id.startsWith("remove-"):
     let name = id["remove-".len .. ^1]
     discard dispatchRemove(o, name)
+    return zcrOk
+  if id.startsWith("logs-"):
+    let key = id["logs-".len .. ^1]
+    acquire(o.lock); defer: release(o.lock)
+    if key in o.expandedLogs: o.expandedLogs.excl key
+    else: o.expandedLogs.incl key
     return zcrOk
   zcrUnknown
 
@@ -1017,7 +1062,8 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
     host: host, port: port,
     companies: initTable[string, CompanyEntry](),
     startedAt: epochTime(),
-    clients: @[]
+    clients: @[],
+    expandedLogs: initHashSet[string]()
   )
   initLock(orch.lock)
   initLock(orch.clientsLock)
@@ -1366,7 +1412,8 @@ proc daemonStart*(host = DefaultHost, port = DefaultPort): tuple[ok: bool, msg: 
     host: host, port: port,
     companies: initTable[string, CompanyEntry](),
     startedAt: epochTime(),
-    clients: @[]
+    clients: @[],
+    expandedLogs: initHashSet[string]()
   )
   initLock(orch.lock)
   initLock(orch.clientsLock)
