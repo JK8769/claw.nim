@@ -492,7 +492,11 @@ proc renderCompanyRow(name, status: string, pid: int): string =
   let actionId = (if inMotion: "stop-" else: "start-") & name
   let actionLabel = if inMotion: "[stop]" else: "[start]"
   let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
-  result.add "<Box direction=\"row\">"
+  # `class="flex-row"` is how the Box TTML primitive opts into horizontal
+  # layout. The earlier `direction="row"` attribute was silently ignored
+  # (Box only looks at class), so [remove] rendered *below* the row text
+  # instead of beside it, making the click target unreachable.
+  result.add "<Box class=\"flex-row\">"
   result.add "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
              xmlEscape(line) & "  \"/>"
   if status == "stopped":
@@ -720,6 +724,33 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
     let target = msg{"target"}.getStr("")
     case meth
     of "click":
+      # Optimistic UI update: dispatchStop blocks for up to 10s waiting
+      # for the SIGTERM grace period; dispatchStart can take seconds to
+      # spawn. Without an immediate broadcast, the dashboard looks
+      # frozen while the click is in flight. Flip the entry's transient
+      # state *before* the synchronous dispatch so the next swap shows
+      # "stopping"/"starting" right away.
+      let id = if target.startsWith("#"): target[1..^1] else: target
+      var preBroadcast = false
+      if id.startsWith("stop-"):
+        let name = id["stop-".len .. ^1]
+        acquire(orch.lock)
+        if orch.companies.hasKey(name):
+          var e = orch.companies[name]
+          e.stopping = true
+          orch.companies[name] = e
+          preBroadcast = true
+        release(orch.lock)
+      elif id.startsWith("start-"):
+        let name = id["start-".len .. ^1]
+        acquire(orch.lock)
+        if not orch.companies.hasKey(name):
+          orch.companies[name] = CompanyEntry(name: name, path: "",
+                                              startedAt: epochTime())
+          preBroadcast = true
+        release(orch.lock)
+      if preBroadcast:
+        orch.broadcast(zenCompaniesSwap(orch))
       let res = handleZenClick(orch, target)
       case res
       of zcrOk:
