@@ -152,15 +152,24 @@ proc statusFor(o: Orchestrator, name: string, path: string): string =
   ## stopped | starting | running | stopping | crashed | unavailable
   if not dirExists(path): return "unavailable"
   let diskPid = readPidFile(path)
+  # Look up by compound key (`NAME@source`) — that's the key the
+  # click handler + spawn/stop paths all agree on. Fall back to bare
+  # name so the JSON-RPC and CLI surfaces (which take just a name)
+  # still work.
+  let compound = name & "@" & companySource(path)
+  proc tracked(o: Orchestrator): tuple[found: bool, e: CompanyEntry] =
+    if o.companies.hasKey(compound): return (true, o.companies[compound])
+    if o.companies.hasKey(name):     return (true, o.companies[name])
+    (false, CompanyEntry())
   if processAlive(diskPid):
     acquire(o.lock); defer: release(o.lock)
-    if o.companies.hasKey(name) and o.companies[name].stopping:
-      return "stopping"
+    let (found, e) = tracked(o)
+    if found and e.stopping: return "stopping"
     return "running"
   acquire(o.lock)
   defer: release(o.lock)
-  if o.companies.hasKey(name):
-    let e = o.companies[name]
+  let (found, e) = tracked(o)
+  if found:
     if e.stopping: return "stopping"
     if e.startedAt > 0 and (epochTime() - e.startedAt) * 1000 < GatewayBootGraceMs.float:
       return "starting"
@@ -810,28 +819,29 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
       # state *before* the synchronous dispatch so the next swap shows
       # "stopping"/"starting" right away.
       let id = if target.startsWith("#"): target[1..^1] else: target
-      # IDs now include a `@source` suffix to disambiguate same-named
-      # companies. orch.companies is keyed by bare name (until we can
-      # refactor to per-path entries), so strip the suffix here.
-      proc bareName(rest: string): string =
-        let atIdx = rest.rfind('@')
-        if atIdx >= 0: rest[0 ..< atIdx] else: rest
+      # Use the compound name (e.g. "SunGrow@home") as the key — same
+      # as spawnGateway/stopGateway. Previously this stripped @source
+      # to a bare name, creating a sentinel under "SunGrow" while
+      # spawnGateway used "SunGrow@home". When stopGateway later
+      # deleted "SunGrow@home", the sentinel survived with
+      # stopping=true → statusFor (which looked up by bare name) saw
+      # "stopping" forever. Sharing the key fixes the leak.
       var preBroadcast = false
       if id.startsWith("stop-"):
-        let name = bareName(id["stop-".len .. ^1])
+        let key = id["stop-".len .. ^1]
         acquire(orch.lock)
-        if orch.companies.hasKey(name):
-          var e = orch.companies[name]
+        if orch.companies.hasKey(key):
+          var e = orch.companies[key]
           e.stopping = true
-          orch.companies[name] = e
+          orch.companies[key] = e
           preBroadcast = true
         release(orch.lock)
       elif id.startsWith("start-"):
-        let name = bareName(id["start-".len .. ^1])
+        let key = id["start-".len .. ^1]
         acquire(orch.lock)
-        if not orch.companies.hasKey(name):
-          orch.companies[name] = CompanyEntry(name: name, path: "",
-                                              startedAt: epochTime())
+        if not orch.companies.hasKey(key):
+          orch.companies[key] = CompanyEntry(name: key, path: "",
+                                             startedAt: epochTime())
           preBroadcast = true
         release(orch.lock)
       if preBroadcast:
