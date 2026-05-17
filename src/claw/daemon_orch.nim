@@ -71,6 +71,21 @@ proc companyNameFromPath(p: string): string =
     return base[".nimclaw-".len .. ^1]
   base
 
+proc companySource*(path: string): string =
+  ## "home" for `~/.nimclaw-X`; otherwise the mount volume's basename
+  ## (e.g. `/Volumes/SSD256G/.nimclaw-X` → "SSD256G"). Used as a click-
+  ## target suffix to disambiguate same-named companies from different
+  ## sources, and rendered (as "~"/"<volume>") next to the row name when
+  ## the user has duplicates.
+  ##
+  ## Normalise both sides before comparison — getHomeDir() yields a
+  ## trailing slash on macOS ("/Users/owaf/") whereas parentDir does
+  ## not ("/Users/owaf"), so a naive `==` falsely reports "not home".
+  let parent = path.parentDir
+  let home = getHomeDir().strip(chars = {'/'}, leading = false)
+  if parent == home: return "home"
+  parent.lastPathPart
+
 proc scanCompanies(): seq[tuple[name, path: string]] =
   ## Walk ~/.nimclaw-* + /Volumes/*/.nimclaw-* (+ /media/*, /mnt/* on linux).
   ## Each volume is wrapped in its own try/except: a wedged removable
@@ -79,23 +94,15 @@ proc scanCompanies(): seq[tuple[name, path: string]] =
   ## user must `diskutil unmount force <vol>`. (A timeout-aware scan
   ## would need a thread + watchdog; not worth it for now.)
   ##
-  ## **Dedup by name**: home wins over volume roots. If the same
-  ## company name shows up in both `~/.nimclaw-X` and a mounted volume,
-  ## the row would otherwise render twice with the same DOM id, which
-  ## confuses Zen's TtmlWidget (findById picks one but the renderer
-  ## keeps both — clicking the second is undefined behavior). Pick a
-  ## stable one. Home is preferred because it's not at risk of
-  ## disappearing on USB unplug.
+  ## Duplicates by name are *kept* — disambiguation is the renderer's
+  ## job (via `companySource(path)`), and click targets use a
+  ## `name@source` suffix so each row routes to its actual path.
   result = @[]
-  var seen: HashSet[string] = initHashSet[string]()
   let home = getHomeDir()
   try:
     for kind, p in walkDir(home):
       if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
-        let name = companyNameFromPath(p)
-        if name notin seen:
-          seen.incl name
-          result.add((name, p))
+        result.add((companyNameFromPath(p), p))
   except CatchableError as e:
     warnCF("daemon_orch", "scanCompanies: home dir walk failed",
            {"home": home, "error": e.msg}.toTable)
@@ -115,13 +122,7 @@ proc scanCompanies(): seq[tuple[name, path: string]] =
       try:
         for kind, p in walkDir(volPath):
           if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
-            let name = companyNameFromPath(p)
-            if name notin seen:
-              seen.incl name
-              result.add((name, p))
-            else:
-              infoCF("daemon_orch", "scanCompanies: skipping duplicate name",
-                     {"name": name, "path": p}.toTable)
+            result.add((companyNameFromPath(p), p))
       except CatchableError as e:
         warnCF("daemon_orch", "scanCompanies: per-volume walk failed; skipping",
                {"volume": volPath, "error": e.msg}.toTable)
@@ -281,9 +282,19 @@ proc stopGateway(o: Orchestrator, name, path: string, timeoutMs: int = StopGrace
 # call these — keeping a single source of truth for the daemon's
 # semantics regardless of transport.
 
-proc lookupCompany(name: string): tuple[found: bool, path: string] =
+proc lookupCompany(nameOrCompound: string): tuple[found: bool, path: string] =
+  ## Accepts either:
+  ##   "SunGrowCN"          — find any company with that name (first match)
+  ##   "SunGrowCN@home"     — name + source disambiguator (use companySource)
+  let atIdx = nameOrCompound.rfind('@')
+  let wantName = if atIdx >= 0: nameOrCompound[0 ..< atIdx]
+                 else: nameOrCompound
+  let wantSrc = if atIdx >= 0: nameOrCompound[atIdx + 1 .. ^1]
+                else: ""
   for (n, p) in scanCompanies():
-    if n == name: return (true, p)
+    if n != wantName: continue
+    if wantSrc.len == 0 or companySource(p) == wantSrc:
+      return (true, p)
   (false, "")
 
 proc dispatchHealth*(o: Orchestrator): tuple[code: int, body: JsonNode] =
@@ -494,32 +505,28 @@ proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
 
-proc renderCompanyRow(name, status: string, pid: int): string =
+proc renderCompanyRow(name, source, status: string, pid: int,
+                      showSource: bool): string =
   ## One row per company. Each row renders as a primary action followed
-  ## by an optional [remove]:
-  ##
-  ##   <Text id="start-NAME" clickable> NAME • stopped • pid — • [start] </Text>
-  ##   <Text id="remove-NAME" clickable> [remove] </Text>
-  ##
-  ## We split into two clickable `<Text>` nodes so the hit-test routes
-  ## start/stop independently from remove. [remove] only appears for
-  ## fully-stopped companies — running, starting, and stopping rows
-  ## intentionally don't get one (operator must stop first; less foot-gun).
+  ## by an optional [remove]. The DOM `id` includes a `@source` suffix
+  ## so two same-named companies on different volumes route to distinct
+  ## click targets. `showSource = true` also appends a `(source-tag)` to
+  ## the visible name so operators can tell them apart.
   let pidStr = if pid > 0: $pid else: "—"
   let inMotion = status == "running" or status == "starting" or status == "stopping"
-  let actionId = (if inMotion: "stop-" else: "start-") & name
+  let action = if inMotion: "stop" else: "start"
   let actionLabel = if inMotion: "[stop]" else: "[start]"
-  let line = name & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
-  # `class="flex-row"` is how the Box TTML primitive opts into horizontal
-  # layout. The earlier `direction="row"` attribute was silently ignored
-  # (Box only looks at class), so [remove] rendered *below* the row text
-  # instead of beside it, making the click target unreachable.
+  let compound = name & "@" & source
+  let actionId = action & "-" & compound
+  let srcLabel = if source == "home": "~" else: source
+  let displayName = if showSource: name & " (" & srcLabel & ")" else: name
+  let line = displayName & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
   result.add "<Box class=\"flex-row\">"
   result.add "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
              xmlEscape(line) & "  \"/>"
   if status == "stopped":
-    result.add "<Text id=\"remove-" & xmlEscape(name) & "\" clickable=\"\" " &
-               "content=\"[remove]\"/>"
+    result.add "<Text id=\"remove-" & xmlEscape(compound) &
+               "\" clickable=\"\" content=\"[remove]\"/>"
   result.add "</Box>"
 
 proc renderCompaniesBody(o: Orchestrator): string =
@@ -527,15 +534,21 @@ proc renderCompaniesBody(o: Orchestrator): string =
   ## scan every time something changes. No client-side state.
   ##
   ## Wrap rows in a single <Box> root: Zen's applyUpdate calls
-  ## parseDoc() which requires exactly one top-level element. Without
-  ## the wrapper, multiple sibling <Text> rows silently fail to parse
-  ## and the swap is a no-op.
+  ## parseDoc() which requires exactly one top-level element.
+  let companies = scanCompanies()
+  # Which names show up more than once? Those rows render a source
+  # disambiguator like "SunGrowCN (~)" / "SunGrowCN (SSD256G)".
+  var nameCount: Table[string, int]
+  for (n, _) in companies:
+    nameCount[n] = nameCount.getOrDefault(n, 0) + 1
   var rows: seq[string] = @[]
-  for (n, p) in scanCompanies():
+  for (n, p) in companies:
     let pidNum = readPidFile(p)
     let status = statusFor(o, n, p)
     let livePid = if processAlive(pidNum): pidNum else: 0
-    rows.add(renderCompanyRow(n, status, livePid))
+    let source = companySource(p)
+    let showSource = nameCount.getOrDefault(n, 0) > 1
+    rows.add(renderCompanyRow(n, source, status, livePid, showSource))
   let inner =
     if rows.len == 0: "<Text content=\"(no companies found)\"/>"
     else: rows.join("\n")
@@ -749,9 +762,15 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
       # state *before* the synchronous dispatch so the next swap shows
       # "stopping"/"starting" right away.
       let id = if target.startsWith("#"): target[1..^1] else: target
+      # IDs now include a `@source` suffix to disambiguate same-named
+      # companies. orch.companies is keyed by bare name (until we can
+      # refactor to per-path entries), so strip the suffix here.
+      proc bareName(rest: string): string =
+        let atIdx = rest.rfind('@')
+        if atIdx >= 0: rest[0 ..< atIdx] else: rest
       var preBroadcast = false
       if id.startsWith("stop-"):
-        let name = id["stop-".len .. ^1]
+        let name = bareName(id["stop-".len .. ^1])
         acquire(orch.lock)
         if orch.companies.hasKey(name):
           var e = orch.companies[name]
@@ -760,7 +779,7 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
           preBroadcast = true
         release(orch.lock)
       elif id.startsWith("start-"):
-        let name = id["start-".len .. ^1]
+        let name = bareName(id["start-".len .. ^1])
         acquire(orch.lock)
         if not orch.companies.hasKey(name):
           orch.companies[name] = CompanyEntry(name: name, path: "",
