@@ -12,7 +12,7 @@
 
 import std/[asyncdispatch, json, tables, sets, os, osproc, posix, strutils,
             times, sequtils, locks, options, strformat, strtabs, net,
-            exitprocs]
+            exitprocs, unicode]
 import mummy, mummy/routers
 import logger
 
@@ -560,6 +560,9 @@ proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
 
+const LogPreviewWidth = 96
+const LogExpandedLines = 8
+
 proc tailLines(filePath: string, n: int): seq[string] =
   ## Read up to the last `n` non-empty lines from a file. Cheap enough
   ## for short stderr previews; not optimised for huge logs.
@@ -573,6 +576,20 @@ proc tailLines(filePath: string, n: int): seq[string] =
     if lines.len <= n: return lines
     return lines[lines.len - n .. ^1]
   except CatchableError: return @[]
+
+proc clip(s: string, w: int): string =
+  ## Truncate a string at rune-width `w`, adding "…" if shortened.
+  ## TTML's <Text> is single-row and doesn't wrap; this is the
+  ## practical fallback for displaying a long line in a fixed slot.
+  var n = 0
+  var taken = ""
+  for r in s.runes:
+    if n >= w - 1:
+      taken.add "…"
+      return taken
+    taken.add $r
+    inc n
+  taken
 
 proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
                       pid: int, showSource: bool): string =
@@ -598,6 +615,15 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
   let srcLabel = if source == "home": "~" else: source
   let displayName = if showSource: name & " (" & srcLabel & ")" else: name
   let info = displayName & "  •  " & status & "  •  pid " & pidStr & "  "
+  # Group the row's controls + its inline log lines into one column so
+  # they read as a single unit. Layout-wise:
+  #   <Box class="flex-col">
+  #     <Box class="flex-row">[info] [action] [logs] [remove]</Box>
+  #     <Text>  └─ log line 1</Text>           ← only when crashed/expanded
+  #     <Text>  └─ log line 2</Text>
+  #     ...
+  #   </Box>
+  result.add "<Box class=\"flex-col\">"
   result.add "<Box class=\"flex-row\">"
   result.add "<Text content=\"" & xmlEscape(info) & "\"/>"
   # Primary action slot.
@@ -619,17 +645,21 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
   if canRemove:
     result.add "<Text id=\"remove-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"  [remove]\"/>"
-  result.add "</Box>"
-  # Inline diagnostic line(s) under the main row.
+  result.add "</Box>"   # close the flex-row of controls
+  # Inline diagnostic line(s) under the main row. Each line is its own
+  # <Text> (TTML has no soft-wrap primitive); long lines are clipped
+  # with an ellipsis so the dashboard stays readable.
   if status == "crashed" or compound in o.expandedLogs:
     let logPath = path / "logs" / "gateway.stderr.log"
-    let nLines = if compound in o.expandedLogs: 20 else: 1
+    let nLines = if compound in o.expandedLogs: LogExpandedLines else: 1
     let lines = tailLines(logPath, nLines)
     if lines.len == 0:
-      result.add "<Text content=\"  └─ (no gateway.stderr.log yet — gateway may have died before writing)\"/>"
+      result.add "<Text content=\"  └─ (no gateway.stderr.log yet)\"/>"
     else:
       for line in lines:
-        result.add "<Text content=\"  └─ " & xmlEscape(line) & "\"/>"
+        result.add "<Text content=\"  └─ " &
+                   xmlEscape(clip(line, LogPreviewWidth)) & "\"/>"
+  result.add "</Box>"   # close the row's flex-col wrapper
 
 proc renderCompaniesBody(o: Orchestrator): string =
   ## The contents of the #companies Box — rebuilt from the current
