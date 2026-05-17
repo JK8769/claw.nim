@@ -46,6 +46,16 @@ task test, "Run unit tests":
   exec "nim c -r --hints:off tests/test_filesystem.nim"
   exec "nim c -r --hints:off tests/test_tool_registry.nim"
 
+task test_zen_integration, "Run e2e tests against Zen's TTML runtime":
+  # Verifies the TTML strings the daemon emits parse correctly via the
+  # real ttml package — guards against regressions in attribute encoding
+  # (e.g. &#10; -> newline), escape ordering, and component construction.
+  # Requires the Zen monorepo to be checked out at ../../Zen relative to
+  # this checkout. Override ZEN_TTML_SRC if you've parked Zen elsewhere.
+  let ttmlSrc = getEnv("ZEN_TTML_SRC", "../../Zen/nim-pkgs/ttml/src")
+  exec "nim c -r --hints:off --path:" & ttmlSrc &
+       " tests/test_daemon_orch_ttml.nim"
+
 # ── Docs ─────────────────────────────────────────────────────────
 
 task docs, "Generate searchable HTML documentation":
