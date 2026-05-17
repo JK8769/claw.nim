@@ -533,29 +533,21 @@ proc renderCompaniesBody(o: Orchestrator): string =
   ## The contents of the #companies Box — rebuilt from the current
   ## scan every time something changes. No client-side state.
   ##
+  ## Every row carries its source label (`(~)` for home, `(<volume>)`
+  ## for mounted volumes). Uniform > clever — operators see where each
+  ## company lives at a glance, including which ones disappear on an
+  ## unplug.
+  ##
   ## Wrap rows in a single <Box> root: Zen's applyUpdate calls
   ## parseDoc() which requires exactly one top-level element.
-  ##
-  ## Source labelling rule: rows from `~` (home) are bare — home is
-  ## the default mental model and labelling it would add noise to the
-  ## common case. Rows from any mounted volume get a `(volume-name)`
-  ## suffix so operators can see which companies disappear if they
-  ## unplug a drive. Home rows that COLLIDE with a volume entry get
-  ## "(~)" too, so the duplicates are visually distinguishable.
   let companies = scanCompanies()
-  var nameCount: Table[string, int]
-  for (n, _) in companies:
-    nameCount[n] = nameCount.getOrDefault(n, 0) + 1
   var rows: seq[string] = @[]
   for (n, p) in companies:
     let pidNum = readPidFile(p)
     let status = statusFor(o, n, p)
     let livePid = if processAlive(pidNum): pidNum else: 0
     let source = companySource(p)
-    let isHome = source == "home"
-    let dup = nameCount.getOrDefault(n, 0) > 1
-    let showSource = (not isHome) or dup
-    rows.add(renderCompanyRow(n, source, status, livePid, showSource))
+    rows.add(renderCompanyRow(n, source, status, livePid, showSource = true))
   let inner =
     if rows.len == 0: "<Text content=\"(no companies found)\"/>"
     else: rows.join("\n")
