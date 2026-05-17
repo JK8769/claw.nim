@@ -229,8 +229,22 @@ proc spawnGateway(o: Orchestrator, name, path: string): tuple[ok: bool, pid: int
   env = newStringTable()
   for k, v in envPairs(): env[k] = v
   env["NIMCLAW_DIR"] = path
+  # Spawn via /bin/sh -c so we can shell-redirect stdout + stderr to
+  # per-company log files. startProcess's `options` doesn't accept file
+  # paths directly — pipes only — and the previous code recorded the
+  # log filenames in its INFO message but never actually redirected,
+  # so all gateway output was silently inherited by the daemon and got
+  # mixed into admin.log. Now `tail -f ~/.nimclaw-X/logs/gateway.stderr.log`
+  # actually works, which is what operators need to diagnose a `crashed`.
+  # `exec` tells the shell to replace itself with the gateway (no
+  # extra fork). Without it, `p.processID` would be the wrapper shell,
+  # which exits after redirect setup, leaving the real gateway as an
+  # untracked grandchild.
+  let cmd = "exec " & quoteShell(binPath) & " gateway" &
+            " >> " & quoteShell(stdoutLog) &
+            " 2>> " & quoteShell(stderrLog)
   try:
-    let p = startProcess(binPath, args = @["gateway"],
+    let p = startProcess("/bin/sh", args = @["-c", cmd],
                          env = env,
                          options = {})
     o.companies[name] = CompanyEntry(
