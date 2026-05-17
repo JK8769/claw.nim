@@ -547,6 +547,13 @@ proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
 
+const SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+var gSpinnerTick: int = 0
+  ## Incremented by the statePollLoop each tick. Used to advance the
+  ## spinner glyph in rows that are in a transitional state, so the
+  ## dashboard animates "starting…" / "stopping…" instead of going
+  ## static for several seconds.
+
 proc renderCompanyRow(name, source, status: string, pid: int,
                       showSource: bool): string =
   ## One row per company. Each row renders as a primary action followed
@@ -556,13 +563,21 @@ proc renderCompanyRow(name, source, status: string, pid: int,
   ## the visible name so operators can tell them apart.
   let pidStr = if pid > 0: $pid else: "—"
   let inMotion = status == "running" or status == "starting" or status == "stopping"
+  let isTransient = status == "starting" or status == "stopping"
   let action = if inMotion: "stop" else: "start"
   let actionLabel = if inMotion: "[stop]" else: "[start]"
   let compound = name & "@" & source
   let actionId = action & "-" & compound
   let srcLabel = if source == "home": "~" else: source
   let displayName = if showSource: name & " (" & srcLabel & ")" else: name
-  let line = displayName & "  •  " & status & "  •  pid " & pidStr & "  •  " & actionLabel
+  # Spinner glyph for transient states; blank space for steady ones so
+  # the row width stays consistent (no left-shift when the spinner
+  # disappears).
+  let spinner =
+    if isTransient: SpinnerFrames[gSpinnerTick mod SpinnerFrames.len] & " "
+    else: "  "
+  let line = spinner & displayName & "  •  " & status & "  •  pid " &
+             pidStr & "  •  " & actionLabel
   result.add "<Box class=\"flex-row\">"
   result.add "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
              xmlEscape(line) & "  \"/>"
@@ -920,12 +935,63 @@ proc socketAcceptLoop(args: SocketThreadArgs) {.thread, gcsafe.} =
         except CatchableError: discard
 
 var gSocketThread: Thread[SocketThreadArgs]
+var gPollThread: Thread[Orchestrator]
+
+const StatePollMs = 700
+  ## Cadence of the state poller. Slow enough that a sleeping daemon
+  ## burns nothing measurable; fast enough that the dashboard sees a
+  ## starting → running transition within ~1 second of the gateway
+  ## actually coming up.
+
+proc statePollLoop(orch: Orchestrator) {.thread, gcsafe.} =
+  ## Periodic poll: rescan company status; if any row changed since
+  ## the last tick, broadcast a fresh swap to every connected client.
+  ## This is what makes the dashboard *animate* during state
+  ## transitions — the operator clicks [start], the row says
+  ## "starting", and a moment later flips to "running pid=N" without
+  ## any further interaction.
+  ##
+  ## Cheap when idle: scanCompanies is a walkDir on local home + any
+  ## mounted volumes (fast); statusFor is a few syscalls per row;
+  ## the broadcast only fires when something actually changed. With
+  ## five companies and no transitions, this loop costs ~zero CPU.
+  {.cast(gcsafe).}:
+    var last: Table[string, string] = initTable[string, string]()
+    while not orch.shutdownRequested:
+      sleep(StatePollMs)
+      if orch.shutdownRequested: break
+      var changed = false
+      var anyTransient = false
+      var seen: Table[string, string] = initTable[string, string]()
+      for (n, p) in scanCompanies():
+        let key = n & "@" & companySource(p)
+        let s = statusFor(orch, n, p)
+        seen[key] = s
+        if s == "starting" or s == "stopping": anyTransient = true
+        if last.getOrDefault(key, "") != s: changed = true
+      for k in last.keys:
+        if not seen.hasKey(k): changed = true
+      # Broadcast if (a) any row changed state, OR (b) a row is in a
+      # transient state — case (b) advances the spinner glyph so the
+      # dashboard animates "starting…" instead of going static.
+      if not changed and not anyTransient: continue
+      if anyTransient: inc gSpinnerTick
+      last = seen
+      acquire(orch.clientsLock)
+      let hasClients = orch.clients.len > 0
+      release(orch.clientsLock)
+      if hasClients:
+        try: orch.broadcast(zenCompaniesSwap(orch))
+        except CatchableError as e:
+          warnCF("daemon_orch", "state poll broadcast failed",
+                 {"error": e.msg}.toTable)
 
 proc startSocketTransport(orch: Orchestrator, sockPath: string) =
   ## Spawn the Unix-socket listener in a dedicated thread so it can
   ## live alongside the mummy HTTP server (which blocks on its serve()).
   let args = SocketThreadArgs(orch: orch, sockPath: sockPath)
   createThread(gSocketThread, socketAcceptLoop, args)
+  createThread(gPollThread, statePollLoop, orch)
 
 proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
                       useStdio = false, useZen = false,
