@@ -49,6 +49,10 @@ var gCtx: GatewayContext = nil
 var gChanManager: channel_manager.Manager = nil
 var gSocketServer: SocketServer = nil
 var isShuttingDown = false
+var shutdownRequested {.global.}: cint = 0
+  ## Set by the SIGTERM / Ctrl-C handler. Polled from the main loop
+  ## so the actual cleanup work happens in async-safe context, not
+  ## inside the signal handler itself. `cint` write is async-signal-safe.
 
 # Channel for HTTP thread → async event loop agent requests.
 # `senderOverride` and `channelOverride` let the CLI spoof the requester
@@ -3493,13 +3497,17 @@ Options:
   )()
 
   signal(SIGHUP, SIG_IGN)
+  # The signal handler MUST be async-signal-safe. The old code ran
+  # gracefulShutdown directly here, which calls `waitFor` on the async
+  # dispatcher (already mid-poll on the main thread) and deadlocks
+  # before quit() can fire — every SIGTERM ended up needing SIGKILL
+  # 10s later. Now the handler just flips a flag; the main loop
+  # notices and shuts down cleanly between polls.
   signal(SIGTERM, proc(sig: cint) {.noconv.} =
-    gracefulShutdown()
-    quit(0)
+    shutdownRequested = 1
   )
   setControlCHook(proc() {.noconv.} =
-    gracefulShutdown()
-    quit(0)
+    shutdownRequested = 1
   )
 
   # Scan each agent's workstation dir (for now, just log what's there)
@@ -3533,10 +3541,16 @@ Options:
     )()
 
   while true:
+    if shutdownRequested != 0:
+      break
     try:
-      poll()
+      poll(50)   # ms — short timeout so the shutdown flag is checked
+                 # roughly 20× a second instead of only when an event
+                 # interrupts the poll. Otherwise SIGTERM during a long
+                 # idle would wait until something else fires.
     except Exception as e:
       if e.msg.contains("Interrupted system call"): break
       errorCF("claw", "Poll exception", {"error": e.msg}.toTable)
 
   gracefulShutdown()
+  quit(0)

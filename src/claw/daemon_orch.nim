@@ -36,14 +36,17 @@ type
   CompanyEntry = object
     name: string
     path: string              ## absolute path to .nimclaw-<n>
-    pid: int                  ## 0 = not tracked (either never started by us
-                              ## or PID came from disk file). When >0, this
-                              ## is OUR child; track it for SIGTERM-on-exit.
-    process: Process          ## nil unless we spawned it ourselves
+    pid: int                  ## 0 = not tracked. When >0 we spawned this
+                              ## child. Reap via posix.waitpid(pid) — we
+                              ## intentionally do NOT keep Nim's Process
+                              ## handle: storing it in this Table makes
+                              ## ORC's cycle collector segfault on del
+                              ## (tableimpl.del → reset → unregisterCycle
+                              ## crashes when a ref field's target has
+                              ## been partially-cleaned by the OS).
     startedAt: float          ## epochTime of spawn, 0 if not running
     stopping: bool            ## dispatchStop is in progress; suppresses
-                              ## the broadcastLoop reporting "crashed"
-                              ## during the SIGTERM-grace window.
+                              ## "crashed" during the SIGTERM-grace window.
 
   Orchestrator* = ref object
     host: string
@@ -202,10 +205,9 @@ proc spawnGateway(o: Orchestrator, name, path: string): tuple[ok: bool, pid: int
   # Fast path: a previous spawn already added an in-memory entry.
   # Use that as the authoritative "we just started this" signal,
   # because the PID file may not have been written yet by the child.
-  if o.companies.hasKey(name) and o.companies[name].process != nil:
-    let e = o.companies[name]
-    let pidFromMem = e.pid
-    if pidFromMem > 0 and processAlive(pidFromMem):
+  if o.companies.hasKey(name) and o.companies[name].pid > 0:
+    let pidFromMem = o.companies[name].pid
+    if processAlive(pidFromMem):
       return (true, pidFromMem, "")
     # In-memory entry but the process we tracked is no longer alive —
     # clear it and fall through to spawn afresh.
@@ -250,7 +252,6 @@ proc spawnGateway(o: Orchestrator, name, path: string): tuple[ok: bool, pid: int
     o.companies[name] = CompanyEntry(
       name: name, path: path,
       pid: p.processID,
-      process: p,
       startedAt: epochTime()
     )
     infoCF("daemon_orch", "Spawned gateway",
@@ -280,18 +281,31 @@ proc stopGateway(o: Orchestrator, name, path: string, timeoutMs: int = StopGrace
   # SIGTERM
   discard kill(Pid(diskPid), SIGTERM.cint)
   let deadline = epochTime() + timeoutMs.float / 1000
+  var reapedExitCode = -1
+  var alreadyReaped = false
   while epochTime() < deadline:
+    # Reap the zombie as soon as it appears so `kill -0` stops
+    # reporting it as alive. Use posix.waitpid directly instead of
+    # Nim's Process.peekExitCode — the latter segfaults on macOS
+    # when called after the child has already been waited (and we
+    # can't easily nil-out the in-Table Process handle to prevent
+    # the next loop iteration from calling it again).
+    if not alreadyReaped:
+      var status: cint = 0
+      let r = posix.waitpid(Pid(diskPid), status, WNOHANG)
+      if r > 0:
+        # Child reaped. Compute the exit code (same encoding Nim uses).
+        let normalExit = (status and 0x7F) == 0
+        reapedExitCode =
+          if normalExit: int((status shr 8) and 0xFF)
+          else: -int(status and 0x7F)  # signal-killed: negative signum
+        alreadyReaped = true
     if not processAlive(diskPid):
-      let exitCode = block:
-        # Best-effort: if we own the Process handle, peek; else -1.
-        acquire(o.lock); defer: release(o.lock)
-        if o.companies.hasKey(name) and o.companies[name].process != nil:
-          let ec = o.companies[name].process.peekExitCode()
-          o.companies[name].process.close()
-          o.companies.del(name)
-          ec
-        else: -1
-      return (true, true, exitCode, true, "")
+      acquire(o.lock)
+      defer: release(o.lock)
+      if o.companies.hasKey(name):
+        o.companies.del(name)
+      return (true, true, reapedExitCode, true, "")
     sleep(50)
   # Escalate to SIGKILL.
   warnCF("daemon_orch", "SIGTERM grace expired, escalating to SIGKILL",
@@ -300,8 +314,6 @@ proc stopGateway(o: Orchestrator, name, path: string, timeoutMs: int = StopGrace
   sleep(200)
   acquire(o.lock); defer: release(o.lock)
   if o.companies.hasKey(name):
-    if o.companies[name].process != nil:
-      o.companies[name].process.close()
     o.companies.del(name)
   (true, true, -9, false, "SIGKILL escalation")
 
