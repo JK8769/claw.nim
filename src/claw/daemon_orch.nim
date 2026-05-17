@@ -535,9 +535,14 @@ proc renderCompaniesBody(o: Orchestrator): string =
   ##
   ## Wrap rows in a single <Box> root: Zen's applyUpdate calls
   ## parseDoc() which requires exactly one top-level element.
+  ##
+  ## Source labelling rule: rows from `~` (home) are bare — home is
+  ## the default mental model and labelling it would add noise to the
+  ## common case. Rows from any mounted volume get a `(volume-name)`
+  ## suffix so operators can see which companies disappear if they
+  ## unplug a drive. Home rows that COLLIDE with a volume entry get
+  ## "(~)" too, so the duplicates are visually distinguishable.
   let companies = scanCompanies()
-  # Which names show up more than once? Those rows render a source
-  # disambiguator like "SunGrowCN (~)" / "SunGrowCN (SSD256G)".
   var nameCount: Table[string, int]
   for (n, _) in companies:
     nameCount[n] = nameCount.getOrDefault(n, 0) + 1
@@ -547,7 +552,9 @@ proc renderCompaniesBody(o: Orchestrator): string =
     let status = statusFor(o, n, p)
     let livePid = if processAlive(pidNum): pidNum else: 0
     let source = companySource(p)
-    let showSource = nameCount.getOrDefault(n, 0) > 1
+    let isHome = source == "home"
+    let dup = nameCount.getOrDefault(n, 0) > 1
+    let showSource = (not isHome) or dup
     rows.add(renderCompanyRow(n, source, status, livePid, showSource))
   let inner =
     if rows.len == 0: "<Text content=\"(no companies found)\"/>"
