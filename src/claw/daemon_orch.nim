@@ -547,20 +547,16 @@ proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
 
-const SpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-var gSpinnerTick: int = 0
-  ## Incremented by the statePollLoop each tick. Used to advance the
-  ## spinner glyph in rows that are in a transitional state, so the
-  ## dashboard animates "starting…" / "stopping…" instead of going
-  ## static for several seconds.
-
 proc renderCompanyRow(name, source, status: string, pid: int,
                       showSource: bool): string =
-  ## One row per company. Each row renders as a primary action followed
-  ## by an optional [remove]. The DOM `id` includes a `@source` suffix
-  ## so two same-named companies on different volumes route to distinct
-  ## click targets. `showSource = true` also appends a `(source-tag)` to
-  ## the visible name so operators can tell them apart.
+  ## One row per company. Each row is a flex-row Box containing:
+  ##   <Spinner active=""/>   (only when status is transient)
+  ##   <Text id="..." clickable> NAME • status • pid • [action] </Text>
+  ##   <Text id="remove-..." clickable> [remove] </Text>     (only when stopped)
+  ##
+  ## The Spinner is a client-side TTML primitive (zen-latest) that
+  ## animates from its own tick clock — the daemon emits it once and
+  ## Zen handles frame advance locally. No per-frame re-broadcast.
   let pidStr = if pid > 0: $pid else: "—"
   let inMotion = status == "running" or status == "starting" or status == "stopping"
   let isTransient = status == "starting" or status == "stopping"
@@ -570,15 +566,11 @@ proc renderCompanyRow(name, source, status: string, pid: int,
   let actionId = action & "-" & compound
   let srcLabel = if source == "home": "~" else: source
   let displayName = if showSource: name & " (" & srcLabel & ")" else: name
-  # Spinner glyph for transient states; blank space for steady ones so
-  # the row width stays consistent (no left-shift when the spinner
-  # disappears).
-  let spinner =
-    if isTransient: SpinnerFrames[gSpinnerTick mod SpinnerFrames.len] & " "
-    else: "  "
-  let line = spinner & displayName & "  •  " & status & "  •  pid " &
-             pidStr & "  •  " & actionLabel
+  let line = displayName & "  •  " & status & "  •  pid " & pidStr &
+             "  •  " & actionLabel
   result.add "<Box class=\"flex-row\">"
+  if isTransient:
+    result.add "<Spinner/>"
   result.add "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
              xmlEscape(line) & "  \"/>"
   if status == "stopped":
@@ -961,21 +953,18 @@ proc statePollLoop(orch: Orchestrator) {.thread, gcsafe.} =
       sleep(StatePollMs)
       if orch.shutdownRequested: break
       var changed = false
-      var anyTransient = false
       var seen: Table[string, string] = initTable[string, string]()
       for (n, p) in scanCompanies():
         let key = n & "@" & companySource(p)
         let s = statusFor(orch, n, p)
         seen[key] = s
-        if s == "starting" or s == "stopping": anyTransient = true
         if last.getOrDefault(key, "") != s: changed = true
       for k in last.keys:
         if not seen.hasKey(k): changed = true
-      # Broadcast if (a) any row changed state, OR (b) a row is in a
-      # transient state — case (b) advances the spinner glyph so the
-      # dashboard animates "starting…" instead of going static.
-      if not changed and not anyTransient: continue
-      if anyTransient: inc gSpinnerTick
+      # Only broadcast on real state change. The <Spinner/> primitive
+      # animates client-side from its own tick clock — no need to
+      # re-broadcast every poll just to advance a glyph.
+      if not changed: continue
       last = seen
       acquire(orch.clientsLock)
       let hasClients = orch.clients.len > 0
