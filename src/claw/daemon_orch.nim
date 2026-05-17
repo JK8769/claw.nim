@@ -10,7 +10,7 @@
 ## startProcess(getAppFilename(), ["gateway"]) with NIMCLAW_DIR=<co_path>
 ## in the env. No new artifact required.
 
-import std/[asyncdispatch, json, tables, os, osproc, posix, strutils,
+import std/[asyncdispatch, json, tables, sets, os, osproc, posix, strutils,
             times, sequtils, locks, options, strformat, strtabs, net,
             exitprocs]
 import mummy, mummy/routers
@@ -78,12 +78,24 @@ proc scanCompanies(): seq[tuple[name, path: string]] =
   ## though it can still HANG the calling thread — for that case the
   ## user must `diskutil unmount force <vol>`. (A timeout-aware scan
   ## would need a thread + watchdog; not worth it for now.)
+  ##
+  ## **Dedup by name**: home wins over volume roots. If the same
+  ## company name shows up in both `~/.nimclaw-X` and a mounted volume,
+  ## the row would otherwise render twice with the same DOM id, which
+  ## confuses Zen's TtmlWidget (findById picks one but the renderer
+  ## keeps both — clicking the second is undefined behavior). Pick a
+  ## stable one. Home is preferred because it's not at risk of
+  ## disappearing on USB unplug.
   result = @[]
+  var seen: HashSet[string] = initHashSet[string]()
   let home = getHomeDir()
   try:
     for kind, p in walkDir(home):
       if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
-        result.add((companyNameFromPath(p), p))
+        let name = companyNameFromPath(p)
+        if name notin seen:
+          seen.incl name
+          result.add((name, p))
   except CatchableError as e:
     warnCF("daemon_orch", "scanCompanies: home dir walk failed",
            {"home": home, "error": e.msg}.toTable)
@@ -103,7 +115,13 @@ proc scanCompanies(): seq[tuple[name, path: string]] =
       try:
         for kind, p in walkDir(volPath):
           if kind == pcDir and lastPathPart(p).startsWith(".nimclaw-") and isNimclawDir(p):
-            result.add((companyNameFromPath(p), p))
+            let name = companyNameFromPath(p)
+            if name notin seen:
+              seen.incl name
+              result.add((name, p))
+            else:
+              infoCF("daemon_orch", "scanCompanies: skipping duplicate name",
+                     {"name": name, "path": p}.toTable)
       except CatchableError as e:
         warnCF("daemon_orch", "scanCompanies: per-volume walk failed; skipping",
                {"volume": volPath, "error": e.msg}.toTable)
