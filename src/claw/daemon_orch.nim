@@ -558,33 +558,40 @@ proc emitZen(j: JsonNode) =
 
 proc renderCompanyRow(name, source, status: string, pid: int,
                       showSource: bool): string =
-  ## One row per company. Each row is a flex-row Box containing:
-  ##   <Spinner active=""/>   (only when status is transient)
-  ##   <Text id="..." clickable> NAME • status • pid • [action] </Text>
-  ##   <Text id="remove-..." clickable> [remove] </Text>     (only when stopped)
+  ## One row per company. The action slot at the right end either
+  ## shows the click target (`[start]` / `[stop]`) when settled, or
+  ## a `<Spinner/>` when the gateway is mid-transition — the spinner
+  ## literally *replaces* the button so operators see the action they
+  ## just clicked is in flight, and can't double-click during the
+  ## window. For `stopped` rows, a separate `[remove]` slot follows.
   ##
-  ## The Spinner is a client-side TTML primitive (zen-latest) that
-  ## animates from its own tick clock — the daemon emits it once and
-  ## Zen handles frame advance locally. No per-frame re-broadcast.
+  ## Layout (left to right):
+  ##   NAME (source) • status • pid N    [start|stop|⠋]   [remove?]
+  ##                                     |__action slot   |__remove slot
   let pidStr = if pid > 0: $pid else: "—"
-  let inMotion = status == "running" or status == "starting" or status == "stopping"
   let isTransient = status == "starting" or status == "stopping"
-  let action = if inMotion: "stop" else: "start"
-  let actionLabel = if inMotion: "[stop]" else: "[start]"
+  let isRunning = status == "running"
   let compound = name & "@" & source
-  let actionId = action & "-" & compound
   let srcLabel = if source == "home": "~" else: source
   let displayName = if showSource: name & " (" & srcLabel & ")" else: name
-  let line = displayName & "  •  " & status & "  •  pid " & pidStr &
-             "  •  " & actionLabel
+  let info = displayName & "  •  " & status & "  •  pid " & pidStr & "  "
   result.add "<Box class=\"flex-row\">"
+  # Non-clickable info text — the visible identity + status of the row.
+  result.add "<Text content=\"" & xmlEscape(info) & "\"/>"
+  # Action slot: spinner while transient, otherwise the clickable
+  # start/stop label.
   if isTransient:
     result.add "<Spinner/>"
-  result.add "<Text id=\"" & xmlEscape(actionId) & "\" clickable=\"\" content=\"" &
-             xmlEscape(line) & "  \"/>"
+  elif isRunning:
+    result.add "<Text id=\"stop-" & xmlEscape(compound) &
+               "\" clickable=\"\" content=\"[stop]\"/>"
+  else:  # stopped / crashed / unavailable
+    result.add "<Text id=\"start-" & xmlEscape(compound) &
+               "\" clickable=\"\" content=\"[start]\"/>"
+  # Remove slot: only when fully stopped.
   if status == "stopped":
     result.add "<Text id=\"remove-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\"[remove]\"/>"
+               "\" clickable=\"\" content=\"  [remove]\"/>"
   result.add "</Box>"
 
 proc renderCompaniesBody(o: Orchestrator): string =
