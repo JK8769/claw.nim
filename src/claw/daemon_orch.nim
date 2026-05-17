@@ -12,7 +12,7 @@
 
 import std/[asyncdispatch, json, tables, sets, os, osproc, posix, strutils,
             times, sequtils, locks, options, strformat, strtabs, net,
-            exitprocs, unicode]
+            exitprocs]
 import mummy, mummy/routers
 import logger
 
@@ -560,8 +560,11 @@ proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
 
-const LogPreviewWidth = 96
 const LogExpandedLines = 8
+  ## How many source lines to pull when [logs] is toggled open.
+  ## Doubles as the `h=` of the Markdown box — soft-wrap may push a
+  ## single source line onto multiple visual rows, but the box scrolls
+  ## bottom-aligned, so the latest line is always visible.
 
 proc tailLines(filePath: string, n: int): seq[string] =
   ## Read up to the last `n` non-empty lines from a file. Cheap enough
@@ -576,20 +579,6 @@ proc tailLines(filePath: string, n: int): seq[string] =
     if lines.len <= n: return lines
     return lines[lines.len - n .. ^1]
   except CatchableError: return @[]
-
-proc clip(s: string, w: int): string =
-  ## Truncate a string at rune-width `w`, adding "…" if shortened.
-  ## TTML's <Text> is single-row and doesn't wrap; this is the
-  ## practical fallback for displaying a long line in a fixed slot.
-  var n = 0
-  var taken = ""
-  for r in s.runes:
-    if n >= w - 1:
-      taken.add "…"
-      return taken
-    taken.add $r
-    inc n
-  taken
 
 proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
                       pid: int, showSource: bool): string =
@@ -606,7 +595,7 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
   ## If the row is "crashed" we also append the LAST line of its stderr
   ## inline below the main row — that's usually the immediate failure
   ## cause (port already in use, missing API key, etc.) without needing
-  ## a click. The `[logs]` click expands to the last 20 lines.
+  ## a click. The `[logs]` click expands to `LogExpandedLines` lines.
   let pidStr = if pid > 0: $pid else: "—"
   let isTransient = status == "starting" or status == "stopping"
   let isRunning = status == "running"
@@ -615,13 +604,11 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
   let srcLabel = if source == "home": "~" else: source
   let displayName = if showSource: name & " (" & srcLabel & ")" else: name
   let info = displayName & "  •  " & status & "  •  pid " & pidStr & "  "
-  # Group the row's controls + its inline log lines into one column so
-  # they read as a single unit. Layout-wise:
+  # Group the row's controls + its inline log diagnostic into one column
+  # so they read as a single unit. Layout-wise:
   #   <Box class="flex-col">
   #     <Box class="flex-row">[info] [action] [logs] [remove]</Box>
-  #     <Text>  └─ log line 1</Text>           ← only when crashed/expanded
-  #     <Text>  └─ log line 2</Text>
-  #     ...
+  #     <Markdown h="…" content="…"/>          ← only when crashed/expanded
   #   </Box>
   result.add "<Box class=\"flex-col\">"
   result.add "<Box class=\"flex-row\">"
@@ -646,19 +633,27 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
     result.add "<Text id=\"remove-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"  [remove]\"/>"
   result.add "</Box>"   # close the flex-row of controls
-  # Inline diagnostic line(s) under the main row. Each line is its own
-  # <Text> (TTML has no soft-wrap primitive); long lines are clipped
-  # with an ellipsis so the dashboard stays readable.
+  # Inline diagnostic under the main row. Uses <Markdown> rather than
+  # raw <Text>s because Markdown is the read-only TTML primitive that
+  # soft-wraps at rect.w + scrolls bottom-aligned (latest at the bottom).
+  # Line breaks are encoded as `&#10;` entities so the XML attribute
+  # parser preserves them; Markdown's factory then splits on '\n' and
+  # lays out one source line per row, wrapping further as needed.
+  # Each line is xml-escaped individually BEFORE we splice in the
+  # entity — escaping after the join would turn `&#10;` into `&amp;#10;`
+  # and the parser would see a literal token instead of a newline.
   if status == "crashed" or compound in o.expandedLogs:
     let logPath = path / "logs" / "gateway.stderr.log"
     let nLines = if compound in o.expandedLogs: LogExpandedLines else: 1
-    let lines = tailLines(logPath, nLines)
-    if lines.len == 0:
-      result.add "<Text content=\"  └─ (no gateway.stderr.log yet)\"/>"
-    else:
-      for line in lines:
-        result.add "<Text content=\"  └─ " &
-                   xmlEscape(clip(line, LogPreviewWidth)) & "\"/>"
+    let raw = tailLines(logPath, nLines)
+    let src = if raw.len == 0: @["(no gateway.stderr.log yet)"] else: raw
+    # The dashboard frame is narrow, so prefix each line with "  └─ "
+    # to keep it visually tied to the row even after a wrap.
+    result.add "<Markdown h=\"" & $nLines & "\" content=\""
+    for i, line in src:
+      if i > 0: result.add "&#10;"
+      result.add xmlEscape("  └─ " & line)
+    result.add "\"/>"
   result.add "</Box>"   # close the row's flex-col wrapper
 
 proc renderCompaniesBody(o: Orchestrator): string =
