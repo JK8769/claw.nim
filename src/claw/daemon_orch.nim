@@ -192,8 +192,28 @@ proc summariseCompany(o: Orchestrator, name, path: string): JsonNode =
 # ── Spawn / stop ─────────────────────────────────────────────────
 
 proc spawnGateway(o: Orchestrator, name, path: string): tuple[ok: bool, pid: int, err: string] =
-  let alive = processAlive(readPidFile(path))
-  if alive:
+  ## Idempotent spawn: takes the orchestrator lock for the WHOLE
+  ## decision, so a concurrent caller (e.g. a double-click that fires
+  ## before the first swap has flipped the row's id from start- to
+  ## stop-) sees the "already tracked" entry and returns the existing
+  ## pid instead of spawning a second gateway and overwriting the
+  ## first's PID file.
+  acquire(o.lock); defer: release(o.lock)
+  # Fast path: a previous spawn already added an in-memory entry.
+  # Use that as the authoritative "we just started this" signal,
+  # because the PID file may not have been written yet by the child.
+  if o.companies.hasKey(name) and o.companies[name].process != nil:
+    let e = o.companies[name]
+    let pidFromMem = e.pid
+    if pidFromMem > 0 and processAlive(pidFromMem):
+      return (true, pidFromMem, "")
+    # In-memory entry but the process we tracked is no longer alive —
+    # clear it and fall through to spawn afresh.
+    o.companies.del(name)
+  # Disk-file fallback: maybe the gateway was started in a previous
+  # daemon session and the PID file is still authoritative.
+  let diskAlive = processAlive(readPidFile(path))
+  if diskAlive:
     return (true, readPidFile(path), "")
   let binPath = getAppFilename()
   if not fileExists(binPath):
@@ -206,8 +226,6 @@ proc spawnGateway(o: Orchestrator, name, path: string): tuple[ok: bool, pid: int
   let stdoutLog = logsDir / "gateway.stdout.log"
   let stderrLog = logsDir / "gateway.stderr.log"
   var env: StringTableRef
-  ## Inherit current env, override NIMCLAW_DIR. We can't use `osproc.startProcess`'s
-  ## env replacement (which is full replacement, not delta), so we duplicate.
   env = newStringTable()
   for k, v in envPairs(): env[k] = v
   env["NIMCLAW_DIR"] = path
@@ -215,8 +233,6 @@ proc spawnGateway(o: Orchestrator, name, path: string): tuple[ok: bool, pid: int
     let p = startProcess(binPath, args = @["gateway"],
                          env = env,
                          options = {})
-    acquire(o.lock)
-    defer: release(o.lock)
     o.companies[name] = CompanyEntry(
       name: name, path: path,
       pid: p.processID,
