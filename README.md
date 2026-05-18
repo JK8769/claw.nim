@@ -331,6 +331,12 @@ Channel ── MessageBus ── Gateway ── AgentLoop ── Provider(LLM) �
 - **Tools** (`src/claw/tools/`): filesystem, shell, web, cron, git, MCP, hardware (i2c/spi), TTS, ...
 - **Skills** (`src/claw/skills/`): SKILL.md parsers + loader + indexer
 - **Services** (`src/claw/services/`): CronService, HeartbeatService
+- **Daemon dashboard** (`src/claw/daemon_orch.nim`): the 🦞 nimclaw
+  tab in Zen. Pure TTML producer — emits markup strings to Zen over a
+  Unix socket and never imports any rendering code. See
+  [`docs/dashboard-architecture.md`](./docs/dashboard-architecture.md)
+  for the four-layer model (claw → ttml → tui → zen) and the
+  HTMX/Web-Components analog it follows.
 
 ---
 
