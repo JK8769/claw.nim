@@ -70,16 +70,25 @@ running_daemon_pid() {
   if kill -0 "$pid" 2>/dev/null; then echo "$pid"; else echo ""; fi
 }
 
-# Print the install dir the running daemon's binary is mmap'd from.
-# Empty string if no daemon running.
-running_daemon_install_dir() {
+# Print the path of the executable the running daemon's process is
+# running. Empty string if no daemon running. Handles both the cached
+# install path (`claw.out`) and the source-repo build path (`claw`).
+running_daemon_binary() {
   local pid; pid=$(running_daemon_pid)
   if [[ -z "$pid" ]]; then echo ""; return; fi
-  # lsof shows the binary path under TYPE=REG with command name "claw.out"
-  local binpath
-  binpath=$(lsof -p "$pid" 2>/dev/null | awk '$4 == "txt" && $5 == "REG" && $NF ~ /claw\.out$/ { print $NF; exit }')
-  if [[ -z "$binpath" ]]; then echo ""; return; fi
-  dirname "$binpath"
+  # lsof's TYPE=REG line with FD=txt is the executable being run.
+  # macOS lsof column order: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+  lsof -p "$pid" 2>/dev/null \
+    | awk '$4 == "txt" && $5 == "REG" && ($NF ~ /\/claw(\.out)?$/) { print $NF; exit }'
+}
+
+# Print the install dir of the running daemon's binary — useful for
+# the cleanup keep-list. For cache installs this is the pkgs2/<hash>/
+# parent; for repo builds it's the repo root.
+running_daemon_install_dir() {
+  local bin; bin=$(running_daemon_binary)
+  [[ -z "$bin" ]] && { echo ""; return; }
+  dirname "$bin"
 }
 
 # Resolve symlinks src/{res,templates,deps} → ../{res,templates,deps}.
@@ -186,10 +195,18 @@ cmd_status() {
 
   echo
   if [[ -n "$pid" ]]; then
+    local daemon_bin; daemon_bin=$(running_daemon_binary)
     echo "  ${C_BOLD}daemon${C_RESET}       : ${C_GREEN}running${C_RESET} (pid $pid)"
-    echo "  ${C_BOLD}daemon binary${C_RESET}: $running"
-    if [[ "$current" != "$running" ]]; then
-      warn "daemon is on a DIFFERENT install than the symlink — restart to pick up the new code"
+    echo "  ${C_BOLD}daemon binary${C_RESET}: ${daemon_bin:-(not detectable)}"
+    # Note the binary, not the install dir, since dev builds may run
+    # directly from the source repo (./claw, no install dir).
+    if [[ -L "$NIMBLE_BIN" ]]; then
+      local sym_bin; sym_bin=$(readlink -f "$NIMBLE_BIN" 2>/dev/null || \
+        { cd "$(dirname "$NIMBLE_BIN")" && cd "$(dirname "$(readlink "$NIMBLE_BIN")")" && pwd; } 2>/dev/null
+      )/claw.out
+      if [[ -n "$daemon_bin" && "$daemon_bin" != "$sym_bin" ]]; then
+        warn "daemon is on a DIFFERENT binary than ~/.nimble/bin/claw — restart to pick up new code"
+      fi
     fi
   else
     echo "  ${C_BOLD}daemon${C_RESET}       : ${C_DIM}not running${C_RESET}"

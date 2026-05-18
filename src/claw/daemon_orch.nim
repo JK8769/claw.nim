@@ -1152,6 +1152,11 @@ type ZenClickResult* = enum
   zcrLog           ## emit user-facing hint via `log` event (msg from hintFor)
   zcrUnknown       ## unknown target — caller logs warning
   zcrQuit          ## #quit-daemon — caller initiates shutdown
+  zcrRestart       ## #restart-daemon — caller spawns a fresh daemon via
+                   ## the shell, then quits this one. Background `sleep 1`
+                   ## in the spawn gives our exitprocs time to release
+                   ## admin.pid + admin.sock before the new daemon tries
+                   ## to bind them.
 
 proc clickHint*(id: string): string =
   ## User-facing hint for placeholder click targets. Returned via the
@@ -1159,11 +1164,26 @@ proc clickHint*(id: string): string =
   ## having to wire up subprocess spawn / daemon-restart yet.
   let bare = if id.startsWith("#"): id[1..^1] else: id
   case bare
-  of "restart-daemon":
-    "To restart the daemon: pkill -TERM -f 'claw daemon' && claw daemon start"
   of "view-daemon-log":
     "Tail the daemon log: tail -f " & daemonLogFile()
   else: ""
+
+proc spawnDetachedDaemon() =
+  ## Kick off a fresh `claw daemon start` as a process detached from
+  ## ours via `nohup … &`. The 1-second sleep front-loads the wait
+  ## for our own exitprocs to clean up admin.pid and admin.sock — by
+  ## the time the new daemon actually `bindUnix`'s the socket, the
+  ## old one is gone.
+  ##
+  ## Detached: parent process group is the shell, not us, so the new
+  ## daemon survives our `quit(0)`. stdout/stderr go to /dev/null
+  ## because we won't be around to consume them, and a hanging
+  ## stdio would prevent the shell from returning.
+  let bin = getAppFilename()
+  let cmd = "nohup sh -c 'sleep 1; " &
+            quoteShell(bin) & " daemon start" &
+            "' > /dev/null 2>&1 &"
+  discard execShellCmd(cmd)
 
 proc dispatchCreateFromTemplate*(o: Orchestrator,
                                   templateName: string): tuple[ok: bool, err, name: string] =
@@ -1230,9 +1250,10 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   of "nav-setting":
     acquire(o.lock); defer: release(o.lock)
     o.activeTab = tabSetting; return zcrTabChange
-  of "quit-daemon":   return zcrQuit
-  of "refresh-all":   return zcrOk
-  of "restart-daemon", "view-daemon-log":
+  of "quit-daemon":     return zcrQuit
+  of "restart-daemon":  return zcrRestart
+  of "refresh-all":     return zcrOk
+  of "view-daemon-log":
     return zcrLog
   of "new-company":
     # Toggle the inline template picker. Re-renders the Company tab
@@ -1337,6 +1358,16 @@ proc runZenLoop(orch: Orchestrator, pane: string) =
           emitZen(%*{"event":"log","level":"info","text": hint})
       of zcrQuit:
         emitZen(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
+        quit(0)
+      of zcrRestart:
+        # Spawn a fresh daemon detached, then quit. The new daemon's
+        # bind on admin.sock will succeed because our exitprocs clean
+        # up the old one before our quit(0) call returns control to
+        # the OS, and the new daemon's `sleep 1` defers its bind until
+        # after that.
+        emitZen(%*{"event":"log","level":"info",
+                    "text":"Restarting daemon — reopen 🦞 nimclaw in ~2s."})
+        spawnDetachedDaemon()
         quit(0)
       of zcrUnknown:
         emitZen(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
@@ -1502,6 +1533,14 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
         emitTo(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
         # Daemon-wide exit. Other connected clients (if any) will see
         # their sockets drop. The exitprocs will clean up the PID file.
+        quit(0)
+      of zcrRestart:
+        # Spawn a fresh daemon detached, then quit. Broadcast to every
+        # attached client (multi-tab Zen) so they all see the restart
+        # notice — not just the one who clicked.
+        orch.broadcast(%*{"event":"log","level":"info",
+                           "text":"Restarting daemon — reopen 🦞 nimclaw in ~2s."})
+        spawnDetachedDaemon()
         quit(0)
       of zcrUnknown:
         emitTo(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
