@@ -19,13 +19,18 @@ requires "webby"
 requires "mummy"
 requires "nimcrypto"
 requires "unicodedb"
-# TTML — markup spec + builder API for the Zen dashboard. The daemon
-# uses ttml/build to construct dashboard trees safely (typed enums +
-# a serializer that handles XML attribute-normalization edge cases
-# that bit our string-concatenation approach). Dev override in
-# config.nims points to a sibling working tree; in production this
-# resolves via the standard nimble cache from the GitHub repo.
-requires "https://github.com/JK8769/ttml.git >= 0.2.0"
+# TTML markup spec + producer-side smart constructors for tui's
+# extension tags. The daemon's dashboard work imports:
+#   • ttml/build for standard-tag construction (Box, Text, Rule, …)
+#   • tui/spec/<widget> for typed extension-tag builders (e.g.
+#     tContextMenu for the [+ New company] picker)
+# Neither pulls in any rendering code — `nm` on the built claw binary
+# shows 0 symbols from tui/runtime or tui/components. The two-package
+# dependency captures the spec+spec-shim surface a producer needs.
+# Dev overrides in config.nims point at sibling working trees;
+# production resolves via the nimble cache from the GitHub repos.
+requires "https://github.com/JK8769/ttml.git >= 0.3.0"
+requires "https://github.com/JK8769/tui.git >= 0.1.0"
 
 # Standard build switches
 switch("define", "ssl")
