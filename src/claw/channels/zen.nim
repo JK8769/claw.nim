@@ -180,6 +180,23 @@ method capabilities*(c: ZenChannel): ChannelCapabilities =
     formatting: @["plain", "markdown", "zen_pane"]
   )
 
+proc reconnectLoop(c: ZenChannel) {.async.} =
+  ## Background retry loop. Polls ~/.zen/zen.sock every
+  ## `ReconnectIntervalMs` until the channel either connects or the
+  ## owning gateway shuts down. Without this, a gateway started
+  ## before zen comes up stays disconnected forever — the user has
+  ## to manually restart the daemon. Fixes the "open zen, see
+  ## (no agents loaded), have to restart claw" footgun.
+  while c.running and not c.connected:
+    await sleepAsync(ReconnectIntervalMs)
+    if not c.running: break
+    if c.connected: break
+    if tryConnect(c):
+      createThread(c.readerThread, readerLoop, ZenReaderArgs(channel: c))
+      if c.onReconnect != nil: c.onReconnect()
+      infoC("zen", "Connected after retry")
+      return
+
 method start*(c: ZenChannel) {.async.} =
   if c.running:
     infoC("zen", "Zen channel already running")
@@ -187,11 +204,14 @@ method start*(c: ZenChannel) {.async.} =
 
   c.running = true
   infoC("zen", "Starting Zen channel...")
-  # Try once — Zen will trigger reconnect via RPC if needed later
   if tryConnect(c):
     createThread(c.readerThread, readerLoop, ZenReaderArgs(channel: c))
   else:
-    infoC("zen", "Zen not available, waiting for reconnect signal")
+    # Zen not up yet — keep polling in the background. The retry
+    # loop exits when we connect, when the gateway stops, or when
+    # the channel is otherwise shut down.
+    infoC("zen", "Zen not available, polling in background")
+    asyncCheck reconnectLoop(c)
 
 method stop*(c: ZenChannel) {.async.} =
   c.running = false
