@@ -27,6 +27,35 @@ nimble test
 
 Requires Nim 2.0+. Build flags `--define:ssl --define:release --threads:on` are set in `claw.nimble` and `config.nims`.
 
+### macOS: kill-then-rebuild discipline (or you wedge processes)
+
+**Never run `nimble install -y` or `nimble build` while a previous `claw daemon` / `claw gateway` / any other claw or zen process is still alive.** macOS handles in-place executable replacement strictly: when `mv` overwrites a binary that's mmap'd by a running process, the next page fault that needs to read a not-yet-resident code page from disk hits a stale inode and the process enters `UE` (uninterruptible exit) — kernel cannot recover or reap it. The process is permanently stuck until reboot, even with `kill -9`. Linux survives this via `/proc/<pid>/exe`; macOS does not.
+
+Symptom: `ps aux` shows processes with status `UE` or `UEs+`, age growing, can't be killed. Subsequent `claw daemon start` and `claw daemon status` invocations may also wedge for related reasons (dyld cache inconsistency).
+
+Correct order for every rebuild cycle:
+
+```bash
+# 1. Stop and verify EVERYTHING gone first
+pkill -TERM -f "claw"; pkill -TERM -f "^zen"
+sleep 1
+pkill -KILL -f "claw"; pkill -KILL -f "^zen"
+sleep 1
+ps aux | grep -E "claw|^owaf.*zen" | grep -v grep | grep -v claude   # must be empty
+
+# 2. Clean up sockets / pid files
+rm -f ~/.nimclawd/admin.sock ~/.nimclawd/admin.pid ~/.zen/zen.sock
+rm -f ~/.nimclawd/*/nimclaw.sock 2>/dev/null
+
+# 3. THEN rebuild
+nimble install -y
+
+# 4. THEN restart
+claw daemon start
+```
+
+If you see UE processes accumulating, that's a sign the kill-then-rebuild order was violated somewhere. They'll sit there until reboot but don't block new processes (they hold no live sockets/locks).
+
 ## Architecture
 
 ### Single Binary
