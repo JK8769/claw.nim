@@ -175,68 +175,66 @@ proc tryConnect(c: ZenChannel): bool =
     try: c.sock.close() except: discard
   return false
 
+proc handleZenMessage(c: ZenChannel, req: JsonNode) {.gcsafe.} =
+  ## Process one parsed JSON message from zen.
+  {.cast(gcsafe).}:
+    let meth = req{"method"}.getStr("")
+    case meth
+    of "chat.message":
+      let chatId = req{"chat_id"}.getStr("")
+      let agent = req{"agent"}.getStr("")
+      let content = req{"content"}.getStr("")
+      if content.len > 0:
+        var meta = initTable[string, string]()
+        meta["zen_chat_id"] = chatId
+        let user = if c.zenUser.len > 0: c.zenUser else: "zen_user"
+        # Local-trust auto-bind. Runs once per connection. When the
+        # connecting zen process is the same OS user as this daemon
+        # AND the company has a SuperAdmin without a `zen` binding
+        # yet, stamp the binding directly (skip the invite-code
+        # roundtrip). See docs/zen-local-trust-binding.md.
+        if not c.autoBindAttempted and
+           c.peerUid >= 0 and c.peerUid == getuid().int:
+          c.autoBindAttempted = true
+          let graph = loadWorld(c.workspace)
+          if graph != nil:
+            if autoBindLocalCreator(graph, c.workspace, "zen", user):
+              infoCF("zen", "Auto-bound trusted local user",
+                     {"user": user, "uid": $c.peerUid}.toTable)
+            else:
+              infoCF("zen", "No auto-bind candidate; using invite flow",
+                     {"user": user}.toTable)
+        c.handleMessage(user, chatId, content,
+                       metadata = meta, recipientID = agent)
+        infoCF("zen", "Received message", {"chat_id": chatId, "agent": agent}.toTable)
+    else: discard
+
 proc readerLoop(args: ZenReaderArgs) {.thread, gcsafe.} =
-  ## Read messages until disconnect. No reconnect — Zen initiates reconnection.
+  ## Outer loop: while the channel is running. Inner loop: while
+  ## connected, read+dispatch. On disconnect, poll `tryConnect`
+  ## every `ReconnectIntervalMs` until either zen comes back (jump
+  ## back to the inner read loop) or the channel shuts down. This
+  ## means a zen restart no longer requires a gateway restart.
   let c = args.channel
   {.cast(gcsafe).}:
     infoC("zen", "Reader thread started")
-    while c.running and c.connected:
-      let data = try: recvMsg(c.sock)
-                 except: ""
-      if data == "":
-        infoC("zen", "Disconnected from Zen")
-        c.connected = false
-        try: c.sock.close() except: discard
-        break
-
-      let req = try: parseJson(data)
-                except: continue
-      let meth = req{"method"}.getStr("")
-
-      case meth
-      of "chat.message":
-        let chatId = req{"chat_id"}.getStr("")
-        let agent = req{"agent"}.getStr("")
-        let content = req{"content"}.getStr("")
-        if content.len > 0:
-          var meta = initTable[string, string]()
-          meta["zen_chat_id"] = chatId
-          # Route as `c.zenUser` (e.g., `local:owaf`), not the legacy
-          # hardcoded `"zen_user"` — gives the bind flow a per-user
-          # identifier to attach SuperAdmin / Customer entities to.
-          let user = if c.zenUser.len > 0: c.zenUser else: "zen_user"
-          # Local-trust auto-bind. Runs once per connection. When the
-          # connecting zen process is the same OS user as this daemon
-          # AND the company has a SuperAdmin without a `zen` binding
-          # yet, stamp the binding directly (skip the invite-code
-          # roundtrip). See docs/zen-local-trust-binding.md.
-          #
-          # The trust signal is `peerUid == getuid()` — both
-          # kernel-verified, unspoofable. Idempotent: after the
-          # first successful bind, subsequent messages take the
-          # `c.autoBindAttempted` early-out and resolve via the
-          # normal `resolveSenderEntity` path.
-          if not c.autoBindAttempted and
-             c.peerUid >= 0 and c.peerUid == getuid().int:
-            c.autoBindAttempted = true
-            let graph = loadWorld(c.workspace)
-            if graph != nil:
-              if autoBindLocalCreator(graph, c.workspace, "zen", user):
-                infoCF("zen", "Auto-bound trusted local user",
-                       {"user": user, "uid": $c.peerUid}.toTable)
-              else:
-                # Either no SuperAdmin exists yet (unusual — `claw
-                # create` always bootstraps one) or every SuperAdmin
-                # already has a `zen` binding. Either way, the user
-                # falls through to the standard auth gate.
-                infoCF("zen", "No auto-bind candidate; using invite flow",
-                       {"user": user}.toTable)
-          c.handleMessage(user, chatId, content,
-                         metadata = meta, recipientID = agent)
-          infoCF("zen", "Received message", {"chat_id": chatId, "agent": agent}.toTable)
-      else:
-        discard
-
+    while c.running:
+      while c.running and c.connected:
+        let data = try: recvMsg(c.sock) except: ""
+        if data == "":
+          infoC("zen", "Disconnected from Zen")
+          c.connected = false
+          try: c.sock.close() except: discard
+          break
+        let req = try: parseJson(data) except: nil
+        if req != nil: c.handleZenMessage(req)
+      # Disconnected — retry until zen comes back or we're shut down.
+      while c.running and not c.connected:
+        sleep(ReconnectIntervalMs)
+        if not c.running: break
+        if tryConnect(c):
+          infoC("zen", "Reconnected after mid-life disconnect")
+          break
     infoC("zen", "Reader thread exiting")
 
 proc reconnect*(c: ZenChannel) =
