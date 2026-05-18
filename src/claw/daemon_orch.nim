@@ -638,40 +638,72 @@ proc fmtUptime(secs: float): string =
   elif m > 0: $m & "m " & $s & "s"
   else:       $s & "s"
 
-proc renderNavBar(active: ActiveTab): string =
-  ## Single-row tab strip. Active tab is bold + bright-cyan; the rest
-  ## are dim gray. All four are click targets so the operator can
-  ## navigate freely.
-  result.add "<Box class=\"flex-row\" h=\"1\">"
-  result.add "<Text content=\"  \"/>"
+proc spc(n: int): string =
+  ## Explicit-cell horizontal spacer that DRAWS N spaces.
+  ##
+  ## Encoding nuance: a literal `content="   "` (or trailing whitespace
+  ## anywhere in the attribute) is stripped by XML attribute
+  ## normalization at parse time. Numeric character references like
+  ## `&#32;` are NOT — they survive verbatim. We need an actual drawn
+  ## space (not just a reserved-but-unwritten cell) so that re-renders
+  ## over previously-written content (e.g. when the swap replaces a
+  ## longer tab body with a shorter one) properly clear the cells
+  ## instead of leaving stale chars in the grid.
+  result = "<Text w=\"" & $n & "\" content=\""
+  for _ in 0 ..< n: result.add "&#32;"
+  result.add "\"/>"
+
+proc renderNavBarInner(active: ActiveTab): string =
+  ## Children of #nav. Active tab is bold + bright-cyan; the rest are
+  ## dim gray. Tabs are explicit `w="content"` so the parent flex-row
+  ## reserves only the glyph cells; leading + trailing zero-width
+  ## flex-spacer Texts absorb the remainder and center the strip.
+  ##
+  ## Lives separately from `renderNavBar` (the swap-fragment shape) so
+  ## both the mount layout (inline) and swap event use the SAME children
+  ## under the SAME #nav parent — guarantees layout is identical before
+  ## and after a tab switch.
+  result.add "<Text content=\"\"/>"   # flex leader (absorbs left pad)
   var first = true
   for t in ActiveTab:
-    if not first: result.add "<Text content=\"   \"/>"
+    if not first: result.add "<Text content=\"   \" w=\"3\"/>"
     first = false
     if t == active:
       result.add "<Text id=\"" & tabId(t) &
-                 "\" clickable=\"\" bold=\"\" fg=\"bright-cyan\" content=\"" &
+                 "\" clickable=\"\" bold=\"\" fg=\"bright-cyan\" w=\"content\" content=\"" &
                  tabLabel(t) & "\"/>"
     else:
       result.add "<Text id=\"" & tabId(t) &
-                 "\" clickable=\"\" fg=\"gray\" content=\"" &
+                 "\" clickable=\"\" fg=\"gray\" w=\"content\" content=\"" &
                  tabLabel(t) & "\"/>"
-  result.add "</Box>"
+  result.add "<Text content=\"\"/>"   # flex trailer (absorbs right pad)
+
+proc renderNavBar(active: ActiveTab): string =
+  ## Swap-fragment wrapper for #nav. applyUpdate discards the wrapper
+  ## Box; its children replace #nav's. Same content as the mount
+  ## inlines via `renderNavBarInner`.
+  "<Box>" & renderNavBarInner(active) & "</Box>"
 
 # ── Company tab ──────────────────────────────────────────────────
 
 proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
                       showSource: bool): string =
   ## One row per company.
-  ##   ● NAME            running             [logs] [stop]
-  ##   ○ NAME (USB)      stopped             [start] [logs] [remove]
-  ##   ✗ NAME            crashed             [start] [logs ▾] [remove]
+  ##   ● NAME              running             [logs] [stop]
+  ##   ○ NAME (USB)        stopped             [start] [logs] [remove]
+  ##   ✗ NAME              crashed             [start] [logs ▾] [remove]
   ##     └─ Error: missing ANTHROPIC_API_KEY
-  ##   ⠋ NAME            starting…           (animated spinner)
+  ##   ⠋ NAME              starting…           (animated spinner)
   ##
   ## Source label only shown for non-home (USB / mounted volume) — the
   ## common case keeps the line uncluttered. Pid is hidden from the
   ## main row; if an operator needs it they can read logs/gateway.pid.
+  ##
+  ## Each visible element gets `w="content"`; inter-element spacing is
+  ## explicit `spc(N)` (XML attribute normalization eats trailing
+  ## whitespace, so " NAME  " loses its trailing pad at parse time).
+  ## A flex spacer between the status word and the action buttons keeps
+  ## button columns right-aligned regardless of name length.
   let isTransient = status == "starting" or status == "stopping"
   let isRunning = status == "running"
   let canRemove = status == "stopped" or status == "crashed"
@@ -680,31 +712,39 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
     if source == "home" or not showSource: name
     else: name & " (" & source & ")"
   result.add "<Box class=\"flex-col\">"
-  result.add "<Box class=\"flex-row\">"
-  # Leading status indicator.
+  result.add "<Box class=\"flex-row\" h=\"1\">"
+  result.add spc(2)
+  # Leading status indicator (spinner for transient, glyph otherwise).
   if isTransient:
     result.add "<Spinner/>"
-    result.add "<Text content=\" \"/>"
   else:
     let (glyph, color) = statusGlyph(status)
-    result.add "<Text fg=\"" & color & "\" content=\"" & glyph & " \"/>"
-  result.add "<Text content=\"" & xmlEscape(displayName) & "  \"/>"
-  result.add "<Text fg=\"gray\" content=\"" & xmlEscape(status) & "  \"/>"
+    result.add "<Text fg=\"" & color & "\" w=\"1\" content=\"" & glyph & "\"/>"
+  result.add spc(2)
+  result.add "<Text w=\"content\" content=\"" & xmlEscape(displayName) & "\"/>"
+  result.add spc(2)
+  result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(status) & "\"/>"
+  # Flex spacer pushes the action buttons toward the right edge.
+  result.add "<Text content=\"\"/>"
   # Action buttons.
   if isRunning:
     result.add "<Text id=\"logs-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\" [logs] \"/>"
+               "\" clickable=\"\" w=\"content\" content=\"[logs]\"/>"
+    result.add spc(2)
     result.add "<Text id=\"stop-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\"[stop]\"/>"
+               "\" clickable=\"\" w=\"content\" content=\"[stop]\"/>"
   elif not isTransient:
     result.add "<Text id=\"start-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\"[start]\"/>"
-    let logLabel = if compound in o.expandedLogs: " [logs ▾] " else: " [logs] "
+               "\" clickable=\"\" w=\"content\" content=\"[start]\"/>"
+    result.add spc(2)
+    let logLabel = if compound in o.expandedLogs: "[logs ▾]" else: "[logs]"
     result.add "<Text id=\"logs-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\"" & logLabel & "\"/>"
+               "\" clickable=\"\" w=\"content\" content=\"" & logLabel & "\"/>"
     if canRemove:
+      result.add spc(2)
       result.add "<Text id=\"remove-" & xmlEscape(compound) &
-                 "\" clickable=\"\" content=\"[remove]\"/>"
+                 "\" clickable=\"\" w=\"content\" content=\"[remove]\"/>"
+  result.add spc(2)
   result.add "</Box>"
   # Inline crash diagnostic / expanded log tail (Markdown for soft-wrap +
   # tail-aligned scroll). Newlines encoded as `&#10;` because we're
@@ -722,9 +762,8 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
     result.add "\"/>"
   result.add "</Box>"
 
-proc renderCompanyTab(o: Orchestrator): string =
+proc renderCompanyTabInner(o: Orchestrator): string =
   let companies = scanCompanies()
-  result.add "<Box class=\"flex-col\">"
   if companies.len == 0:
     result.add "<Text fg=\"gray\" content=\"  No companies yet — click [+ New company] below to create one.\"/>"
   else:
@@ -735,13 +774,31 @@ proc renderCompanyTab(o: Orchestrator): string =
                                   showSource = (source != "home"))
   result.add "<Text content=\" \"/>"
   result.add "<Text id=\"new-company\" clickable=\"\" fg=\"bright-green\" content=\"  [+ New company]\"/>"
-  result.add "</Box>"
+
+proc renderCompanyTab(o: Orchestrator): string =
+  "<Box>" & renderCompanyTabInner(o) & "</Box>"
 
 # ── Provider / Model tabs — read framework catalogs ──────────────
 
+const
+  # Bake the JSON catalogs into the binary at compile time. nimble's
+  # `installDirs` is supposed to copy res/ next to the installed binary,
+  # but on at least some installs that doesn't happen and the daemon
+  # can't find the file via getAppDir(). Embedding makes the Provider/
+  # Model tabs work everywhere, regardless of how the binary was
+  # installed or where the daemon's cwd happens to be.
+  ProvidersJsonBaked = staticRead(
+    currentSourcePath().parentDir.parentDir.parentDir /
+      "res" / "providers.json")
+  ModelsJsonBaked = staticRead(
+    currentSourcePath().parentDir.parentDir.parentDir /
+      "res" / "models.json")
+
 proc loadCatalog(filename: string): JsonNode =
-  ## Resolve a res/<filename> against the running binary, mirroring
-  ## resolveTemplatesDir() in claw.nim. Returns nil on miss/parse fail.
+  ## Resolve a res/<filename>. Try filesystem first (so an operator who
+  ## edits res/<filename>.json in the source repo sees the change after
+  ## a daemon restart without recompiling), then fall back to the
+  ## compile-time-baked copy.
   for cand in [
     getCurrentDir() / "res" / filename,
     getAppDir() / "res" / filename,
@@ -750,25 +807,28 @@ proc loadCatalog(filename: string): JsonNode =
     if fileExists(cand):
       try: return parseJson(readFile(cand))
       except CatchableError: discard
+  try:
+    case filename
+    of "providers.json": return parseJson(ProvidersJsonBaked)
+    of "models.json":    return parseJson(ModelsJsonBaked)
+    else: discard
+  except CatchableError: discard
   nil
 
-proc renderProviderTab(o: Orchestrator): string =
+proc renderProviderTabInner(o: Orchestrator): string =
   ## Read-only catalog of LLM providers + per-key configuration status.
   ## Status reflects the daemon's process env (which inherits
   ## ~/.nimclaw/.env on startup). Per-company .env overrides are
   ## intentionally not reflected — this tab is the GLOBAL view.
-  result.add "<Box class=\"flex-col\">"
   result.add "<Text fg=\"gray\" content=\"  LLM providers — ● keyed   ○ no key set in daemon env\"/>"
   result.add "<Text content=\" \"/>"
   let doc = loadCatalog("providers.json")
   if doc == nil:
     result.add "<Text fg=\"red\" content=\"  res/providers.json not found.\"/>"
-    result.add "</Box>"
     return
   let providers = doc{"providers"}
   if providers == nil or providers.kind != JArray or providers.len == 0:
     result.add "<Text fg=\"red\" content=\"  No providers configured in res/providers.json.\"/>"
-    result.add "</Box>"
     return
   for p in providers.items:
     let name = p{"name"}.getStr("")
@@ -777,34 +837,44 @@ proc renderProviderTab(o: Orchestrator): string =
     let defaultModel = p{"defaultModel"}.getStr("")
     let keyed = envKey.len > 0 and existsEnv(envKey)
     let (glyph, color) = if keyed: ("●", "green") else: ("○", "gray")
-    result.add "<Box class=\"flex-row\">"
-    result.add "<Text fg=\"" & color & "\" content=\"  " & glyph & "  \"/>"
-    result.add "<Text bold=\"\" content=\"" & xmlEscape(name) & "  \"/>"
+    result.add "<Box class=\"flex-row\" h=\"1\">"
+    result.add spc(2)
+    result.add "<Text fg=\"" & color & "\" w=\"1\" content=\"" & glyph & "\"/>"
+    result.add spc(2)
+    result.add "<Text bold=\"\" w=\"content\" content=\"" & xmlEscape(name) & "\"/>"
+    result.add spc(2)
     if envKey.len > 0:
-      result.add "<Text fg=\"gray\" content=\"" & xmlEscape(envKey) & "  \"/>"
-    result.add "<Text fg=\"gray\" content=\"" & xmlEscape(apiBase) & "\"/>"
+      result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(envKey) & "\"/>"
+      result.add spc(2)
+    result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(apiBase) & "\"/>"
     result.add "</Box>"
     if defaultModel.len > 0:
-      result.add "<Text fg=\"gray\" content=\"      default model: " &
+      # Indented sub-row under the provider entry. Wrap in flex-row +
+      # `spc(6)` because XML attribute normalization eats leading
+      # whitespace in `content=`, so a bare "      default model: ..."
+      # collapses to a single leading space.
+      result.add "<Box class=\"flex-row\" h=\"1\">"
+      result.add spc(6)
+      result.add "<Text fg=\"gray\" w=\"content\" content=\"default model: " &
                  xmlEscape(defaultModel) & "\"/>"
-  result.add "</Box>"
+      result.add "</Box>"
 
-proc renderModelTab(o: Orchestrator): string =
+proc renderProviderTab(o: Orchestrator): string =
+  "<Box>" & renderProviderTabInner(o) & "</Box>"
+
+proc renderModelTabInner(o: Orchestrator): string =
   ## Read-only catalog of canonical models, grouped by vendor.
   ## Capabilities + context length + modality shown inline.
   ## Deprecated models render dimmer + italic so they don't catch the eye.
-  result.add "<Box class=\"flex-col\">"
   result.add "<Text fg=\"gray\" content=\"  Canonical model catalog (res/models.json)\"/>"
   result.add "<Text content=\" \"/>"
   let doc = loadCatalog("models.json")
   if doc == nil:
     result.add "<Text fg=\"red\" content=\"  res/models.json not found.\"/>"
-    result.add "</Box>"
     return
   let canonical = doc{"canonical"}
   if canonical == nil or canonical.kind != JObject or canonical.len == 0:
     result.add "<Text fg=\"red\" content=\"  No canonical models in catalog.\"/>"
-    result.add "</Box>"
     return
   # Group by vendor for readable display. OrderedTable preserves
   # insertion order so the on-screen ordering matches the JSON file.
@@ -814,8 +884,13 @@ proc renderModelTab(o: Orchestrator): string =
     if vendor notin groups: groups[vendor] = @[]
     groups[vendor].add((k, v))
   for vendor, models in groups.pairs:
-    result.add "<Text bold=\"\" fg=\"bright-cyan\" content=\"  " &
+    # Indented vendor header — same wrap-in-flex-row pattern as the
+    # provider sub-rows (XML attr normalization eats leading spaces).
+    result.add "<Box class=\"flex-row\" h=\"1\">"
+    result.add spc(2)
+    result.add "<Text bold=\"\" fg=\"bright-cyan\" w=\"content\" content=\"" &
                xmlEscape(vendor) & "\"/>"
+    result.add "</Box>"
     for (k, m) in models:
       let ctx = m{"context_length"}.getInt(0)
       let modality = m{"modality"}.getStr("")
@@ -830,16 +905,23 @@ proc renderModelTab(o: Orchestrator): string =
         if depr: " fg=\"gray\" italic=\"\""
         else: ""
       let ctxStr = if ctx > 0: " " & $(ctx div 1000) & "k" else: ""
-      result.add "<Box class=\"flex-row\">"
-      result.add "<Text" & nameStyle & " content=\"    " & xmlEscape(k) & "\"/>"
-      result.add "<Text fg=\"gray\" content=\"" & ctxStr & "  \"/>"
+      result.add "<Box class=\"flex-row\" h=\"1\">"
+      result.add spc(4)
+      result.add "<Text" & nameStyle & " w=\"content\" content=\"" & xmlEscape(k) & "\"/>"
+      result.add spc(2)
+      if ctxStr.len > 0:
+        result.add "<Text fg=\"gray\" w=\"content\" content=\"" & ctxStr.strip & "\"/>"
+        result.add spc(2)
       if modality.len > 0 and modality != "text":
-        result.add "<Text fg=\"yellow\" content=\"" & xmlEscape(modality) & "  \"/>"
+        result.add "<Text fg=\"yellow\" w=\"content\" content=\"" & xmlEscape(modality) & "\"/>"
+        result.add spc(2)
       if capsAccum.len > 0:
-        result.add "<Text fg=\"gray\" content=\"" & xmlEscape(capsAccum) & "\"/>"
+        result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(capsAccum) & "\"/>"
       result.add "</Box>"
     result.add "<Text content=\" \"/>"
-  result.add "</Box>"
+
+proc renderModelTab(o: Orchestrator): string =
+  "<Box>" & renderModelTabInner(o) & "</Box>"
 
 # ── Setting tab ──────────────────────────────────────────────────
 
@@ -850,33 +932,65 @@ proc clawBuildVersion(): string =
   const v {.strdefine.} = ""
   if v.len > 0: v else: "dev"
 
-proc renderSettingTab(o: Orchestrator): string =
+proc abbrevHome(s: string): string =
+  ## Replace `$HOME` prefix with `~` for display. Keeps Setting-tab
+  ## rows from overflowing the pane width when paths nest deep under
+  ## the user's home directory.
+  ##
+  ## `leading = false` is critical: Nim's `strip` defaults to BOTH ends,
+  ## so a plain `strip(chars = {'/'})` would turn "/Users/owaf/" into
+  ## "Users/owaf" and the startsWith check below would always miss.
+  let home = getHomeDir().strip(chars = {'/'}, leading = false)
+  if home.len == 0: return s
+  if s == home: return "~"
+  if s.startsWith(home & "/"): return "~" & s[home.len .. ^1]
+  s
+
+proc settingHeader(text: string): string =
+  ## Bold header line at 2-cell indent (e.g. "Daemon", "Environment").
+  "<Box class=\"flex-row\" h=\"1\">" & spc(2) &
+    "<Text bold=\"\" w=\"content\" content=\"" & xmlEscape(text) & "\"/></Box>"
+
+proc settingRow(key, value: string): string =
+  ## Single key/value row in the Setting tab. Indented 4 cells; key
+  ## column reserved at 14 cells so values align across rows.
+  "<Box class=\"flex-row\" h=\"1\">" & spc(4) &
+    "<Text w=\"14\" content=\"" & xmlEscape(key) & "\"/>" &
+    "<Text w=\"content\" content=\"" & xmlEscape(value) & "\"/></Box>"
+
+proc renderSettingTabInner(o: Orchestrator): string =
   ## Daemon-level config + diagnostic info. Read-only today; will gain
   ## toggles (log level) as we wire up real click handlers.
-  result.add "<Box class=\"flex-col\">"
-  result.add "<Text bold=\"\" content=\"  Daemon\"/>"
-  result.add "<Text content=\"    binary:       " & xmlEscape(getAppFilename()) & "\"/>"
-  result.add "<Text content=\"    state dir:    " & xmlEscape(daemonStateDir()) & "\"/>"
-  result.add "<Text content=\"    socket:       " & xmlEscape(daemonSockFile()) & "\"/>"
-  result.add "<Text content=\"    log file:     " & xmlEscape(daemonLogFile()) & "\"/>"
-  result.add "<Text content=\"    log level:    " & xmlEscape($logger.getLevel()) & "\"/>"
-  result.add "<Text content=\"    version:      " & xmlEscape(clawBuildVersion()) & "\"/>"
+  result.add settingHeader("Daemon")
+  result.add settingRow("binary:",      abbrevHome(getAppFilename()))
+  result.add settingRow("state dir:",   abbrevHome(daemonStateDir()))
+  result.add settingRow("socket:",      abbrevHome(daemonSockFile()))
+  result.add settingRow("log file:",    abbrevHome(daemonLogFile()))
+  result.add settingRow("log level:",   $logger.getLevel())
+  result.add settingRow("version:",     clawBuildVersion())
   result.add "<Text content=\" \"/>"
-  result.add "<Text bold=\"\" content=\"  Environment\"/>"
+  result.add settingHeader("Environment")
   let nimDir = getEnv("NIMCLAW_DIR")
-  let nimDirShown = if nimDir.len > 0: nimDir else: "(not set — daemon scans ~/.nimclaw-*)"
-  result.add "<Text content=\"    NIMCLAW_DIR:  " & xmlEscape(nimDirShown) & "\"/>"
-  result.add "<Text content=\"    HOME:         " & xmlEscape(getHomeDir()) & "\"/>"
+  let nimDirShown = if nimDir.len > 0: abbrevHome(nimDir)
+                    else: "(not set — daemon scans ~/.nimclaw-*)"
+  result.add settingRow("NIMCLAW_DIR:", nimDirShown)
+  result.add settingRow("HOME:",        getHomeDir())
   result.add "<Text content=\" \"/>"
-  result.add "<Text id=\"view-daemon-log\" clickable=\"\" fg=\"bright-blue\" content=\"  [view daemon log]\"/>"
-  result.add "</Box>"
+  result.add "<Box class=\"flex-row\" h=\"1\">" & spc(2) &
+    "<Text id=\"view-daemon-log\" clickable=\"\" fg=\"bright-blue\" w=\"content\" content=\"[view daemon log]\"/></Box>"
+
+proc renderSettingTab(o: Orchestrator): string =
+  "<Box>" & renderSettingTabInner(o) & "</Box>"
+
+proc renderTabContentInner(o: Orchestrator): string =
+  case o.activeTab
+  of tabCompany:  renderCompanyTabInner(o)
+  of tabProvider: renderProviderTabInner(o)
+  of tabModel:    renderModelTabInner(o)
+  of tabSetting:  renderSettingTabInner(o)
 
 proc renderTabContent(o: Orchestrator): string =
-  case o.activeTab
-  of tabCompany:  renderCompanyTab(o)
-  of tabProvider: renderProviderTab(o)
-  of tabModel:    renderModelTab(o)
-  of tabSetting:  renderSettingTab(o)
+  "<Box>" & renderTabContentInner(o) & "</Box>"
 
 # ── Status bar (bordered, bottom band) ───────────────────────────
 
@@ -887,41 +1001,69 @@ proc countByStatus(o: Orchestrator): tuple[running, stopped, crashed: int] =
     of "crashed": inc result.crashed
     else:         inc result.stopped
 
-proc renderStatusBar(o: Orchestrator): string =
-  ## Bordered band at the bottom. Always shows daemon uptime + the
-  ## running/stopped count; control buttons live INSIDE the border so
-  ## it reads as a self-contained band.
+proc renderStatusBarInner(o: Orchestrator): string =
+  ## Children of #status. #status itself owns the `border=""` + class=
+  ## `flex-row` attrs so the bordered band survives every swap (a swap
+  ## fragment's wrapper is discarded by applyUpdate, so we MUST keep
+  ## the border on the parent, not on a wrapper Box we emit here).
+  ##
+  ## Spacing is done with explicit-width spacer Texts (`spc(N)`) rather
+  ## than trailing whitespace in `content=` — see `spc` for why.
   let uptime = fmtUptime(epochTime() - o.startedAt)
   let c = countByStatus(o)
   var counts = $c.running & " running"
   if c.stopped > 0: counts.add "  " & $c.stopped & " stopped"
   if c.crashed > 0: counts.add "  " & $c.crashed & " crashed"
-  result.add "<Box border=\"\" rounded=\"\" class=\"flex-row\" h=\"3\">"
-  result.add "<Text fg=\"green\" content=\" ● \"/>"
-  result.add "<Text content=\"daemon up " & xmlEscape(uptime) & "    \"/>"
-  result.add "<Text fg=\"gray\" content=\"" & xmlEscape(counts) & "    \"/>"
-  result.add "<Text id=\"refresh-all\" clickable=\"\" content=\"[↻ refresh]  \"/>"
-  result.add "<Text id=\"restart-daemon\" clickable=\"\" content=\"[⟲ restart]  \"/>"
-  result.add "<Text id=\"quit-daemon\" clickable=\"\" fg=\"red\" content=\"[⏻ quit]\"/>"
-  result.add "</Box>"
+  result.add spc(1)
+  result.add "<Text fg=\"green\" w=\"1\" content=\"●\"/>"
+  result.add spc(2)
+  result.add "<Text w=\"content\" content=\"daemon up " & xmlEscape(uptime) & "\"/>"
+  result.add spc(4)
+  result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(counts) & "\"/>"
+  # Flex spacer (no w=) absorbs the remainder, pushing buttons to the right.
+  result.add "<Text content=\"\"/>"
+  result.add "<Text id=\"refresh-all\" clickable=\"\" w=\"content\" content=\"[↻ refresh]\"/>"
+  result.add spc(2)
+  result.add "<Text id=\"restart-daemon\" clickable=\"\" w=\"content\" content=\"[⟲ restart]\"/>"
+  result.add spc(2)
+  result.add "<Text id=\"quit-daemon\" clickable=\"\" fg=\"red\" w=\"content\" content=\"[⏻ quit]\"/>"
+  result.add spc(1)
+
+proc renderStatusBar(o: Orchestrator): string =
+  "<Box>" & renderStatusBarInner(o) & "</Box>"
 
 # ── Mount layout + swap events ───────────────────────────────────
 
 proc zenMountLayout*(o: Orchestrator): string =
   ## Full three-band shell. Each section's id (#nav/#content/#status)
-  ## is used by the swap events to refresh that section independently.
-  ## Status bar is fixed-height; nav is one row; content takes the
-  ## remaining flex space and is vertically scrollable.
+  ## is used by swap events to refresh that section independently.
+  ##
+  ## Layout invariant: every flex-col sibling that isn't the content
+  ## band gets an explicit `h=`, so the content band absorbs the
+  ## remainder. (Without explicit h on Rule + nav + status, they'd
+  ## share the flex pool with content, leaving content too small and
+  ## overflowing into the status bar.)
+  ##
+  ## Structural attrs (class, border) live on the swap-target boxes
+  ## themselves rather than on inner wrappers — applyUpdate discards
+  ## swap-fragment wrappers, so any layout direction or border attr
+  ## on a wrapper would vanish after the first refresh. Children are
+  ## emitted inline via `*Inner` procs; the swap path emits the same
+  ## children wrapped in a discardable Box.
   result.add "<Box class=\"flex-col\">"
-  result.add "<Box id=\"nav\" class=\"flex-col\" h=\"1\">"
-  result.add renderNavBar(o.activeTab)
+  # Nav: row-layout lives on #nav directly so swaps preserve it.
+  result.add "<Box id=\"nav\" class=\"flex-row\" h=\"1\">"
+  result.add renderNavBarInner(o.activeTab)
   result.add "</Box>"
-  result.add "<Rule/>"
+  # Separator: fixed 1 row.
+  result.add "<Rule h=\"1\"/>"
+  # Content: flex remainder, vertically scrollable.
   result.add "<Box id=\"content\" class=\"flex-col\" scroll=\"y\">"
-  result.add renderTabContent(o)
+  result.add renderTabContentInner(o)
   result.add "</Box>"
-  result.add "<Box id=\"status\" class=\"flex-col\" h=\"3\">"
-  result.add renderStatusBar(o)
+  # Status: bordered row, fixed 3 rows. Border lives on #status itself.
+  result.add "<Box id=\"status\" border=\"\" rounded=\"\" class=\"flex-row\" h=\"3\">"
+  result.add renderStatusBarInner(o)
   result.add "</Box>"
   result.add "</Box>"
 
