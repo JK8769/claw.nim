@@ -33,6 +33,13 @@ proc daemonLogFile(): string = daemonStateDir() / "admin.log"
 proc daemonSockFile*(): string = daemonStateDir() / "admin.sock"
 
 type
+  ActiveTab* = enum
+    ## Which top-nav tab the Zen dashboard is currently showing.
+    ## Company is the default landing tab; the other three are global
+    ## resource views (framework-wide catalogs + daemon config), not
+    ## per-company state.
+    tabCompany, tabProvider, tabModel, tabSetting
+
   CompanyEntry = object
     name: string
     path: string              ## absolute path to .nimclaw-<n>
@@ -61,6 +68,10 @@ type
                               ## currently rendering expanded gateway-log
                               ## tail in the dashboard. Toggled by clicks
                               ## on the [logs] click target.
+    activeTab: ActiveTab      ## Top-nav selection for the Zen dashboard.
+                              ## Server-authoritative state — every
+                              ## connected client sees the same tab. (One
+                              ## daemon process = one operator at a time.)
 
 var gOrch: Orchestrator   ## process-wide singleton; set in runOrchestrator
 
@@ -580,142 +591,417 @@ proc tailLines(filePath: string, n: int): seq[string] =
     return lines[lines.len - n .. ^1]
   except CatchableError: return @[]
 
+# ── Tab helpers ──────────────────────────────────────────────────
+#
+# The dashboard is a three-band layout: nav row at the top, scrollable
+# content in the middle, bordered status bar at the bottom. Each band
+# has a stable id (#nav/#content/#status) so subsequent swaps refresh
+# them independently without re-mounting.
+#
+# Tabs:
+#   Company    — list/start/stop/remove + [+ New company] (the original view)
+#   Provider   — global LLM-provider catalog with keyed status
+#   Model      — global canonical-model catalog grouped by vendor
+#   Setting    — daemon-level config + diagnostic info
+
+proc tabId(t: ActiveTab): string =
+  case t
+  of tabCompany:  "nav-company"
+  of tabProvider: "nav-provider"
+  of tabModel:    "nav-model"
+  of tabSetting:  "nav-setting"
+
+proc tabLabel(t: ActiveTab): string =
+  case t
+  of tabCompany:  "Company"
+  of tabProvider: "Provider"
+  of tabModel:    "Model"
+  of tabSetting:  "Setting"
+
+proc statusGlyph(status: string): tuple[ch, color: string] =
+  ## Maps a settled status (not "starting"/"stopping" — those use a
+  ## live <Spinner/>) to a single-cell glyph + a color attribute.
+  case status
+  of "running":     ("●", "green")
+  of "stopped":     ("○", "gray")
+  of "crashed":     ("✗", "red")
+  of "unavailable": ("?", "gray")
+  else:             ("·", "gray")
+
+proc fmtUptime(secs: float): string =
+  ## "2h 14m" / "37m 2s" / "12s". Two units is enough for at-a-glance.
+  let total = max(0, secs.int)
+  let h = total div 3600
+  let m = (total mod 3600) div 60
+  let s = total mod 60
+  if h > 0:   $h & "h " & $m & "m"
+  elif m > 0: $m & "m " & $s & "s"
+  else:       $s & "s"
+
+proc renderNavBar(active: ActiveTab): string =
+  ## Single-row tab strip. Active tab is bold + bright-cyan; the rest
+  ## are dim gray. All four are click targets so the operator can
+  ## navigate freely.
+  result.add "<Box class=\"flex-row\" h=\"1\">"
+  result.add "<Text content=\"  \"/>"
+  var first = true
+  for t in ActiveTab:
+    if not first: result.add "<Text content=\"   \"/>"
+    first = false
+    if t == active:
+      result.add "<Text id=\"" & tabId(t) &
+                 "\" clickable=\"\" bold=\"\" fg=\"bright-cyan\" content=\"" &
+                 tabLabel(t) & "\"/>"
+    else:
+      result.add "<Text id=\"" & tabId(t) &
+                 "\" clickable=\"\" fg=\"gray\" content=\"" &
+                 tabLabel(t) & "\"/>"
+  result.add "</Box>"
+
+# ── Company tab ──────────────────────────────────────────────────
+
 proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
-                      pid: int, showSource: bool): string =
-  ## One row per company. Layout (left to right):
-  ##   NAME (source) • status • pid N    [start|stop|⠋]   [logs?]  [remove?]
+                      showSource: bool): string =
+  ## One row per company.
+  ##   ● NAME            running             [logs] [stop]
+  ##   ○ NAME (USB)      stopped             [start] [logs] [remove]
+  ##   ✗ NAME            crashed             [start] [logs ▾] [remove]
+  ##     └─ Error: missing ANTHROPIC_API_KEY
+  ##   ⠋ NAME            starting…           (animated spinner)
   ##
-  ## Click targets:
-  ##   start-NAME@source   — when stopped/crashed/unavailable
-  ##   stop-NAME@source    — when running
-  ##   logs-NAME@source    — when not running; toggles inline stderr tail
-  ##   remove-NAME@source  — when stopped or crashed (intentional or not,
-  ##                          the company is safely archive-able)
-  ##
-  ## If the row is "crashed" we also append the LAST line of its stderr
-  ## inline below the main row — that's usually the immediate failure
-  ## cause (port already in use, missing API key, etc.) without needing
-  ## a click. The `[logs]` click expands to `LogExpandedLines` lines.
-  let pidStr = if pid > 0: $pid else: "—"
+  ## Source label only shown for non-home (USB / mounted volume) — the
+  ## common case keeps the line uncluttered. Pid is hidden from the
+  ## main row; if an operator needs it they can read logs/gateway.pid.
   let isTransient = status == "starting" or status == "stopping"
   let isRunning = status == "running"
   let canRemove = status == "stopped" or status == "crashed"
   let compound = name & "@" & source
-  let srcLabel = if source == "home": "~" else: source
-  let displayName = if showSource: name & " (" & srcLabel & ")" else: name
-  let info = displayName & "  •  " & status & "  •  pid " & pidStr & "  "
-  # Group the row's controls + its inline log diagnostic into one column
-  # so they read as a single unit. Layout-wise:
-  #   <Box class="flex-col">
-  #     <Box class="flex-row">[info] [action] [logs] [remove]</Box>
-  #     <Markdown h="…" content="…"/>          ← only when crashed/expanded
-  #   </Box>
+  let displayName =
+    if source == "home" or not showSource: name
+    else: name & " (" & source & ")"
   result.add "<Box class=\"flex-col\">"
   result.add "<Box class=\"flex-row\">"
-  result.add "<Text content=\"" & xmlEscape(info) & "\"/>"
-  # Primary action slot.
+  # Leading status indicator.
   if isTransient:
     result.add "<Spinner/>"
-  elif isRunning:
+    result.add "<Text content=\" \"/>"
+  else:
+    let (glyph, color) = statusGlyph(status)
+    result.add "<Text fg=\"" & color & "\" content=\"" & glyph & " \"/>"
+  result.add "<Text content=\"" & xmlEscape(displayName) & "  \"/>"
+  result.add "<Text fg=\"gray\" content=\"" & xmlEscape(status) & "  \"/>"
+  # Action buttons.
+  if isRunning:
+    result.add "<Text id=\"logs-" & xmlEscape(compound) &
+               "\" clickable=\"\" content=\" [logs] \"/>"
     result.add "<Text id=\"stop-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"[stop]\"/>"
-  else:
+  elif not isTransient:
     result.add "<Text id=\"start-" & xmlEscape(compound) &
                "\" clickable=\"\" content=\"[start]\"/>"
-  # [logs] — available for any non-running row (transient or settled).
-  # Toggle: clicking opens an inline tail; clicking again collapses.
-  if not isRunning and not isTransient:
-    let label = if compound in o.expandedLogs: "  [logs ▾]" else: "  [logs]"
+    let logLabel = if compound in o.expandedLogs: " [logs ▾] " else: " [logs] "
     result.add "<Text id=\"logs-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\"" & xmlEscape(label) & "\"/>"
-  # [remove] — stopped OR crashed.
-  if canRemove:
-    result.add "<Text id=\"remove-" & xmlEscape(compound) &
-               "\" clickable=\"\" content=\"  [remove]\"/>"
-  result.add "</Box>"   # close the flex-row of controls
-  # Inline diagnostic under the main row. Uses <Markdown> rather than
-  # raw <Text>s because Markdown is the read-only TTML primitive that
-  # soft-wraps at rect.w + scrolls bottom-aligned (latest at the bottom).
-  # Line breaks are encoded as `&#10;` entities so the XML attribute
-  # parser preserves them; Markdown's factory then splits on '\n' and
-  # lays out one source line per row, wrapping further as needed.
-  # Each line is xml-escaped individually BEFORE we splice in the
-  # entity — escaping after the join would turn `&#10;` into `&amp;#10;`
-  # and the parser would see a literal token instead of a newline.
+               "\" clickable=\"\" content=\"" & logLabel & "\"/>"
+    if canRemove:
+      result.add "<Text id=\"remove-" & xmlEscape(compound) &
+                 "\" clickable=\"\" content=\"[remove]\"/>"
+  result.add "</Box>"
+  # Inline crash diagnostic / expanded log tail (Markdown for soft-wrap +
+  # tail-aligned scroll). Newlines encoded as `&#10;` because we're
+  # inside an XML attribute; xmlEscape runs per-line BEFORE we splice
+  # the entity so it doesn't get escaped into `&amp;#10;`.
   if status == "crashed" or compound in o.expandedLogs:
     let logPath = path / "logs" / "gateway.stderr.log"
     let nLines = if compound in o.expandedLogs: LogExpandedLines else: 1
     let raw = tailLines(logPath, nLines)
     let src = if raw.len == 0: @["(no gateway.stderr.log yet)"] else: raw
-    # The dashboard frame is narrow, so prefix each line with "  └─ "
-    # to keep it visually tied to the row even after a wrap.
     result.add "<Markdown h=\"" & $nLines & "\" content=\""
     for i, line in src:
       if i > 0: result.add "&#10;"
       result.add xmlEscape("  └─ " & line)
     result.add "\"/>"
-  result.add "</Box>"   # close the row's flex-col wrapper
+  result.add "</Box>"
 
-proc renderCompaniesBody(o: Orchestrator): string =
-  ## The contents of the #companies Box — rebuilt from the current
-  ## scan every time something changes. No client-side state.
-  ##
-  ## Every row carries its source label (`(~)` for home, `(<volume>)`
-  ## for mounted volumes). Uniform > clever — operators see where each
-  ## company lives at a glance, including which ones disappear on an
-  ## unplug.
-  ##
-  ## Wrap rows in a single <Box> root: Zen's applyUpdate calls
-  ## parseDoc() which requires exactly one top-level element.
+proc renderCompanyTab(o: Orchestrator): string =
   let companies = scanCompanies()
-  var rows: seq[string] = @[]
-  for (n, p) in companies:
-    let pidNum = readPidFile(p)
-    let status = statusFor(o, n, p)
-    let livePid = if processAlive(pidNum): pidNum else: 0
-    let source = companySource(p)
-    rows.add(renderCompanyRow(o, n, source, status, p, livePid,
-                              showSource = true))
-  let inner =
-    if rows.len == 0: "<Text content=\"(no companies found)\"/>"
-    else: rows.join("\n")
-  "<Box direction=\"column\">\n" & inner & "\n</Box>"
+  result.add "<Box class=\"flex-col\">"
+  if companies.len == 0:
+    result.add "<Text fg=\"gray\" content=\"  No companies yet — click [+ New company] below to create one.\"/>"
+  else:
+    for (n, p) in companies:
+      let status = statusFor(o, n, p)
+      let source = companySource(p)
+      result.add renderCompanyRow(o, n, source, status, p,
+                                  showSource = (source != "home"))
+  result.add "<Text content=\" \"/>"
+  result.add "<Text id=\"new-company\" clickable=\"\" fg=\"bright-green\" content=\"  [+ New company]\"/>"
+  result.add "</Box>"
 
-const ZenMountLayout = """
-<Box direction="column">
-  <Text content="claw daemon — multi-company orchestrator"/>
-  <Rule/>
-  <Box id="companies" direction="column"/>
-  <Rule/>
-  <Text id="quit-daemon" clickable="" content="[quit daemon]"/>
-</Box>
-"""
+# ── Provider / Model tabs — read framework catalogs ──────────────
 
-# Pure event builders — reusable across stdio and socket transports.
-proc zenMountEvent*(pane: string): JsonNode =
-  %*{"event": "mount", "pane": pane, "title": "claw companies",
-     "ttml": ZenMountLayout}
+proc loadCatalog(filename: string): JsonNode =
+  ## Resolve a res/<filename> against the running binary, mirroring
+  ## resolveTemplatesDir() in claw.nim. Returns nil on miss/parse fail.
+  for cand in [
+    getCurrentDir() / "res" / filename,
+    getAppDir() / "res" / filename,
+    getAppDir().parentDir() / "res" / filename,
+  ]:
+    if fileExists(cand):
+      try: return parseJson(readFile(cand))
+      except CatchableError: discard
+  nil
 
-proc zenCompaniesSwap*(o: Orchestrator): JsonNode =
-  %*{"event": "swap", "target": "#companies",
-     "ttml": renderCompaniesBody(o)}
+proc renderProviderTab(o: Orchestrator): string =
+  ## Read-only catalog of LLM providers + per-key configuration status.
+  ## Status reflects the daemon's process env (which inherits
+  ## ~/.nimclaw/.env on startup). Per-company .env overrides are
+  ## intentionally not reflected — this tab is the GLOBAL view.
+  result.add "<Box class=\"flex-col\">"
+  result.add "<Text fg=\"gray\" content=\"  LLM providers — ● keyed   ○ no key set in daemon env\"/>"
+  result.add "<Text content=\" \"/>"
+  let doc = loadCatalog("providers.json")
+  if doc == nil:
+    result.add "<Text fg=\"red\" content=\"  res/providers.json not found.\"/>"
+    result.add "</Box>"
+    return
+  let providers = doc{"providers"}
+  if providers == nil or providers.kind != JArray or providers.len == 0:
+    result.add "<Text fg=\"red\" content=\"  No providers configured in res/providers.json.\"/>"
+    result.add "</Box>"
+    return
+  for p in providers.items:
+    let name = p{"name"}.getStr("")
+    let envKey = p{"envKey"}.getStr("")
+    let apiBase = p{"apiBase"}.getStr("")
+    let defaultModel = p{"defaultModel"}.getStr("")
+    let keyed = envKey.len > 0 and existsEnv(envKey)
+    let (glyph, color) = if keyed: ("●", "green") else: ("○", "gray")
+    result.add "<Box class=\"flex-row\">"
+    result.add "<Text fg=\"" & color & "\" content=\"  " & glyph & "  \"/>"
+    result.add "<Text bold=\"\" content=\"" & xmlEscape(name) & "  \"/>"
+    if envKey.len > 0:
+      result.add "<Text fg=\"gray\" content=\"" & xmlEscape(envKey) & "  \"/>"
+    result.add "<Text fg=\"gray\" content=\"" & xmlEscape(apiBase) & "\"/>"
+    result.add "</Box>"
+    if defaultModel.len > 0:
+      result.add "<Text fg=\"gray\" content=\"      default model: " &
+                 xmlEscape(defaultModel) & "\"/>"
+  result.add "</Box>"
+
+proc renderModelTab(o: Orchestrator): string =
+  ## Read-only catalog of canonical models, grouped by vendor.
+  ## Capabilities + context length + modality shown inline.
+  ## Deprecated models render dimmer + italic so they don't catch the eye.
+  result.add "<Box class=\"flex-col\">"
+  result.add "<Text fg=\"gray\" content=\"  Canonical model catalog (res/models.json)\"/>"
+  result.add "<Text content=\" \"/>"
+  let doc = loadCatalog("models.json")
+  if doc == nil:
+    result.add "<Text fg=\"red\" content=\"  res/models.json not found.\"/>"
+    result.add "</Box>"
+    return
+  let canonical = doc{"canonical"}
+  if canonical == nil or canonical.kind != JObject or canonical.len == 0:
+    result.add "<Text fg=\"red\" content=\"  No canonical models in catalog.\"/>"
+    result.add "</Box>"
+    return
+  # Group by vendor for readable display. OrderedTable preserves
+  # insertion order so the on-screen ordering matches the JSON file.
+  var groups = initOrderedTable[string, seq[(string, JsonNode)]]()
+  for k, v in canonical.pairs:
+    let vendor = v{"vendor"}.getStr("other")
+    if vendor notin groups: groups[vendor] = @[]
+    groups[vendor].add((k, v))
+  for vendor, models in groups.pairs:
+    result.add "<Text bold=\"\" fg=\"bright-cyan\" content=\"  " &
+               xmlEscape(vendor) & "\"/>"
+    for (k, m) in models:
+      let ctx = m{"context_length"}.getInt(0)
+      let modality = m{"modality"}.getStr("")
+      var capsAccum = ""
+      let caps = m{"capabilities"}
+      if caps != nil and caps.kind == JArray:
+        var capList: seq[string] = @[]
+        for c in caps.items: capList.add c.getStr("")
+        capsAccum = capList.join(", ")
+      let depr = m{"deprecated"}.getBool(false)
+      let nameStyle =
+        if depr: " fg=\"gray\" italic=\"\""
+        else: ""
+      let ctxStr = if ctx > 0: " " & $(ctx div 1000) & "k" else: ""
+      result.add "<Box class=\"flex-row\">"
+      result.add "<Text" & nameStyle & " content=\"    " & xmlEscape(k) & "\"/>"
+      result.add "<Text fg=\"gray\" content=\"" & ctxStr & "  \"/>"
+      if modality.len > 0 and modality != "text":
+        result.add "<Text fg=\"yellow\" content=\"" & xmlEscape(modality) & "  \"/>"
+      if capsAccum.len > 0:
+        result.add "<Text fg=\"gray\" content=\"" & xmlEscape(capsAccum) & "\"/>"
+      result.add "</Box>"
+    result.add "<Text content=\" \"/>"
+  result.add "</Box>"
+
+# ── Setting tab ──────────────────────────────────────────────────
+
+proc clawBuildVersion(): string =
+  ## NIMCLAW_VERSION may be baked at build time via `nim --define:`.
+  ## Otherwise return "dev" — enough to tell a release apart from a
+  ## local build without forcing the build system to set it.
+  const v {.strdefine.} = ""
+  if v.len > 0: v else: "dev"
+
+proc renderSettingTab(o: Orchestrator): string =
+  ## Daemon-level config + diagnostic info. Read-only today; will gain
+  ## toggles (log level) as we wire up real click handlers.
+  result.add "<Box class=\"flex-col\">"
+  result.add "<Text bold=\"\" content=\"  Daemon\"/>"
+  result.add "<Text content=\"    binary:       " & xmlEscape(getAppFilename()) & "\"/>"
+  result.add "<Text content=\"    state dir:    " & xmlEscape(daemonStateDir()) & "\"/>"
+  result.add "<Text content=\"    socket:       " & xmlEscape(daemonSockFile()) & "\"/>"
+  result.add "<Text content=\"    log file:     " & xmlEscape(daemonLogFile()) & "\"/>"
+  result.add "<Text content=\"    log level:    " & xmlEscape($logger.getLevel()) & "\"/>"
+  result.add "<Text content=\"    version:      " & xmlEscape(clawBuildVersion()) & "\"/>"
+  result.add "<Text content=\" \"/>"
+  result.add "<Text bold=\"\" content=\"  Environment\"/>"
+  let nimDir = getEnv("NIMCLAW_DIR")
+  let nimDirShown = if nimDir.len > 0: nimDir else: "(not set — daemon scans ~/.nimclaw-*)"
+  result.add "<Text content=\"    NIMCLAW_DIR:  " & xmlEscape(nimDirShown) & "\"/>"
+  result.add "<Text content=\"    HOME:         " & xmlEscape(getHomeDir()) & "\"/>"
+  result.add "<Text content=\" \"/>"
+  result.add "<Text id=\"view-daemon-log\" clickable=\"\" fg=\"bright-blue\" content=\"  [view daemon log]\"/>"
+  result.add "</Box>"
+
+proc renderTabContent(o: Orchestrator): string =
+  case o.activeTab
+  of tabCompany:  renderCompanyTab(o)
+  of tabProvider: renderProviderTab(o)
+  of tabModel:    renderModelTab(o)
+  of tabSetting:  renderSettingTab(o)
+
+# ── Status bar (bordered, bottom band) ───────────────────────────
+
+proc countByStatus(o: Orchestrator): tuple[running, stopped, crashed: int] =
+  for (n, p) in scanCompanies():
+    case statusFor(o, n, p)
+    of "running": inc result.running
+    of "crashed": inc result.crashed
+    else:         inc result.stopped
+
+proc renderStatusBar(o: Orchestrator): string =
+  ## Bordered band at the bottom. Always shows daemon uptime + the
+  ## running/stopped count; control buttons live INSIDE the border so
+  ## it reads as a self-contained band.
+  let uptime = fmtUptime(epochTime() - o.startedAt)
+  let c = countByStatus(o)
+  var counts = $c.running & " running"
+  if c.stopped > 0: counts.add "  " & $c.stopped & " stopped"
+  if c.crashed > 0: counts.add "  " & $c.crashed & " crashed"
+  result.add "<Box border=\"\" rounded=\"\" class=\"flex-row\" h=\"3\">"
+  result.add "<Text fg=\"green\" content=\" ● \"/>"
+  result.add "<Text content=\"daemon up " & xmlEscape(uptime) & "    \"/>"
+  result.add "<Text fg=\"gray\" content=\"" & xmlEscape(counts) & "    \"/>"
+  result.add "<Text id=\"refresh-all\" clickable=\"\" content=\"[↻ refresh]  \"/>"
+  result.add "<Text id=\"restart-daemon\" clickable=\"\" content=\"[⟲ restart]  \"/>"
+  result.add "<Text id=\"quit-daemon\" clickable=\"\" fg=\"red\" content=\"[⏻ quit]\"/>"
+  result.add "</Box>"
+
+# ── Mount layout + swap events ───────────────────────────────────
+
+proc zenMountLayout*(o: Orchestrator): string =
+  ## Full three-band shell. Each section's id (#nav/#content/#status)
+  ## is used by the swap events to refresh that section independently.
+  ## Status bar is fixed-height; nav is one row; content takes the
+  ## remaining flex space and is vertically scrollable.
+  result.add "<Box class=\"flex-col\">"
+  result.add "<Box id=\"nav\" class=\"flex-col\" h=\"1\">"
+  result.add renderNavBar(o.activeTab)
+  result.add "</Box>"
+  result.add "<Rule/>"
+  result.add "<Box id=\"content\" class=\"flex-col\" scroll=\"y\">"
+  result.add renderTabContent(o)
+  result.add "</Box>"
+  result.add "<Box id=\"status\" class=\"flex-col\" h=\"3\">"
+  result.add renderStatusBar(o)
+  result.add "</Box>"
+  result.add "</Box>"
+
+proc zenMountEvent*(o: Orchestrator, pane: string): JsonNode =
+  %*{"event": "mount", "pane": pane, "title": "nimclaw",
+     "ttml": zenMountLayout(o)}
+
+proc zenNavSwap*(o: Orchestrator): JsonNode =
+  %*{"event": "swap", "target": "#nav",
+     "ttml": renderNavBar(o.activeTab)}
+
+proc zenContentSwap*(o: Orchestrator): JsonNode =
+  %*{"event": "swap", "target": "#content",
+     "ttml": renderTabContent(o)}
+
+proc zenStatusSwap*(o: Orchestrator): JsonNode =
+  %*{"event": "swap", "target": "#status",
+     "ttml": renderStatusBar(o)}
+
+# Back-compat shim — older call sites emit a single dashboard swap.
+# With the three-band layout, the equivalent of "the changed part" is
+# the content area (where company rows live). Status bar refreshes are
+# handled separately by callers that care about count/uptime changes.
+proc zenCompaniesSwap*(o: Orchestrator): JsonNode = zenContentSwap(o)
+
+# ── Click dispatch ───────────────────────────────────────────────
 
 type ZenClickResult* = enum
-  zcrOk          ## action dispatched; caller should refresh + send swap
-  zcrUnknown     ## unknown target; caller should log
-  zcrQuit        ## #quit-daemon — caller should signal shutdown
+  zcrOk            ## action dispatched — caller refreshes #content + #status
+  zcrTabChange     ## activeTab updated — caller refreshes #nav + #content
+  zcrLog           ## emit user-facing hint via `log` event (msg from hintFor)
+  zcrUnknown       ## unknown target — caller logs warning
+  zcrQuit          ## #quit-daemon — caller initiates shutdown
+
+proc clickHint*(id: string): string =
+  ## User-facing hint for placeholder click targets. Returned via the
+  ## `log` event protocol — keeps the operator unblocked without us
+  ## having to wire up subprocess spawn / daemon-restart yet.
+  let bare = if id.startsWith("#"): id[1..^1] else: id
+  case bare
+  of "new-company":
+    "Create a company from your terminal: " &
+    "claw co create --template solar-power-station --as=<name>"
+  of "restart-daemon":
+    "To restart the daemon: pkill -TERM -f 'claw daemon' && claw daemon start"
+  of "view-daemon-log":
+    "Tail the daemon log: tail -f " & daemonLogFile()
+  else: ""
 
 proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   ## Click target conventions:
-  ##   #start-<name>   → dispatchStart
-  ##   #stop-<name>    → dispatchStop
-  ##   #remove-<name>  → dispatchRemove (archive the company directory)
-  ##   #logs-<name>    → toggle inline stderr expansion (no daemon side-effect)
-  ##   #quit-daemon    → signal shutdown (caller initiates exit)
+  ##   #nav-{company,provider,model,setting} → switch active tab
+  ##   #start-<key>           → spawn the gateway
+  ##   #stop-<key>            → SIGTERM + grace-window escalation
+  ##   #remove-<key>          → archive the company dir
+  ##   #logs-<key>            → toggle inline stderr expansion
+  ##   #new-company, #restart-daemon, #view-daemon-log
+  ##                          → placeholder hint via clickHint() (zcrLog)
+  ##   #refresh-all           → caller fires a full swap
+  ##   #quit-daemon           → graceful shutdown
   ## Anything else returns zcrUnknown.
   let id = if target.startsWith("#"): target[1..^1] else: target
-  if id == "quit-daemon":
-    return zcrQuit
+  case id
+  of "nav-company":
+    acquire(o.lock); defer: release(o.lock)
+    o.activeTab = tabCompany; return zcrTabChange
+  of "nav-provider":
+    acquire(o.lock); defer: release(o.lock)
+    o.activeTab = tabProvider; return zcrTabChange
+  of "nav-model":
+    acquire(o.lock); defer: release(o.lock)
+    o.activeTab = tabModel; return zcrTabChange
+  of "nav-setting":
+    acquire(o.lock); defer: release(o.lock)
+    o.activeTab = tabSetting; return zcrTabChange
+  of "quit-daemon":   return zcrQuit
+  of "refresh-all":   return zcrOk
+  of "new-company", "restart-daemon", "view-daemon-log":
+    return zcrLog
+  else: discard
   if id.startsWith("start-"):
     let name = id["start-".len .. ^1]
     discard dispatchStart(o, name)
@@ -739,8 +1025,7 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
 proc runZenLoop(orch: Orchestrator, pane: string) =
   ## Zen-protocol mode over stdio. Mount the dashboard, then loop on
   ## stdin for click events. EOF or #quit-daemon → graceful shutdown.
-  emitZen(zenMountEvent(pane))
-  emitZen(zenCompaniesSwap(orch))
+  emitZen(zenMountEvent(orch, pane))
 
   while true:
     var line: string
@@ -777,14 +1062,24 @@ proc runZenLoop(orch: Orchestrator, pane: string) =
       let res = handleZenClick(orch, target)
       case res
       of zcrOk:
-        emitZen(zenCompaniesSwap(orch))
+        emitZen(zenContentSwap(orch))
+        emitZen(zenStatusSwap(orch))
+      of zcrTabChange:
+        emitZen(zenNavSwap(orch))
+        emitZen(zenContentSwap(orch))
+      of zcrLog:
+        let hint = clickHint(target)
+        if hint.len > 0:
+          emitZen(%*{"event":"log","level":"info","text": hint})
       of zcrQuit:
         emitZen(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
         quit(0)
       of zcrUnknown:
         emitZen(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
     of "refresh":
-      emitZen(zenCompaniesSwap(orch))
+      emitZen(zenNavSwap(orch))
+      emitZen(zenContentSwap(orch))
+      emitZen(zenStatusSwap(orch))
     else:
       emitZen(%*{"event": "log", "level": "warn",
                   "text": "Unhandled method: " & meth})
@@ -852,8 +1147,7 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
   except CatchableError: discard
 
   try:
-    emitTo(zenMountEvent(pane))
-    emitTo(zenCompaniesSwap(orch))
+    emitTo(zenMountEvent(orch, pane))
   except CatchableError as e:
     warnCF("daemon_orch", "Initial Zen events failed",
            {"error": e.msg}.toTable)
@@ -922,13 +1216,24 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
           preBroadcast = true
         release(orch.lock)
       if preBroadcast:
-        orch.broadcast(zenCompaniesSwap(orch))
+        orch.broadcast(zenContentSwap(orch))
       let res = handleZenClick(orch, target)
       case res
       of zcrOk:
-        # Broadcast to every attached client so multi-tab Zen stays in
-        # sync — not just the one who clicked.
-        orch.broadcast(zenCompaniesSwap(orch))
+        # Broadcast content + status changes to every attached client so
+        # multi-tab Zen stays in sync — not just the one who clicked.
+        # (Nav doesn't change on these clicks; skip the nav swap.)
+        orch.broadcast(zenContentSwap(orch))
+        orch.broadcast(zenStatusSwap(orch))
+      of zcrTabChange:
+        # Active tab is server-state, so broadcast nav + content to keep
+        # every connected client showing the same tab.
+        orch.broadcast(zenNavSwap(orch))
+        orch.broadcast(zenContentSwap(orch))
+      of zcrLog:
+        let hint = clickHint(target)
+        if hint.len > 0:
+          emitTo(%*{"event":"log","level":"info","text": hint})
       of zcrQuit:
         emitTo(%*{"event":"log","level":"info","text":"Daemon quitting on #quit-daemon"})
         # Daemon-wide exit. Other connected clients (if any) will see
@@ -937,7 +1242,9 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
       of zcrUnknown:
         emitTo(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
     of "refresh":
-      emitTo(zenCompaniesSwap(orch))
+      emitTo(zenNavSwap(orch))
+      emitTo(zenContentSwap(orch))
+      emitTo(zenStatusSwap(orch))
     else:
       emitTo(%*{"event":"log","level":"warn","text":"Unhandled method: " & meth})
 
@@ -1057,7 +1364,12 @@ proc statePollLoop(orch: Orchestrator) {.thread, gcsafe.} =
       let hasClients = orch.clients.len > 0
       release(orch.clientsLock)
       if hasClients:
-        try: orch.broadcast(zenCompaniesSwap(orch))
+        try:
+          # Content carries the per-row state; status carries the
+          # running/stopped count + uptime. Nav doesn't change on
+          # state-poll, so we skip that swap.
+          orch.broadcast(zenContentSwap(orch))
+          orch.broadcast(zenStatusSwap(orch))
         except CatchableError as e:
           warnCF("daemon_orch", "state poll broadcast failed",
                  {"error": e.msg}.toTable)
@@ -1088,7 +1400,8 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
     companies: initTable[string, CompanyEntry](),
     startedAt: epochTime(),
     clients: @[],
-    expandedLogs: initHashSet[string]()
+    expandedLogs: initHashSet[string](),
+    activeTab: tabCompany
   )
   initLock(orch.lock)
   initLock(orch.clientsLock)
@@ -1438,7 +1751,8 @@ proc daemonStart*(host = DefaultHost, port = DefaultPort): tuple[ok: bool, msg: 
     companies: initTable[string, CompanyEntry](),
     startedAt: epochTime(),
     clients: @[],
-    expandedLogs: initHashSet[string]()
+    expandedLogs: initHashSet[string](),
+    activeTab: tabCompany
   )
   initLock(orch.lock)
   initLock(orch.clientsLock)
