@@ -56,6 +56,21 @@ claw daemon start
 
 If you see UE processes accumulating, that's a sign the kill-then-rebuild order was violated somewhere. They'll sit there until reboot but don't block new processes (they hold no live sockets/locks).
 
+**Even worse failure mode — corrupted nimble-cached binary:** if you `nimble install -y` (or `cp` onto the symlink target) while a process holds the binary mmap'd, the on-disk file at `~/.nimble/pkgs2/<pkg>-<hash>/claw.out` can end up in a state where NEW invocations of `claw` immediately wedge in UE — including `claw --version`. The freshly-built `./claw` in the source tree runs fine; only the cached copy is broken. Symptom: `claw --version` hangs forever, no output, process can't be killed; `./claw --version` in the source tree works instantly.
+
+Fix: unlink + copy (NOT overwrite-in-place):
+
+```bash
+# In the source repo after `nimble build`:
+rm -f ~/.nimble/pkgs2/<pkg>-<hash>/claw.out      # unlink first
+cp ./claw ~/.nimble/pkgs2/<pkg>-<hash>/claw.out  # then copy
+chmod +x ~/.nimble/pkgs2/<pkg>-<hash>/claw.out
+```
+
+The unlink gives the file a NEW inode. Any still-running process keeps its old (now-orphaned) inode mapped — the OS preserves it through unlink — and the new file is a fresh inode that won't collide with the orphaned mappings.
+
+`nimble install -y` does the wrong thing here (in-place overwrite), which is why kill-everything-first is the only safe pattern when going through `nimble install`. Manual `rm` + `cp` is the safer install pattern when you can't guarantee no other process is alive.
+
 ## Architecture
 
 ### Single Binary
