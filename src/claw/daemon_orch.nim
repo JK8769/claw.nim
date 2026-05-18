@@ -865,25 +865,20 @@ proc companyTabChildren(o: Orchestrator): seq[TtmlNode] =
 
 # ── Provider / Model tabs — read framework catalogs ──────────────
 
-const
-  # Bake the JSON catalogs into the binary at compile time. nimble's
-  # `installDirs` is supposed to copy res/ next to the installed binary,
-  # but on at least some installs that doesn't happen and the daemon
-  # can't find the file via getAppDir(). Embedding makes the Provider/
-  # Model tabs work everywhere, regardless of how the binary was
-  # installed or where the daemon's cwd happens to be.
-  ProvidersJsonBaked = staticRead(
-    currentSourcePath().parentDir.parentDir.parentDir /
-      "res" / "providers.json")
-  ModelsJsonBaked = staticRead(
-    currentSourcePath().parentDir.parentDir.parentDir /
-      "res" / "models.json")
-
 proc loadCatalog(filename: string): JsonNode =
-  ## Resolve a res/<filename>. Try filesystem first (so an operator who
-  ## edits res/<filename>.json in the source repo sees the change after
-  ## a daemon restart without recompiling), then fall back to the
-  ## compile-time-baked copy.
+  ## Resolve `res/<filename>` from one of the standard locations.
+  ##
+  ## These files (providers.json, models.json) are user-editable
+  ## canonical config — operators add providers, tweak default models,
+  ## etc. Therefore the daemon MUST read them from disk every time, NOT
+  ## from a compile-time-baked copy: a baked snapshot would silently
+  ## ignore the user's edits, which is the worst kind of "works for me
+  ## but not for the operator" bug.
+  ##
+  ## If none of the candidates exist, returns nil. The caller renders
+  ## a clear "res/<filename> not found" message so the operator knows
+  ## to fix their install (run `nimble install` properly or copy res/
+  ## next to the binary).
   for cand in [
     getCurrentDir() / "res" / filename,
     getAppDir() / "res" / filename,
@@ -892,12 +887,6 @@ proc loadCatalog(filename: string): JsonNode =
     if fileExists(cand):
       try: return parseJson(readFile(cand))
       except CatchableError: discard
-  try:
-    case filename
-    of "providers.json": return parseJson(ProvidersJsonBaked)
-    of "models.json":    return parseJson(ModelsJsonBaked)
-    else: discard
-  except CatchableError: discard
   nil
 
 proc providerTabChildren(o: Orchestrator): seq[TtmlNode] =
