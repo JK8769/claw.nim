@@ -22,6 +22,12 @@ import logger
 # whitespace + XML normalization + missing-h="1" class of bugs
 # disappear once and for all.
 import ttml/[types, build]
+# Extension tags: the renderer for <ContextMenu> lives in
+# tui/components/context_menu.nim (consumed only by zen). The producer-
+# side smart constructor lives in tui/spec — claw imports just that.
+# Verify the link cost: `nm claw | grep -ic 'tui_component'` should
+# remain 0 even with this import.
+import tui/spec/context_menu
 
 const
   DefaultPort* = 13140
@@ -79,6 +85,17 @@ type
                               ## Server-authoritative state — every
                               ## connected client sees the same tab. (One
                               ## daemon process = one operator at a time.)
+    showingTemplatePicker: bool  ## True when the Company tab should
+                              ## render a <ContextMenu> of templates
+                              ## instead of the [+ New company] button.
+                              ## Toggled by `new-company` and
+                              ## `cancel-new-company` clicks; cleared
+                              ## automatically when a template is picked
+                              ## and the create finishes.
+    createInFlight: string    ## Non-empty during a `claw co create`
+                              ## subprocess. Holds the company name so
+                              ## the Company tab can render a "creating
+                              ## …" row while the spawn is running.
 
 var gOrch: Orchestrator   ## process-wide singleton; set in runOrchestrator
 
@@ -743,6 +760,56 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
           encoded.add "  └─ " & line
         Markdown(encoded, h = $nLines)
 
+proc resolveTemplatesDir*(): string =
+  ## Find the framework's res/templates/ directory. Mirrors the same
+  ## logic `claw co list-templates` and `claw co create --template`
+  ## use — checked in order, first match wins:
+  ##   1. cwd/res/templates/   (running from the cloned repo)
+  ##   2. <bin>/res/templates/ (installed claw)
+  ##   3. <bin>/../res/templates/
+  ## Empty string if none exist.
+  for cand in [
+    getCurrentDir() / "res" / "templates",
+    getAppDir() / "res" / "templates",
+    getAppDir().parentDir() / "res" / "templates",
+  ]:
+    if dirExists(cand): return cand
+  return ""
+
+proc listAvailableTemplates*(): seq[string] =
+  ## Names of L1 domain templates the operator can pick from in the
+  ## [+ New company] picker. A template is "available" iff its directory
+  ## contains a BASE.nims file. Returns an empty seq if no templates
+  ## directory is resolvable.
+  let root = resolveTemplatesDir()
+  if root.len == 0: return @[]
+  for kind, path in walkDir(root):
+    if kind != pcDir: continue
+    let name = lastPathPart(path)
+    if name.startsWith("."): continue
+    if fileExists(path / "BASE.nims"): result.add(name)
+
+proc autoCompanyName*(tplName, salt: string): string =
+  ## Generate a unique-ish company name from a template name. Uses the
+  ## first two letters of `salt` (typically a hex-encoded timestamp) so
+  ## rapid picks don't collide. Length-capped at 28 chars to fit on
+  ## one dashboard row alongside status + buttons.
+  ##
+  ## Example: tplName="solar-power-station" → "SolarPowerStation-7f"
+  var pascal = ""
+  var upNext = true
+  for c in tplName:
+    if c == '-' or c == '_' or c == ' ':
+      upNext = true
+    elif upNext:
+      pascal.add c.toUpperAscii
+      upNext = false
+    else:
+      pascal.add c
+  if pascal.len > 24: pascal = pascal[0 ..< 24]
+  let suffix = if salt.len >= 2: salt[0 .. 1] else: "ab"
+  pascal & "-" & suffix
+
 proc companyTabChildren(o: Orchestrator): seq[TtmlNode] =
   buildTtmlSeq:
     let companies = scanCompanies()
@@ -756,8 +823,45 @@ proc companyTabChildren(o: Orchestrator): seq[TtmlNode] =
         renderCompanyRow(o, n, source, status, p,
                          showSource = (source != "home"))
     Text(" ")
-    Text("  [+ New company]", id = "new-company", clickable = true,
-         fg = cBrightGreen)
+    if o.createInFlight.len > 0:
+      # Synchronous create in progress — show a transient row so the
+      # operator knows something's happening. (The daemon blocks the
+      # event loop during create, so by the time this renders the
+      # subprocess has already returned — but we keep the indicator
+      # for the brief window the dashboard observes after the swap.)
+      Box(class = flexRow, h = 1):
+        spc(2)
+        Spinner()
+        spc(2)
+        Text("creating " & o.createInFlight & "…",
+             fg = cYellow, w = "content")
+    elif o.showingTemplatePicker:
+      let templates = listAvailableTemplates()
+      if templates.len == 0:
+        Text("  (no templates installed — res/templates/ is empty)",
+             fg = cRed)
+        spc(2)
+        Text("[cancel]", id = "cancel-new-company", clickable = true,
+             fg = cGray)
+      else:
+        # The producer side: emit a <ContextMenu>. claw never imports
+        # the renderer for this tag; the construction goes through
+        # `tContextMenu` (in tui/spec/context_menu.nim) which just
+        # builds a TtmlNode. zen's registered factory expands it into
+        # a bordered Box + clickable Texts on receive.
+        tContextMenu(items = templates,
+                     id = "template-picker",
+                     idPrefix = "template-",
+                     title = " Pick a template ",
+                     fg = cBrightCyan)
+        Text(" ")
+        Box(class = flexRow, h = 1):
+          spc(2)
+          Text("[cancel]", id = "cancel-new-company", clickable = true,
+               fg = cGray, w = "content")
+    else:
+      Text("  [+ New company]", id = "new-company", clickable = true,
+           fg = cBrightGreen)
 
 # ── Provider / Model tabs — read framework catalogs ──────────────
 
@@ -1066,14 +1170,50 @@ proc clickHint*(id: string): string =
   ## having to wire up subprocess spawn / daemon-restart yet.
   let bare = if id.startsWith("#"): id[1..^1] else: id
   case bare
-  of "new-company":
-    "Create a company from your terminal: " &
-    "claw co create --template solar-power-station --as=<name>"
   of "restart-daemon":
     "To restart the daemon: pkill -TERM -f 'claw daemon' && claw daemon start"
   of "view-daemon-log":
     "Tail the daemon log: tail -f " & daemonLogFile()
   else: ""
+
+proc dispatchCreateFromTemplate*(o: Orchestrator,
+                                  templateName: string): tuple[ok: bool, err, name: string] =
+  ## Synchronously shell out to `claw co create --template X --as Y`
+  ## using this binary as both the spawner and the spawnee. Blocks the
+  ## daemon's event loop until the create finishes — fine in practice
+  ## because template-based create is fast (no skill compilation).
+  ##
+  ## The auto-generated name pairs the template's PascalCase form with
+  ## a short timestamp suffix so rapid picks don't collide.
+  let salt = $epochTime().int.toHex().toLowerAscii
+  let companyName = autoCompanyName(templateName, salt)
+  acquire(o.lock)
+  o.createInFlight = companyName
+  release(o.lock)
+  defer:
+    acquire(o.lock)
+    o.createInFlight = ""
+    release(o.lock)
+
+  let binPath = getAppFilename()
+  let logFile = daemonStateDir() / ("create-" & companyName & ".log")
+  let cmd = quoteShell(binPath) & " co create --template " &
+            quoteShell(templateName) & " --as=" & quoteShell(companyName) &
+            " > " & quoteShell(logFile) & " 2>&1"
+  infoCF("daemon_orch", "Creating company from template",
+         {"template": templateName, "name": companyName,
+          "log": logFile}.toTable)
+  let exitCode = execShellCmd(cmd)
+  if exitCode == 0:
+    infoCF("daemon_orch", "Create succeeded",
+           {"name": companyName}.toTable)
+    return (true, "", companyName)
+  let tail =
+    try: readFile(logFile)
+    except CatchableError: "(could not read " & logFile & ")"
+  errorCF("daemon_orch", "Create failed",
+          {"name": companyName, "exit": $exitCode, "tail": tail}.toTable)
+  (false, "exit=" & $exitCode & " — see " & logFile, companyName)
 
 proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   ## Click target conventions:
@@ -1103,9 +1243,40 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
     o.activeTab = tabSetting; return zcrTabChange
   of "quit-daemon":   return zcrQuit
   of "refresh-all":   return zcrOk
-  of "new-company", "restart-daemon", "view-daemon-log":
+  of "restart-daemon", "view-daemon-log":
     return zcrLog
+  of "new-company":
+    # Toggle the inline template picker. Re-renders the Company tab
+    # with a <ContextMenu> instead of the [+ New company] button.
+    acquire(o.lock); defer: release(o.lock)
+    o.showingTemplatePicker = true
+    o.activeTab = tabCompany
+    return zcrOk
+  of "cancel-new-company":
+    acquire(o.lock); defer: release(o.lock)
+    o.showingTemplatePicker = false
+    return zcrOk
   else: discard
+  if id.startsWith("template-"):
+    # The operator picked a template from the inline picker. Synchronously
+    # spawn `claw co create` (fast for template-based creates), then
+    # dismiss the picker. If the create fails, the picker stays up so
+    # the operator can retry or cancel; clickHint emits the diagnostic.
+    let templateName = id["template-".len .. ^1]
+    let (ok, err, name) = dispatchCreateFromTemplate(o, templateName)
+    acquire(o.lock); defer: release(o.lock)
+    if ok:
+      o.showingTemplatePicker = false
+    # Either outcome: a swap of #content + #status will repaint with
+    # the new state (new company row visible, or picker still up plus
+    # an error message via a log event the caller emits).
+    if not ok:
+      # Best-effort: log message will surface in zen.log next to the
+      # picker; operator can decide whether to retry or cancel.
+      errorCF("daemon_orch", "Create failed; picker stays up",
+              {"template": templateName, "name": name,
+               "err": err}.toTable)
+    return zcrOk
   if id.startsWith("start-"):
     let name = id["start-".len .. ^1]
     discard dispatchStart(o, name)
@@ -1505,7 +1676,9 @@ proc runOrchestrator*(host = DefaultHost, port = DefaultPort,
     startedAt: epochTime(),
     clients: @[],
     expandedLogs: initHashSet[string](),
-    activeTab: tabCompany
+    activeTab: tabCompany,
+    showingTemplatePicker: false,
+    createInFlight: ""
   )
   initLock(orch.lock)
   initLock(orch.clientsLock)
@@ -1856,7 +2029,9 @@ proc daemonStart*(host = DefaultHost, port = DefaultPort): tuple[ok: bool, msg: 
     startedAt: epochTime(),
     clients: @[],
     expandedLogs: initHashSet[string](),
-    activeTab: tabCompany
+    activeTab: tabCompany,
+    showingTemplatePicker: false,
+    createInFlight: ""
   )
   initLock(orch.lock)
   initLock(orch.clientsLock)
