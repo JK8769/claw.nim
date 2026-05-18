@@ -31,6 +31,13 @@ type
     readerThread: Thread[ZenReaderArgs]
     connected*: bool
     providerId: string
+    # Stable per-OS-account identifier zen reports in chat.connect
+    # (`local:<USER>` by default; `$ZEN_USER` override). Used as the
+    # channel user-id for `bind` flow and message routing — same
+    # role `feishu_<id>` plays for the Feishu adapter. Defaults to
+    # "zen_user" for backward compatibility with zen versions that
+    # don't populate the field.
+    zenUser: string
     agentRoster: seq[tuple[name, description, model: string]]
     onReconnect*: proc() {.gcsafe.}  ## Called after reconnecting to Zen (e.g. re-mount dashboard)
 
@@ -91,8 +98,14 @@ proc tryConnect(c: ZenChannel): bool =
       let j = try: parseJson(resp) except: nil
       if j != nil and j{"ok"}.getBool(false):
         c.providerId = j{"provider_id"}.getStr("")
+        # Stable OS-account id for this zen install — see field doc.
+        # Fall back to "zen_user" so older zens (no `user` field)
+        # still connect, just without per-user binding capability.
+        c.zenUser = j{"user"}.getStr("zen_user")
         c.connected = true
-        infoCF("zen", "Connected to Zen", {"provider_id": c.providerId}.toTable)
+        infoCF("zen", "Connected to Zen",
+               {"provider_id": c.providerId,
+                "user": c.zenUser}.toTable)
         return true
     try: c.sock.close() except: discard
   except:
@@ -125,7 +138,11 @@ proc readerLoop(args: ZenReaderArgs) {.thread, gcsafe.} =
         if content.len > 0:
           var meta = initTable[string, string]()
           meta["zen_chat_id"] = chatId
-          c.handleMessage("zen_user", chatId, content,
+          # Route as `c.zenUser` (e.g., `local:owaf`), not the legacy
+          # hardcoded `"zen_user"` — gives the bind flow a per-user
+          # identifier to attach SuperAdmin / Customer entities to.
+          let user = if c.zenUser.len > 0: c.zenUser else: "zen_user"
+          c.handleMessage(user, chatId, content,
                          metadata = meta, recipientID = agent)
           infoCF("zen", "Received message", {"chat_id": chatId, "agent": agent}.toTable)
       else:
