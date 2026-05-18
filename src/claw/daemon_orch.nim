@@ -1157,6 +1157,33 @@ type ZenClickResult* = enum
                    ## in the spawn gives our exitprocs time to release
                    ## admin.pid + admin.sock before the new daemon tries
                    ## to bind them.
+  zcrSpawnTab      ## #view-daemon-log et al. — caller emits a
+                   ## `spawn-tab` JSONL event so zen opens a new PTY
+                   ## sub-tab running the command from `spawnTabSpec`.
+
+type SpawnTabSpec* = object
+  ## What zen should run in the new tab. Populated by `spawnTabSpec`
+  ## for each click target that returns `zcrSpawnTab`.
+  title*: string         ## Tab title (shown to operator)
+  pane*: string          ## "left" | "right" — which pane to open into
+  cmd*: string           ## Binary name (resolved via $PATH on zen side)
+  args*: seq[string]
+
+proc spawnTabSpec*(id: string): SpawnTabSpec =
+  ## Maps a click target id to a spec for the new tab's process.
+  ## Returns an empty cmd when the id isn't a recognised tab-spawner;
+  ## callers should fall back to zcrLog in that case.
+  let bare = if id.startsWith("#"): id[1..^1] else: id
+  case bare
+  of "view-daemon-log":
+    SpawnTabSpec(
+      title: "daemon log",
+      pane: "left",
+      cmd: "tail",
+      args: @["-n", "200", "-f", daemonLogFile()]
+    )
+  else:
+    SpawnTabSpec()
 
 proc clickHint*(id: string): string =
   ## User-facing hint for placeholder click targets. Returned via the
@@ -1167,6 +1194,17 @@ proc clickHint*(id: string): string =
   of "view-daemon-log":
     "Tail the daemon log: tail -f " & daemonLogFile()
   else: ""
+
+proc zenSpawnTabEvent(spec: SpawnTabSpec): JsonNode =
+  ## JSONL payload zen's app_host parses for the `spawn-tab` event.
+  ## Empty cmd means "no spec for this id" — callers must check.
+  %*{
+    "event": "spawn-tab",
+    "pane":  spec.pane,
+    "title": spec.title,
+    "cmd":   spec.cmd,
+    "args":  spec.args
+  }
 
 proc spawnDetachedDaemon() =
   ## Kick off a fresh `claw daemon start` as a process detached from
@@ -1253,8 +1291,7 @@ proc handleZenClick*(o: Orchestrator, target: string): ZenClickResult =
   of "quit-daemon":     return zcrQuit
   of "restart-daemon":  return zcrRestart
   of "refresh-all":     return zcrOk
-  of "view-daemon-log":
-    return zcrLog
+  of "view-daemon-log": return zcrSpawnTab
   of "new-company":
     # Toggle the inline template picker. Re-renders the Company tab
     # with a <ContextMenu> instead of the [+ New company] button.
@@ -1369,6 +1406,15 @@ proc runZenLoop(orch: Orchestrator, pane: string) =
                     "text":"Restarting daemon — reopen 🦞 nimclaw in ~2s."})
         spawnDetachedDaemon()
         quit(0)
+      of zcrSpawnTab:
+        # Emit a spawn-tab JSONL line; zen opens a new PTY sub-tab
+        # running the command from spawnTabSpec.
+        let spec = spawnTabSpec(target)
+        if spec.cmd.len > 0:
+          emitZen(zenSpawnTabEvent(spec))
+        else:
+          emitZen(%*{"event":"log","level":"warn",
+                      "text":"No spawn-tab spec for: " & target})
       of zcrUnknown:
         emitZen(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
     of "refresh":
@@ -1542,6 +1588,16 @@ proc handleSocketSession(orch: Orchestrator, client: Socket) =
                            "text":"Restarting daemon — reopen 🦞 nimclaw in ~2s."})
         spawnDetachedDaemon()
         quit(0)
+      of zcrSpawnTab:
+        # Send the spawn-tab event ONLY to the requesting client —
+        # not broadcast. A click in one operator's session shouldn't
+        # open the daemon-log tab in every connected operator's zen.
+        let spec = spawnTabSpec(target)
+        if spec.cmd.len > 0:
+          emitTo(zenSpawnTabEvent(spec))
+        else:
+          emitTo(%*{"event":"log","level":"warn",
+                     "text":"No spawn-tab spec for: " & target})
       of zcrUnknown:
         emitTo(%*{"event":"log","level":"warn","text":"Unknown click target: " & target})
     of "refresh":
