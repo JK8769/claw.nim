@@ -19,6 +19,13 @@ requires "webby"
 requires "mummy"
 requires "nimcrypto"
 requires "unicodedb"
+# TTML — markup spec + builder API for the Zen dashboard. The daemon
+# uses ttml/build to construct dashboard trees safely (typed enums +
+# a serializer that handles XML attribute-normalization edge cases
+# that bit our string-concatenation approach). Dev override in
+# config.nims points to a sibling working tree; in production this
+# resolves via the standard nimble cache from the GitHub repo.
+requires "https://github.com/JK8769/ttml.git >= 0.2.0"
 
 # Standard build switches
 switch("define", "ssl")

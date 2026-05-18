@@ -15,6 +15,13 @@ import std/[asyncdispatch, json, tables, sets, os, osproc, posix, strutils,
             exitprocs]
 import mummy, mummy/routers
 import logger
+# TTML builder API. The daemon's dashboard is constructed via typed
+# `tBox`/`tText`/etc. constructors and the `buildTtml` macro DSL,
+# then serialized at the wire boundary in `zenMountEvent`/`zen*Swap`.
+# Centralising tree construction here is what made the trailing-
+# whitespace + XML normalization + missing-h="1" class of bugs
+# disappear once and for all.
+import ttml/[types, build]
 
 const
   DefaultPort* = 13140
@@ -563,10 +570,6 @@ proc runStdioLoop(orch: Orchestrator) =
 # pixel is derived from claw's current view of companies. This is the
 # SSoT model the user explicitly chose.
 
-proc xmlEscape(s: string): string =
-  result = s.multiReplace(("&", "&amp;"), ("<", "&lt;"),
-                          (">", "&gt;"), ("\"", "&quot;"))
-
 proc emitZen(j: JsonNode) =
   echo $j
   flushFile(stdout)
@@ -599,10 +602,18 @@ proc tailLines(filePath: string, n: int): seq[string] =
 # them independently without re-mounting.
 #
 # Tabs:
-#   Company    — list/start/stop/remove + [+ New company] (the original view)
+#   Company    — list/start/stop/remove + [+ New company]
 #   Provider   — global LLM-provider catalog with keyed status
 #   Model      — global canonical-model catalog grouped by vendor
 #   Setting    — daemon-level config + diagnostic info
+#
+# Tree construction goes through `ttml/build` — the smart constructors
+# (`tBox`, `tText`, `tRule`, `tSpinner`, `tMarkdown`, `spc`) and the
+# `buildTtml` macro. Strings only appear at the wire boundary in
+# `zenMountEvent` / `zenNavSwap` / `zenContentSwap` / `zenStatusSwap`,
+# which call `serialize` on the constructed tree.
+
+const allTabs* = [tabCompany, tabProvider, tabModel, tabSetting]
 
 proc tabId(t: ActiveTab): string =
   case t
@@ -618,15 +629,15 @@ proc tabLabel(t: ActiveTab): string =
   of tabModel:    "Model"
   of tabSetting:  "Setting"
 
-proc statusGlyph(status: string): tuple[ch, color: string] =
+proc statusGlyph(status: string): tuple[ch: string, color: Color] =
   ## Maps a settled status (not "starting"/"stopping" — those use a
-  ## live <Spinner/>) to a single-cell glyph + a color attribute.
+  ## live <Spinner/>) to a single-cell glyph + typed color.
   case status
-  of "running":     ("●", "green")
-  of "stopped":     ("○", "gray")
-  of "crashed":     ("✗", "red")
-  of "unavailable": ("?", "gray")
-  else:             ("·", "gray")
+  of "running":     ("●", cGreen)
+  of "stopped":     ("○", cGray)
+  of "crashed":     ("✗", cRed)
+  of "unavailable": ("?", cGray)
+  else:             ("·", cGray)
 
 proc fmtUptime(secs: float): string =
   ## "2h 14m" / "37m 2s" / "12s". Two units is enough for at-a-glance.
@@ -638,56 +649,28 @@ proc fmtUptime(secs: float): string =
   elif m > 0: $m & "m " & $s & "s"
   else:       $s & "s"
 
-proc spc(n: int): string =
-  ## Explicit-cell horizontal spacer that DRAWS N spaces.
-  ##
-  ## Encoding nuance: a literal `content="   "` (or trailing whitespace
-  ## anywhere in the attribute) is stripped by XML attribute
-  ## normalization at parse time. Numeric character references like
-  ## `&#32;` are NOT — they survive verbatim. We need an actual drawn
-  ## space (not just a reserved-but-unwritten cell) so that re-renders
-  ## over previously-written content (e.g. when the swap replaces a
-  ## longer tab body with a shorter one) properly clear the cells
-  ## instead of leaving stale chars in the grid.
-  result = "<Text w=\"" & $n & "\" content=\""
-  for _ in 0 ..< n: result.add "&#32;"
-  result.add "\"/>"
+# ── Nav bar ──────────────────────────────────────────────────────
 
-proc renderNavBarInner(active: ActiveTab): string =
-  ## Children of #nav. Active tab is bold + bright-cyan; the rest are
-  ## dim gray. Tabs are explicit `w="content"` so the parent flex-row
-  ## reserves only the glyph cells; leading + trailing zero-width
-  ## flex-spacer Texts absorb the remainder and center the strip.
-  ##
-  ## Lives separately from `renderNavBar` (the swap-fragment shape) so
-  ## both the mount layout (inline) and swap event use the SAME children
-  ## under the SAME #nav parent — guarantees layout is identical before
-  ## and after a tab switch.
-  result.add "<Text content=\"\"/>"   # flex leader (absorbs left pad)
-  var first = true
-  for t in ActiveTab:
-    if not first: result.add "<Text content=\"   \" w=\"3\"/>"
-    first = false
-    if t == active:
-      result.add "<Text id=\"" & tabId(t) &
-                 "\" clickable=\"\" bold=\"\" fg=\"bright-cyan\" w=\"content\" content=\"" &
-                 tabLabel(t) & "\"/>"
-    else:
-      result.add "<Text id=\"" & tabId(t) &
-                 "\" clickable=\"\" fg=\"gray\" w=\"content\" content=\"" &
-                 tabLabel(t) & "\"/>"
-  result.add "<Text content=\"\"/>"   # flex trailer (absorbs right pad)
-
-proc renderNavBar(active: ActiveTab): string =
-  ## Swap-fragment wrapper for #nav. applyUpdate discards the wrapper
-  ## Box; its children replace #nav's. Same content as the mount
-  ## inlines via `renderNavBarInner`.
-  "<Box>" & renderNavBarInner(active) & "</Box>"
+proc navBarChildren(active: ActiveTab): seq[TtmlNode] =
+  ## Children of #nav. Leading + trailing empty-content (= flex-sized)
+  ## Texts absorb the remainder so the tabs cluster centred. Active
+  ## tab is bold + bright-cyan; the rest are dim gray.
+  buildTtmlSeq:
+    Text("")   # flex leader
+    for i, t in allTabs:
+      if i > 0: spc(3)
+      if t == active:
+        Text(tabLabel(t), id = tabId(t), clickable = true,
+             bold = true, fg = cBrightCyan, w = "content")
+      else:
+        Text(tabLabel(t), id = tabId(t), clickable = true,
+             fg = cGray, w = "content")
+    Text("")   # flex trailer
 
 # ── Company tab ──────────────────────────────────────────────────
 
 proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
-                      showSource: bool): string =
+                      showSource: bool): TtmlNode =
   ## One row per company.
   ##   ● NAME              running             [logs] [stop]
   ##   ○ NAME (USB)        stopped             [start] [logs] [remove]
@@ -699,11 +682,8 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
   ## common case keeps the line uncluttered. Pid is hidden from the
   ## main row; if an operator needs it they can read logs/gateway.pid.
   ##
-  ## Each visible element gets `w="content"`; inter-element spacing is
-  ## explicit `spc(N)` (XML attribute normalization eats trailing
-  ## whitespace, so " NAME  " loses its trailing pad at parse time).
-  ## A flex spacer between the status word and the action buttons keeps
-  ## button columns right-aligned regardless of name length.
+  ## Action-button columns are right-aligned via a flex-spacer Text
+  ## between the status word and the first button.
   let isTransient = status == "starting" or status == "stopping"
   let isRunning = status == "running"
   let canRemove = status == "stopped" or status == "crashed"
@@ -711,72 +691,73 @@ proc renderCompanyRow(o: Orchestrator, name, source, status, path: string,
   let displayName =
     if source == "home" or not showSource: name
     else: name & " (" & source & ")"
-  result.add "<Box class=\"flex-col\">"
-  result.add "<Box class=\"flex-row\" h=\"1\">"
-  result.add spc(2)
-  # Leading status indicator (spinner for transient, glyph otherwise).
-  if isTransient:
-    result.add "<Spinner/>"
-  else:
-    let (glyph, color) = statusGlyph(status)
-    result.add "<Text fg=\"" & color & "\" w=\"1\" content=\"" & glyph & "\"/>"
-  result.add spc(2)
-  result.add "<Text w=\"content\" content=\"" & xmlEscape(displayName) & "\"/>"
-  result.add spc(2)
-  result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(status) & "\"/>"
-  # Flex spacer pushes the action buttons toward the right edge.
-  result.add "<Text content=\"\"/>"
-  # Action buttons.
-  if isRunning:
-    result.add "<Text id=\"logs-" & xmlEscape(compound) &
-               "\" clickable=\"\" w=\"content\" content=\"[logs]\"/>"
-    result.add spc(2)
-    result.add "<Text id=\"stop-" & xmlEscape(compound) &
-               "\" clickable=\"\" w=\"content\" content=\"[stop]\"/>"
-  elif not isTransient:
-    result.add "<Text id=\"start-" & xmlEscape(compound) &
-               "\" clickable=\"\" w=\"content\" content=\"[start]\"/>"
-    result.add spc(2)
-    let logLabel = if compound in o.expandedLogs: "[logs ▾]" else: "[logs]"
-    result.add "<Text id=\"logs-" & xmlEscape(compound) &
-               "\" clickable=\"\" w=\"content\" content=\"" & logLabel & "\"/>"
-    if canRemove:
-      result.add spc(2)
-      result.add "<Text id=\"remove-" & xmlEscape(compound) &
-                 "\" clickable=\"\" w=\"content\" content=\"[remove]\"/>"
-  result.add spc(2)
-  result.add "</Box>"
-  # Inline crash diagnostic / expanded log tail (Markdown for soft-wrap +
-  # tail-aligned scroll). Newlines encoded as `&#10;` because we're
-  # inside an XML attribute; xmlEscape runs per-line BEFORE we splice
-  # the entity so it doesn't get escaped into `&amp;#10;`.
-  if status == "crashed" or compound in o.expandedLogs:
-    let logPath = path / "logs" / "gateway.stderr.log"
-    let nLines = if compound in o.expandedLogs: LogExpandedLines else: 1
-    let raw = tailLines(logPath, nLines)
-    let src = if raw.len == 0: @["(no gateway.stderr.log yet)"] else: raw
-    result.add "<Markdown h=\"" & $nLines & "\" content=\""
-    for i, line in src:
-      if i > 0: result.add "&#10;"
-      result.add xmlEscape("  └─ " & line)
-    result.add "\"/>"
-  result.add "</Box>"
+  let (glyph, color) = statusGlyph(status)
 
-proc renderCompanyTabInner(o: Orchestrator): string =
-  let companies = scanCompanies()
-  if companies.len == 0:
-    result.add "<Text fg=\"gray\" content=\"  No companies yet — click [+ New company] below to create one.\"/>"
-  else:
-    for (n, p) in companies:
-      let status = statusFor(o, n, p)
-      let source = companySource(p)
-      result.add renderCompanyRow(o, n, source, status, p,
-                                  showSource = (source != "home"))
-  result.add "<Text content=\" \"/>"
-  result.add "<Text id=\"new-company\" clickable=\"\" fg=\"bright-green\" content=\"  [+ New company]\"/>"
+  buildTtml:
+    Box(class = flexCol):
+      Box(class = flexRow, h = 1):
+        spc(2)
+        if isTransient:
+          Spinner()
+        else:
+          Text(glyph, fg = color, w = "1")
+        spc(2)
+        Text(displayName, w = "content")
+        spc(2)
+        Text(status, fg = cGray, w = "content")
+        Text("")   # flex spacer → pushes buttons right
+        if isRunning:
+          Text("[logs]", id = "logs-" & compound, clickable = true,
+               w = "content")
+          spc(2)
+          Text("[stop]", id = "stop-" & compound, clickable = true,
+               w = "content")
+        elif not isTransient:
+          Text("[start]", id = "start-" & compound, clickable = true,
+               w = "content")
+          spc(2)
+          let logLabel = if compound in o.expandedLogs: "[logs ▾]"
+                         else: "[logs]"
+          Text(logLabel, id = "logs-" & compound, clickable = true,
+               w = "content")
+          if canRemove:
+            spc(2)
+            Text("[remove]", id = "remove-" & compound, clickable = true,
+                 w = "content")
+        spc(2)
+      if status == "crashed" or compound in o.expandedLogs:
+        # Inline crash diagnostic / expanded log tail. Markdown handles
+        # soft-wrap and tail-aligned scroll for us; we still encode
+        # newlines as `&#10;` because the content is XML-attribute
+        # bound in the serialized output (the build module's
+        # `serialize` doesn't transform line-break entities — they
+        # land verbatim inside the attribute value).
+        let logPath = path / "logs" / "gateway.stderr.log"
+        let nLines = if compound in o.expandedLogs: LogExpandedLines else: 1
+        let raw = tailLines(logPath, nLines)
+        let src = if raw.len == 0: @["(no gateway.stderr.log yet)"]
+                  else: raw
+        var encoded = ""
+        for i, line in src:
+          if i > 0: encoded.add "\n"
+          encoded.add "  └─ " & line
+        Markdown(encoded, h = $nLines)
 
-proc renderCompanyTab(o: Orchestrator): string =
-  "<Box>" & renderCompanyTabInner(o) & "</Box>"
+proc companyTabChildren(o: Orchestrator): seq[TtmlNode] =
+  buildTtmlSeq:
+    let companies = scanCompanies()
+    if companies.len == 0:
+      Text("  No companies yet — click [+ New company] below to create one.",
+           fg = cGray)
+    else:
+      for (n, p) in companies:
+        let status = statusFor(o, n, p)
+        let source = companySource(p)
+        renderCompanyRow(o, n, source, status, p,
+                         showSource = (source != "home"))
+    Text(" ")
+    Text("  [+ New company]", id = "new-company", clickable = true,
+         fg = cBrightGreen)
 
 # ── Provider / Model tabs — read framework catalogs ──────────────
 
@@ -815,113 +796,99 @@ proc loadCatalog(filename: string): JsonNode =
   except CatchableError: discard
   nil
 
-proc renderProviderTabInner(o: Orchestrator): string =
+proc providerTabChildren(o: Orchestrator): seq[TtmlNode] =
   ## Read-only catalog of LLM providers + per-key configuration status.
   ## Status reflects the daemon's process env (which inherits
   ## ~/.nimclaw/.env on startup). Per-company .env overrides are
   ## intentionally not reflected — this tab is the GLOBAL view.
-  result.add "<Text fg=\"gray\" content=\"  LLM providers — ● keyed   ○ no key set in daemon env\"/>"
-  result.add "<Text content=\" \"/>"
-  let doc = loadCatalog("providers.json")
-  if doc == nil:
-    result.add "<Text fg=\"red\" content=\"  res/providers.json not found.\"/>"
-    return
-  let providers = doc{"providers"}
-  if providers == nil or providers.kind != JArray or providers.len == 0:
-    result.add "<Text fg=\"red\" content=\"  No providers configured in res/providers.json.\"/>"
-    return
-  for p in providers.items:
-    let name = p{"name"}.getStr("")
-    let envKey = p{"envKey"}.getStr("")
-    let apiBase = p{"apiBase"}.getStr("")
-    let defaultModel = p{"defaultModel"}.getStr("")
-    let keyed = envKey.len > 0 and existsEnv(envKey)
-    let (glyph, color) = if keyed: ("●", "green") else: ("○", "gray")
-    result.add "<Box class=\"flex-row\" h=\"1\">"
-    result.add spc(2)
-    result.add "<Text fg=\"" & color & "\" w=\"1\" content=\"" & glyph & "\"/>"
-    result.add spc(2)
-    result.add "<Text bold=\"\" w=\"content\" content=\"" & xmlEscape(name) & "\"/>"
-    result.add spc(2)
-    if envKey.len > 0:
-      result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(envKey) & "\"/>"
-      result.add spc(2)
-    result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(apiBase) & "\"/>"
-    result.add "</Box>"
-    if defaultModel.len > 0:
-      # Indented sub-row under the provider entry. Wrap in flex-row +
-      # `spc(6)` because XML attribute normalization eats leading
-      # whitespace in `content=`, so a bare "      default model: ..."
-      # collapses to a single leading space.
-      result.add "<Box class=\"flex-row\" h=\"1\">"
-      result.add spc(6)
-      result.add "<Text fg=\"gray\" w=\"content\" content=\"default model: " &
-                 xmlEscape(defaultModel) & "\"/>"
-      result.add "</Box>"
+  buildTtmlSeq:
+    Text("  LLM providers — ● keyed   ○ no key set in daemon env",
+         fg = cGray)
+    Text(" ")
+    let doc = loadCatalog("providers.json")
+    if doc == nil:
+      Text("  res/providers.json not found.", fg = cRed)
+    else:
+      let providers = doc{"providers"}
+      if providers == nil or providers.kind != JArray or providers.len == 0:
+        Text("  No providers configured in res/providers.json.", fg = cRed)
+      else:
+        for p in providers.items:
+          let name = p{"name"}.getStr("")
+          let envKey = p{"envKey"}.getStr("")
+          let apiBase = p{"apiBase"}.getStr("")
+          let defaultModel = p{"defaultModel"}.getStr("")
+          let keyed = envKey.len > 0 and existsEnv(envKey)
+          let glyph = if keyed: "●" else: "○"
+          let glyphColor = if keyed: cGreen else: cGray
+          Box(class = flexRow, h = 1):
+            spc(2)
+            Text(glyph, fg = glyphColor, w = "1")
+            spc(2)
+            Text(name, bold = true, w = "content")
+            spc(2)
+            if envKey.len > 0:
+              Text(envKey, fg = cGray, w = "content")
+              spc(2)
+            Text(apiBase, fg = cGray, w = "content")
+          if defaultModel.len > 0:
+            Box(class = flexRow, h = 1):
+              spc(6)
+              Text("default model: " & defaultModel, fg = cGray,
+                   w = "content")
 
-proc renderProviderTab(o: Orchestrator): string =
-  "<Box>" & renderProviderTabInner(o) & "</Box>"
-
-proc renderModelTabInner(o: Orchestrator): string =
+proc modelTabChildren(o: Orchestrator): seq[TtmlNode] =
   ## Read-only catalog of canonical models, grouped by vendor.
   ## Capabilities + context length + modality shown inline.
   ## Deprecated models render dimmer + italic so they don't catch the eye.
-  result.add "<Text fg=\"gray\" content=\"  Canonical model catalog (res/models.json)\"/>"
-  result.add "<Text content=\" \"/>"
-  let doc = loadCatalog("models.json")
-  if doc == nil:
-    result.add "<Text fg=\"red\" content=\"  res/models.json not found.\"/>"
-    return
-  let canonical = doc{"canonical"}
-  if canonical == nil or canonical.kind != JObject or canonical.len == 0:
-    result.add "<Text fg=\"red\" content=\"  No canonical models in catalog.\"/>"
-    return
-  # Group by vendor for readable display. OrderedTable preserves
-  # insertion order so the on-screen ordering matches the JSON file.
-  var groups = initOrderedTable[string, seq[(string, JsonNode)]]()
-  for k, v in canonical.pairs:
-    let vendor = v{"vendor"}.getStr("other")
-    if vendor notin groups: groups[vendor] = @[]
-    groups[vendor].add((k, v))
-  for vendor, models in groups.pairs:
-    # Indented vendor header — same wrap-in-flex-row pattern as the
-    # provider sub-rows (XML attr normalization eats leading spaces).
-    result.add "<Box class=\"flex-row\" h=\"1\">"
-    result.add spc(2)
-    result.add "<Text bold=\"\" fg=\"bright-cyan\" w=\"content\" content=\"" &
-               xmlEscape(vendor) & "\"/>"
-    result.add "</Box>"
-    for (k, m) in models:
-      let ctx = m{"context_length"}.getInt(0)
-      let modality = m{"modality"}.getStr("")
-      var capsAccum = ""
-      let caps = m{"capabilities"}
-      if caps != nil and caps.kind == JArray:
-        var capList: seq[string] = @[]
-        for c in caps.items: capList.add c.getStr("")
-        capsAccum = capList.join(", ")
-      let depr = m{"deprecated"}.getBool(false)
-      let nameStyle =
-        if depr: " fg=\"gray\" italic=\"\""
-        else: ""
-      let ctxStr = if ctx > 0: " " & $(ctx div 1000) & "k" else: ""
-      result.add "<Box class=\"flex-row\" h=\"1\">"
-      result.add spc(4)
-      result.add "<Text" & nameStyle & " w=\"content\" content=\"" & xmlEscape(k) & "\"/>"
-      result.add spc(2)
-      if ctxStr.len > 0:
-        result.add "<Text fg=\"gray\" w=\"content\" content=\"" & ctxStr.strip & "\"/>"
-        result.add spc(2)
-      if modality.len > 0 and modality != "text":
-        result.add "<Text fg=\"yellow\" w=\"content\" content=\"" & xmlEscape(modality) & "\"/>"
-        result.add spc(2)
-      if capsAccum.len > 0:
-        result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(capsAccum) & "\"/>"
-      result.add "</Box>"
-    result.add "<Text content=\" \"/>"
-
-proc renderModelTab(o: Orchestrator): string =
-  "<Box>" & renderModelTabInner(o) & "</Box>"
+  buildTtmlSeq:
+    Text("  Canonical model catalog (res/models.json)", fg = cGray)
+    Text(" ")
+    let doc = loadCatalog("models.json")
+    if doc == nil:
+      Text("  res/models.json not found.", fg = cRed)
+    else:
+      let canonical = doc{"canonical"}
+      if canonical == nil or canonical.kind != JObject or canonical.len == 0:
+        Text("  No canonical models in catalog.", fg = cRed)
+      else:
+        # Group by vendor for readable display. OrderedTable preserves
+        # insertion order so the on-screen ordering matches the JSON file.
+        var groups = initOrderedTable[string, seq[(string, JsonNode)]]()
+        for k, v in canonical.pairs:
+          let vendor = v{"vendor"}.getStr("other")
+          if vendor notin groups: groups[vendor] = @[]
+          groups[vendor].add((k, v))
+        for vendor, models in groups.pairs:
+          Box(class = flexRow, h = 1):
+            spc(2)
+            Text(vendor, bold = true, fg = cBrightCyan, w = "content")
+          for (k, m) in models:
+            let ctx = m{"context_length"}.getInt(0)
+            let modality = m{"modality"}.getStr("")
+            var capList: seq[string] = @[]
+            let caps = m{"capabilities"}
+            if caps != nil and caps.kind == JArray:
+              for c in caps.items: capList.add c.getStr("")
+            let capsAccum = capList.join(", ")
+            let depr = m{"deprecated"}.getBool(false)
+            let ctxStr = if ctx > 0: $(ctx div 1000) & "k" else: ""
+            Box(class = flexRow, h = 1):
+              spc(4)
+              if depr:
+                Text(k, fg = cGray, italic = true, w = "content")
+              else:
+                Text(k, w = "content")
+              spc(2)
+              if ctxStr.len > 0:
+                Text(ctxStr, fg = cGray, w = "content")
+                spc(2)
+              if modality.len > 0 and modality != "text":
+                Text(modality, fg = cYellow, w = "content")
+                spc(2)
+              if capsAccum.len > 0:
+                Text(capsAccum, fg = cGray, w = "content")
+          Text(" ")
 
 # ── Setting tab ──────────────────────────────────────────────────
 
@@ -946,51 +913,51 @@ proc abbrevHome(s: string): string =
   if s.startsWith(home & "/"): return "~" & s[home.len .. ^1]
   s
 
-proc settingHeader(text: string): string =
-  ## Bold header line at 2-cell indent (e.g. "Daemon", "Environment").
-  "<Box class=\"flex-row\" h=\"1\">" & spc(2) &
-    "<Text bold=\"\" w=\"content\" content=\"" & xmlEscape(text) & "\"/></Box>"
+proc settingHeader(label: string): TtmlNode =
+  buildTtml:
+    Box(class = flexRow, h = 1):
+      spc(2)
+      Text(label, bold = true, w = "content")
 
-proc settingRow(key, value: string): string =
-  ## Single key/value row in the Setting tab. Indented 4 cells; key
-  ## column reserved at 14 cells so values align across rows.
-  "<Box class=\"flex-row\" h=\"1\">" & spc(4) &
-    "<Text w=\"14\" content=\"" & xmlEscape(key) & "\"/>" &
-    "<Text w=\"content\" content=\"" & xmlEscape(value) & "\"/></Box>"
+proc settingRow(key, value: string): TtmlNode =
+  ## Indented 4 cells; key column reserved at 14 cells so values align
+  ## across rows.
+  buildTtml:
+    Box(class = flexRow, h = 1):
+      spc(4)
+      Text(key, w = "14")
+      Text(value, w = "content")
 
-proc renderSettingTabInner(o: Orchestrator): string =
+proc settingTabChildren(o: Orchestrator): seq[TtmlNode] =
   ## Daemon-level config + diagnostic info. Read-only today; will gain
   ## toggles (log level) as we wire up real click handlers.
-  result.add settingHeader("Daemon")
-  result.add settingRow("binary:",      abbrevHome(getAppFilename()))
-  result.add settingRow("state dir:",   abbrevHome(daemonStateDir()))
-  result.add settingRow("socket:",      abbrevHome(daemonSockFile()))
-  result.add settingRow("log file:",    abbrevHome(daemonLogFile()))
-  result.add settingRow("log level:",   $logger.getLevel())
-  result.add settingRow("version:",     clawBuildVersion())
-  result.add "<Text content=\" \"/>"
-  result.add settingHeader("Environment")
   let nimDir = getEnv("NIMCLAW_DIR")
   let nimDirShown = if nimDir.len > 0: abbrevHome(nimDir)
                     else: "(not set — daemon scans ~/.nimclaw-*)"
-  result.add settingRow("NIMCLAW_DIR:", nimDirShown)
-  result.add settingRow("HOME:",        getHomeDir())
-  result.add "<Text content=\" \"/>"
-  result.add "<Box class=\"flex-row\" h=\"1\">" & spc(2) &
-    "<Text id=\"view-daemon-log\" clickable=\"\" fg=\"bright-blue\" w=\"content\" content=\"[view daemon log]\"/></Box>"
+  buildTtmlSeq:
+    settingHeader("Daemon")
+    settingRow("binary:",      abbrevHome(getAppFilename()))
+    settingRow("state dir:",   abbrevHome(daemonStateDir()))
+    settingRow("socket:",      abbrevHome(daemonSockFile()))
+    settingRow("log file:",    abbrevHome(daemonLogFile()))
+    settingRow("log level:",   $logger.getLevel())
+    settingRow("version:",     clawBuildVersion())
+    Text(" ")
+    settingHeader("Environment")
+    settingRow("NIMCLAW_DIR:", nimDirShown)
+    settingRow("HOME:",        getHomeDir())
+    Text(" ")
+    Box(class = flexRow, h = 1):
+      spc(2)
+      Text("[view daemon log]", id = "view-daemon-log",
+           clickable = true, fg = cBrightBlue, w = "content")
 
-proc renderSettingTab(o: Orchestrator): string =
-  "<Box>" & renderSettingTabInner(o) & "</Box>"
-
-proc renderTabContentInner(o: Orchestrator): string =
+proc tabContentChildren(o: Orchestrator): seq[TtmlNode] =
   case o.activeTab
-  of tabCompany:  renderCompanyTabInner(o)
-  of tabProvider: renderProviderTabInner(o)
-  of tabModel:    renderModelTabInner(o)
-  of tabSetting:  renderSettingTabInner(o)
-
-proc renderTabContent(o: Orchestrator): string =
-  "<Box>" & renderTabContentInner(o) & "</Box>"
+  of tabCompany:  companyTabChildren(o)
+  of tabProvider: providerTabChildren(o)
+  of tabModel:    modelTabChildren(o)
+  of tabSetting:  settingTabChildren(o)
 
 # ── Status bar (bordered, bottom band) ───────────────────────────
 
@@ -1001,71 +968,66 @@ proc countByStatus(o: Orchestrator): tuple[running, stopped, crashed: int] =
     of "crashed": inc result.crashed
     else:         inc result.stopped
 
-proc renderStatusBarInner(o: Orchestrator): string =
+proc statusBarChildren(o: Orchestrator): seq[TtmlNode] =
   ## Children of #status. #status itself owns the `border=""` + class=
-  ## `flex-row` attrs so the bordered band survives every swap (a swap
-  ## fragment's wrapper is discarded by applyUpdate, so we MUST keep
-  ## the border on the parent, not on a wrapper Box we emit here).
-  ##
-  ## Spacing is done with explicit-width spacer Texts (`spc(N)`) rather
-  ## than trailing whitespace in `content=` — see `spc` for why.
+  ## `flex-row` attrs so the bordered band survives every swap.
   let uptime = fmtUptime(epochTime() - o.startedAt)
   let c = countByStatus(o)
   var counts = $c.running & " running"
   if c.stopped > 0: counts.add "  " & $c.stopped & " stopped"
   if c.crashed > 0: counts.add "  " & $c.crashed & " crashed"
-  result.add spc(1)
-  result.add "<Text fg=\"green\" w=\"1\" content=\"●\"/>"
-  result.add spc(2)
-  result.add "<Text w=\"content\" content=\"daemon up " & xmlEscape(uptime) & "\"/>"
-  result.add spc(4)
-  result.add "<Text fg=\"gray\" w=\"content\" content=\"" & xmlEscape(counts) & "\"/>"
-  # Flex spacer (no w=) absorbs the remainder, pushing buttons to the right.
-  result.add "<Text content=\"\"/>"
-  result.add "<Text id=\"refresh-all\" clickable=\"\" w=\"content\" content=\"[↻ refresh]\"/>"
-  result.add spc(2)
-  result.add "<Text id=\"restart-daemon\" clickable=\"\" w=\"content\" content=\"[⟲ restart]\"/>"
-  result.add spc(2)
-  result.add "<Text id=\"quit-daemon\" clickable=\"\" fg=\"red\" w=\"content\" content=\"[⏻ quit]\"/>"
-  result.add spc(1)
-
-proc renderStatusBar(o: Orchestrator): string =
-  "<Box>" & renderStatusBarInner(o) & "</Box>"
+  buildTtmlSeq:
+    spc(1)
+    Text("●", fg = cGreen, w = "1")
+    spc(2)
+    Text("daemon up " & uptime, w = "content")
+    spc(4)
+    Text(counts, fg = cGray, w = "content")
+    Text("")    # flex spacer pushes buttons right
+    Text("[↻ refresh]", id = "refresh-all", clickable = true, w = "content")
+    spc(2)
+    Text("[⟲ restart]", id = "restart-daemon", clickable = true,
+         w = "content")
+    spc(2)
+    Text("[⏻ quit]", id = "quit-daemon", clickable = true,
+         fg = cRed, w = "content")
+    spc(1)
 
 # ── Mount layout + swap events ───────────────────────────────────
 
-proc zenMountLayout*(o: Orchestrator): string =
+proc buildMountTree(o: Orchestrator): TtmlNode =
   ## Full three-band shell. Each section's id (#nav/#content/#status)
   ## is used by swap events to refresh that section independently.
   ##
-  ## Layout invariant: every flex-col sibling that isn't the content
-  ## band gets an explicit `h=`, so the content band absorbs the
-  ## remainder. (Without explicit h on Rule + nav + status, they'd
-  ## share the flex pool with content, leaving content too small and
-  ## overflowing into the status bar.)
+  ## Layout invariant: every flex-col sibling that isn't #content gets
+  ## an explicit `h=`, so #content absorbs the remainder. (Without
+  ## explicit h on Rule + nav + status, they'd share the flex pool
+  ## with content, leaving content too small and overflowing into the
+  ## status bar.)
   ##
   ## Structural attrs (class, border) live on the swap-target boxes
   ## themselves rather than on inner wrappers — applyUpdate discards
   ## swap-fragment wrappers, so any layout direction or border attr
   ## on a wrapper would vanish after the first refresh. Children are
-  ## emitted inline via `*Inner` procs; the swap path emits the same
-  ## children wrapped in a discardable Box.
-  result.add "<Box class=\"flex-col\">"
-  # Nav: row-layout lives on #nav directly so swaps preserve it.
-  result.add "<Box id=\"nav\" class=\"flex-row\" h=\"1\">"
-  result.add renderNavBarInner(o.activeTab)
-  result.add "</Box>"
-  # Separator: fixed 1 row.
-  result.add "<Rule h=\"1\"/>"
-  # Content: flex remainder, vertically scrollable.
-  result.add "<Box id=\"content\" class=\"flex-col\" scroll=\"y\">"
-  result.add renderTabContentInner(o)
-  result.add "</Box>"
-  # Status: bordered row, fixed 3 rows. Border lives on #status itself.
-  result.add "<Box id=\"status\" border=\"\" rounded=\"\" class=\"flex-row\" h=\"3\">"
-  result.add renderStatusBarInner(o)
-  result.add "</Box>"
-  result.add "</Box>"
+  ## emitted inline into the targeted box.
+  buildTtml:
+    Box(class = flexCol):
+      Box(id = "nav", class = flexRow, h = 1):
+        # `it.add(n)` is method-style — the macro passes it through as
+        # raw Nim. (Bare `add(it, n)` would be misread as a builder
+        # call and wrapped a second time, creating a self-cycle.)
+        for n in navBarChildren(o.activeTab): it.add(n)
+      Rule(h = 1)
+      Box(id = "content", class = flexCol, scroll = scrollY):
+        for n in tabContentChildren(o): it.add(n)
+      Box(id = "status", class = flexRow, h = 3, border = true,
+          rounded = true):
+        for n in statusBarChildren(o): it.add(n)
+
+proc zenMountLayout*(o: Orchestrator): string =
+  ## String form used by the JSON envelope. The daemon never holds the
+  ## tree past serialization, so we build + serialize in one shot.
+  serialize(buildMountTree(o))
 
 proc zenMountEvent*(o: Orchestrator, pane: string): JsonNode =
   %*{"event": "mount", "pane": pane, "title": "nimclaw",
@@ -1073,20 +1035,20 @@ proc zenMountEvent*(o: Orchestrator, pane: string): JsonNode =
 
 proc zenNavSwap*(o: Orchestrator): JsonNode =
   %*{"event": "swap", "target": "#nav",
-     "ttml": renderNavBar(o.activeTab)}
+     "ttml": serializeChildren(navBarChildren(o.activeTab))}
 
 proc zenContentSwap*(o: Orchestrator): JsonNode =
   %*{"event": "swap", "target": "#content",
-     "ttml": renderTabContent(o)}
+     "ttml": serializeChildren(tabContentChildren(o))}
 
 proc zenStatusSwap*(o: Orchestrator): JsonNode =
   %*{"event": "swap", "target": "#status",
-     "ttml": renderStatusBar(o)}
+     "ttml": serializeChildren(statusBarChildren(o))}
 
 # Back-compat shim — older call sites emit a single dashboard swap.
 # With the three-band layout, the equivalent of "the changed part" is
-# the content area (where company rows live). Status bar refreshes are
-# handled separately by callers that care about count/uptime changes.
+# the content area. Status bar refreshes are handled separately by
+# callers that care about count/uptime changes.
 proc zenCompaniesSwap*(o: Orchestrator): JsonNode = zenContentSwap(o)
 
 # ── Click dispatch ───────────────────────────────────────────────
