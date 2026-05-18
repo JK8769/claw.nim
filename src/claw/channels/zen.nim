@@ -12,8 +12,11 @@
 ##   → chat.agents   (nimclaw updates agent roster)
 
 import std/[asyncdispatch, json, strutils, tables, os, net, typedthreads]
+import posix
 import base
 import ../bus, ../bus_types, ../config, ../logger, ../protocol
+import ../agent/binding as agentBinding
+import ../agent/cortex as agentCortex
 
 const
   ZenSocketName = "zen.sock"
@@ -38,6 +41,21 @@ type
     # "zen_user" for backward compatibility with zen versions that
     # don't populate the field.
     zenUser: string
+    # Kernel-reported UID of the connected zen process via
+    # LOCAL_PEERCRED (macOS) / SO_PEERCRED (Linux). Unspoofable —
+    # the source-of-truth for the local-trust auto-bind decision.
+    # See docs/zen-local-trust-binding.md. -1 = not yet queried or
+    # unsupported on this platform; treated as "untrusted".
+    peerUid: int
+    # Set once after the first message from a trusted local peer is
+    # successfully auto-bound, so we don't retry the bind logic on
+    # every subsequent message. Doesn't gate sends — just avoids
+    # redundant work / log spam.
+    autoBindAttempted: bool
+    # Captured at construction from cfg.workspacePath(). Used by the
+    # local-trust auto-bind path to load/save the cortex graph
+    # without re-resolving the company workspace on every message.
+    workspace: string
     agentRoster: seq[tuple[name, description, model: string]]
     onReconnect*: proc() {.gcsafe.}  ## Called after reconnecting to Zen (e.g. re-mount dashboard)
 
@@ -69,6 +87,45 @@ proc recvMsg(sock: Socket): string =
   result = newString(msgLen)
   let r = sock.recv(result, msgLen)
   if r < msgLen: return ""
+
+# ── Peer credentials (LOCAL_PEERCRED / SO_PEERCRED) ────────────────
+#
+# Returns the kernel-reported UID of the process on the other end of
+# a connected Unix socket. Unspoofable — the OS reads it from the
+# remote process's credential structure, not from anything the peer
+# sends over the wire. Used by the zen channel's local-trust check
+# (see docs/zen-local-trust-binding.md). Returns -1 on any error or
+# on platforms where this isn't supported; the auto-bind path
+# treats -1 as "untrusted, fall through to invite flow".
+
+when defined(linux):
+  type Ucred {.importc: "struct ucred", header: "<sys/socket.h>".} = object
+    pid {.importc.}: cint
+    uid {.importc.}: cuint
+    gid {.importc.}: cuint
+  const SO_PEERCRED_VAL = 17.cint   # SO_PEERCRED on Linux
+  proc getPeerUid(sock: Socket): int =
+    var cred: Ucred
+    var sz: SockLen = sizeof(cred).SockLen
+    if getsockopt(sock.getFd().SocketHandle, SOL_SOCKET,
+                  SO_PEERCRED_VAL, addr cred, addr sz) != 0:
+      return -1
+    return cred.uid.int
+elif defined(macosx) or defined(bsd):
+  # macOS exposes LOCAL_PEERCRED at SOL_LOCAL via xucred, but the
+  # simpler primitive is `getpeereid` (POSIX), which returns just
+  # (uid, gid). It's a direct kernel-side lookup of the remote
+  # process's effective UID — same unspoofability guarantee.
+  proc getpeereid(s: SocketHandle, uid: ptr Uid, gid: ptr Gid): cint
+       {.importc, header: "<unistd.h>".}
+  proc getPeerUid(sock: Socket): int =
+    var uid: Uid
+    var gid: Gid
+    if getpeereid(sock.getFd().SocketHandle, addr uid, addr gid) != 0:
+      return -1
+    return uid.int
+else:
+  proc getPeerUid(sock: Socket): int = -1
 
 # ── Agent roster builder ────────────────────────────────────────────
 
@@ -102,10 +159,16 @@ proc tryConnect(c: ZenChannel): bool =
         # Fall back to "zen_user" so older zens (no `user` field)
         # still connect, just without per-user binding capability.
         c.zenUser = j{"user"}.getStr("zen_user")
+        # Kernel-verified peer UID for the local-trust check.
+        # Captured once per connection; -1 if the kernel call failed
+        # or the platform is unsupported.
+        c.peerUid = getPeerUid(c.sock)
+        c.autoBindAttempted = false
         c.connected = true
         infoCF("zen", "Connected to Zen",
                {"provider_id": c.providerId,
-                "user": c.zenUser}.toTable)
+                "user": c.zenUser,
+                "peer_uid": $c.peerUid}.toTable)
         return true
     try: c.sock.close() except: discard
   except:
@@ -142,6 +205,32 @@ proc readerLoop(args: ZenReaderArgs) {.thread, gcsafe.} =
           # hardcoded `"zen_user"` — gives the bind flow a per-user
           # identifier to attach SuperAdmin / Customer entities to.
           let user = if c.zenUser.len > 0: c.zenUser else: "zen_user"
+          # Local-trust auto-bind. Runs once per connection. When the
+          # connecting zen process is the same OS user as this daemon
+          # AND the company has a SuperAdmin without a `zen` binding
+          # yet, stamp the binding directly (skip the invite-code
+          # roundtrip). See docs/zen-local-trust-binding.md.
+          #
+          # The trust signal is `peerUid == getuid()` — both
+          # kernel-verified, unspoofable. Idempotent: after the
+          # first successful bind, subsequent messages take the
+          # `c.autoBindAttempted` early-out and resolve via the
+          # normal `resolveSenderEntity` path.
+          if not c.autoBindAttempted and
+             c.peerUid >= 0 and c.peerUid == getuid().int:
+            c.autoBindAttempted = true
+            let graph = loadWorld(c.workspace)
+            if graph != nil:
+              if autoBindLocalCreator(graph, c.workspace, "zen", user):
+                infoCF("zen", "Auto-bound trusted local user",
+                       {"user": user, "uid": $c.peerUid}.toTable)
+              else:
+                # Either no SuperAdmin exists yet (unusual — `claw
+                # create` always bootstraps one) or every SuperAdmin
+                # already has a `zen` binding. Either way, the user
+                # falls through to the standard auth gate.
+                infoCF("zen", "No auto-bind candidate; using invite flow",
+                       {"user": user}.toTable)
           c.handleMessage(user, chatId, content,
                          metadata = meta, recipientID = agent)
           infoCF("zen", "Received message", {"chat_id": chatId, "agent": agent}.toTable)
@@ -167,6 +256,8 @@ proc newZenChannel*(cfg: Config, bus: MessageBus): ZenChannel =
     allowList: @[],
     running: false,
     connected: false,
+    peerUid: -1,
+    workspace: cfg.workspacePath(),
     agentRoster: @[]
   )
   # Build roster from named agents config. Each agent has their own

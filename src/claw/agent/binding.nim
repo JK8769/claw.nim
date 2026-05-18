@@ -242,6 +242,45 @@ proc tryBind*(graph: WorldGraph, workspace: string,
   discard pruneGuestsAcrossOffices(workspace, ent.identifiers)
   some(matched)
 
+proc autoBindLocalCreator*(graph: WorldGraph, workspace: string,
+                           channelKey, senderID: string): bool =
+  ## Stamp `senderID` on the first SuperAdmin entity that has no
+  ## `channelKey` binding yet. Mirrors `tryBind`'s mutation set
+  ## (identifiers + saveWorld + persistPersonIdentifiers +
+  ## pruneGuestsAcrossOffices) but skips the invite-code dance.
+  ##
+  ## Used by the zen channel when the connecting OS user matches the
+  ## daemon's own UID (kernel-verified). See
+  ## docs/zen-local-trust-binding.md for the trust model.
+  ##
+  ## Returns true iff a binding was stamped. Returns false (no-op) if:
+  ##   - graph is nil
+  ##   - no SuperAdmin entity exists
+  ##   - every SuperAdmin already has a `channelKey` binding (the
+  ##     standard flow handles "I need another admin" via invite)
+  ##
+  ## Safety: only the `identifiers` table on an existing entity is
+  ## mutated. No entity is created. No role is changed. No existing
+  ## binding is overwritten.
+  if graph == nil: return false
+  var targetID: WorldEntityID
+  for id, ent in graph.entities:
+    if ent.kind == ekPerson and
+       ent.role.toLowerAscii == "superadmin" and
+       not ent.identifiers.hasKey(channelKey):
+      targetID = id
+      break
+  if uint32(targetID) == 0: return false
+  var ent = graph.entities[targetID]
+  ent.identifiers[channelKey] = senderID
+  graph.entities[targetID] = ent
+  graph.saveWorld()
+  persistPersonIdentifiers(
+    workspace.parentDir / "BASE.nims", ent.name,
+    @[(channelKey, senderID)])
+  discard pruneGuestsAcrossOffices(workspace, ent.identifiers)
+  true
+
 proc rebind*(graph: WorldGraph, workspace: string,
              alias: string, wipeExisting: bool = false): Option[BindingCode] =
   ## Force-issue a fresh binding code for an existing internal user.
